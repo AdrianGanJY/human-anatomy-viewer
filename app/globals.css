@@ -124,3 +124,95 @@ body.snap-mode .atlas-caption{left:5%;right:auto;top:auto;bottom:6%;width:min(46
  max-height:38dvh;padding:16px 18px}
 body.snap-mode .atlas-caption h2{font-size:16px;margin-bottom:8px}
 body.snap-mode .atlas-caption p{font-size:14px;line-height:1.6}
+
+
+/* L30 P3 -- the selection basket.
+   The panel carries `search-panel basket-panel` on purpose: it inherits the search panel's
+   position, width and EVERY responsive rule above (phone offsets, landscape, and the
+   `body.snap-mode` hide), so the two panels cannot drift apart on a 390px screen and a future
+   layout fix lands on both. Only the list inside it is new. */
+.basket-button .pick-count{font-style:normal;font-size:11px;font-variant-numeric:tabular-nums;
+ min-width:19px;height:19px;padding:0 5px;margin-left:6px;border-radius:10px;
+ display:inline-flex;align-items:center;justify-content:center;background:#26313c12;color:#4a5764}
+.basket-button.active .pick-count{background:#263b4826;color:#263b48}
+.basket-panel .panel-heading{min-height:44px}
+.basket-empty{font-size:12.5px;line-height:1.7;color:#78838f;margin:6px 0 4px}
+.basket-empty svg{vertical-align:-2px;margin:0 1px}
+.basket-empty b{font-weight:600;color:#5a6672}
+.basket-list{margin-top:6px;max-height:min(46dvh,360px);overflow-y:auto;overscroll-behavior:contain;
+ scrollbar-width:thin;scrollbar-color:#b9c1c8 transparent}
+.basket-row{display:flex;align-items:center;gap:4px;min-height:44px;border-bottom:1px solid #18253610}
+.basket-row:last-child{border-bottom:0}
+.basket-name{flex:1;min-width:0;display:flex;align-items:center;gap:9px;min-height:44px;padding:0 5px;
+ border-radius:7px;text-align:left;font-size:13px;color:#39485a}
+.basket-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-transform:capitalize}
+.basket-row.is-focused .basket-name{background:#263b480d;color:#1d2b38}
+.basket-remove{min-width:36px;min-height:44px;display:flex;align-items:center;justify-content:center;
+ border-radius:7px;color:#8a949e;flex-shrink:0}
+.basket-remove:hover{color:#b4544a;background:#b4544a12}
+.basket-foot{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-height:46px}
+.basket-hide{display:flex;align-items:center;gap:8px;font-size:11px;color:#4a5764}
+.basket-hide [data-slot=switch]{transform:scale(.8);transform-origin:left center}
+.basket-total{font-variant-numeric:tabular-nums;color:#87929d;margin-left:auto}
+
+/* The `+` that ADDS instead of replacing -- on a search row and on a member row. */
+.result-add,.member-add{min-width:34px;min-height:34px;display:inline-flex;align-items:center;
+ justify-content:center;border-radius:7px;color:#7a8794;flex-shrink:0;pointer-events:auto}
+.result-add:hover,.member-add:hover{color:#25635e;background:#25635e12}
+.result-add.is-picked,.member-add.is-picked{color:#25635e;opacity:.55}
+.member-row{display:flex;align-items:center;gap:2px;border-bottom:1px solid #18253612}
+.member-list .member-open{border-bottom:0;flex:1;min-width:0}
+.member-list .member-open span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.member-list .member-add{width:auto;min-width:44px;justify-content:center;border-bottom:0}
+
+@media(max-width:767px){
+ .basket-panel .panel-heading{font-size:14px}
+ .basket-list{max-height:min(42dvh,320px)}
+ .basket-row,.basket-name{min-height:46px}
+ .basket-name{font-size:14px}
+ .basket-remove{min-width:44px;min-height:46px}
+ .basket-foot{gap:8px}
+ .result-add,.member-add{min-width:44px;min-height:44px}
+}
+@media(max-height:600px) and (orientation:landscape){.basket-list{max-height:min(34dvh,190px)}}
+
+
+/* L30 P3 -- the language switch (EN / 简体 / 繁體) and the bilingual name lines.
+   ONE node, positioned per breakpoint rather than rendered twice: a duplicate would be read
+   out twice by a screen reader and could disagree with itself. Placement was chosen from
+   MEASURED screenshots, not guessed -- on a desktop there is clear space under the header
+   block (identity ends ~110px, the layers panel starts at 180px); at 390px there is not
+   (the title runs to ~205px and the top actions start at ~237px), so the phone puts it
+   bottom-left, in the footer band, where nothing else lives. */
+.lang-switch{position:absolute;left:32px;top:130px;z-index:6;display:flex;gap:2px;padding:3px;
+ border-radius:9px}
+.lang-switch button{min-width:34px;min-height:30px;padding:0 8px;border-radius:6px;font-size:11px;
+ line-height:1;color:#7a8794;display:inline-flex;align-items:center;justify-content:center}
+.lang-switch button:hover{color:#3c4956;background:#18253608}
+.lang-switch button.active{color:#1d2b38;background:#263b4814;font-weight:500}
+body.snap-mode .lang-switch{display:none!important}
+@media(max-width:767px){
+ .lang-switch{left:max(15px,env(safe-area-inset-left));top:auto;bottom:calc(4px + env(safe-area-inset-bottom));
+  padding:2px;gap:1px}
+ .lang-switch button{min-width:36px;min-height:36px;padding:0 6px;font-size:12px}
+}
+@media(max-height:600px) and (orientation:landscape){
+ .lang-switch{left:20px;top:64px;bottom:auto}
+ .lang-switch button{min-height:28px;min-width:32px}
+}
+
+/* The English kept alongside the Chinese: Adrian is learning the vocabulary, so the pair is
+   the point. Rendered only when a dictionary supplied a different name, so English mode is
+   byte-for-byte the layout it always was. */
+.result-en{font-size:11px;color:#8d97a1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1}
+.basket-text{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
+.basket-en{font-size:10.5px;color:#8d97a1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.structure-en{font-size:12.5px;color:#87929d;margin-top:5px;text-transform:none}
+/* A CJK stack the device already has -- no webfont download on a phone. */
+html:lang(zh-Hans),html:lang(zh-Hant){font-family:"Noto Sans CJK SC","Source Han Sans SC","PingFang SC",
+ "Hiragino Sans GB","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+/* Chinese names are short; the capitalize rule is an English affordance and does nothing here,
+   but the tighter letter-spacing on the big title is wrong for CJK. */
+html:lang(zh-Hans) .structure-title,html:lang(zh-Hant) .structure-title{letter-spacing:0}
+html:lang(zh-Hans) .eyebrow,html:lang(zh-Hant) .eyebrow{letter-spacing:.08em}
+@media(max-width:767px){.result-en{display:none}}

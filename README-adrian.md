@@ -41,6 +41,7 @@ npm run check && node --test test/mcp.test.mjs && pwsh -File ./deploy.ps1
 | `note` | ≤ 600 chars | caption body, drawn over the scene |
 | `snap` | `1` | chrome-less canvas — everything hidden EXCEPT the caption |
 | `size` | `WxH` | honoured by the renderer only; the live page ignores it |
+| `lang` | `en` `zh-Hans` `zh-Hant` | interface + name language. Beats the remembered choice; omitted from the URL when `en` |
 
 Read merges `location.search` then `location.hash`, so **the hash wins** — setting `location.hash`
 on an already-loaded page re-selects **without a reload**. That is not a convenience: it is what
@@ -51,6 +52,40 @@ and a 21-second one.
 those characters and creates zero nodes — asserted live, not assumed.
 
 Example: <https://anatomy.adrian.my/?select=FMA22315,FMA22314,FMA18060&isolate=1&view=back&title=Hip%20stabilisers&note=These%20stabilise%20the%20pelvis%20in%20tree%20pose.>
+
+### 1b. The selection basket, and Chinese (L30 P3)
+
+**The basket.** `picks` — an ordered list of the ids the caller asked for — is the source of
+truth; `state.selected` (what the scene highlights) is *derived* from it as the union of their
+meshes, by one effect, so the list, the URL and the 3D view cannot disagree. `app/selection.ts`
+holds the pure helpers. Tapping the 3D view, a search result or opening a link **replaces** the
+set (upstream's ergonomics); the **`+`** on a search row, the `+` on a member row, **Shift-click**
+in the 3D view, and the WebMCP tool `add_to_selection` all **add**. "Hide others" in the basket
+is the same `isolate` flag the detail sheet's "Isolate structure" toggles. A pick may be a concept
+id *or* a part id — the URL contract round-trips exactly what the caller named, and rewriting part
+ids to their concept would make a single mesh unreachable.
+
+**Chinese.** Upstream has no i18n; `atlas.json` is English only. So the names are built:
+
+- `scripts/zh-wikidata.json` — 3,420 FMA→Wikidata items, 656 with a Chinese label (measured).
+- `scripts/translate-zh.mjs` — the codex lane (`gpt-6-astra`), batched, retried, cached into
+  `scripts/zh-llm-cache.json`. **Run by hand, never by the deploy.**
+- `scripts/build-zh.mjs` — offline and deterministic. Writes `public/i18n/zh-Hans.json` +
+  `zh-Hant.json` (繁體 derived from 简体 with `opencc-js`, never translated twice),
+  `scripts/zh-sources.json` (provenance per id) and `scripts/zh-review-sample.md` (60 terms for
+  Adrian). `deploy.ps1` runs it **before** `build-index.mjs`, which copies both names into
+  `/api/index.json` so `/mcp` can be asked in Chinese.
+
+**Precedence, decided by measurement, not by the plan.** Exact agreement between Wikidata and the
+model over the 656 anchored concepts is **60.2%**, and the disagreements are systematic: Wikidata
+carries encyclopedia article titles, Taiwan usage, and some outright wrong concepts
+(`vertebra` → 椎骨切迹, `nasolacrimal duct` → 泪器). So the model's mainland-standard term ships,
+Wikidata corroborates where they agree and fills in where the model has nothing, and every
+disagreement is listed in `scripts/zh-review-sample.md` for Adrian to overrule.
+
+**To fix a term**: one line in `scripts/zh-llm-cache.json` —
+`terms["<lowercase english>"] = {"zh":"…","lane":"manual"}` — then `node scripts/build-zh.mjs`
+and redeploy. Manual beats everything.
 
 ### 2. `POST /mcp` — a read-only MCP server
 
