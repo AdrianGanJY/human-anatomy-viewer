@@ -85,9 +85,14 @@ export async function callRenderer(env, query, budgetMs, ctx) {
     // Keep the SAME render alive past this response — that is what turns the retry into an
     // instant cache hit rather than a second metered render.
     if (ctx && ctx.waitUntil) ctx.waitUntil(inflight.then(() => {}).catch(() => {}));
+    // Deliberately NOT "call again and it will be instant". There is no cross-request lock
+    // here — no KV, no D1 — so an immediate retry finds no R2 object yet, cannot join the
+    // running render (its session already holds a connectionId), and launches a SECOND
+    // browser for the same picture. Telling the model to wait first is the only mitigation
+    // this deployment can honestly offer.
     return {
       state: 'pending',
-      error: `not rendered within ${Math.round(budgetMs / 1000)} s — a view this atlas has not drawn before costs about a minute on this account. It is still rendering: call this tool again with the SAME arguments and it will be instant. The link works now.`,
+      error: `not rendered within ${Math.round(budgetMs / 1000)} s — a view this atlas has not drawn before costs about a minute on this account, and it is still rendering. WAIT about a minute before calling this tool again with the SAME arguments; calling it again immediately starts a second render instead of finding the first. The link works now.`,
     };
   }
   if (res && res.__err) {
@@ -121,13 +126,22 @@ export async function callRenderer(env, query, budgetMs, ctx) {
     };
   }
 
-  return {
-    state: 'ok',
-    bytes: new Uint8Array(await res.arrayBuffer()),
-    cache: res.headers.get('X-Snap-Cache') || null,
-    ms: res.headers.get('X-Snap-Ms') || null,
-    settle: res.headers.get('X-Snap-Settle') || null,
-  };
+  // The budget covered the HEADERS; the body is a separate stream that can still fail. An
+  // exception here would escape to callTool's generic handler and replace a result that
+  // carries a working link with "tool failed (internal error)" — losing the answer over a
+  // missing picture, which is the trade this whole design refuses to make.
+  try {
+    return {
+      state: 'ok',
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      cache: res.headers.get('X-Snap-Cache') || null,
+      ms: res.headers.get('X-Snap-Ms') || null,
+      settle: res.headers.get('X-Snap-Settle') || null,
+    };
+  } catch (err) {
+    console.error('renderer body failed:', err);
+    return { state: 'renderer_down', error: 'the renderer started sending a picture and the transfer failed' };
+  }
 }
 
 /**

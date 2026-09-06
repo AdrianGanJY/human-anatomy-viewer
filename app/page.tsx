@@ -115,7 +115,10 @@ export default function Home(){
    const sc=u.scene;
    setScene(sc);
    markScene(u.sceneBlob??encodeScene(sc));
-   setModes(true,sc.mode==='render');
+   // An EXPLORE scene is a human opening the link the tool handed him: he gets the roles,
+   // the opacities and the framing, but he must also get the chrome back or the "interactive
+   // 3D" link opens a picture he cannot interact with. Only `render` forces snap mode.
+   setModes(sc.mode==='render'||!!u.snap,sc.mode==='render');
    applyLang(sc.lang);
    setCaption({title:sc.caption.place==='in'&&sc.caption.title?sc.caption.title:undefined,note:sc.caption.place==='in'&&sc.caption.note?sc.caption.note:undefined});
    if(atlas)replacePicks(sceneSelectIds(sc));

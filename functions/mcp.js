@@ -487,8 +487,9 @@ There are no joints in this atlas — BodyParts3D ships meshes, so there is no h
             padding: { type: 'number', description: 'Camera DISTANCE multiplier, 1.0-3.0. Default 1.35; 2.0 pulls back. It is not a percentage.' },
           },
         },
-        contextOpacity: { type: 'number', description: 'Opacity of the `ghost` structures, 0-1. Default 0.08.' },
-        supportOpacity: { type: 'number', description: 'Opacity of the `context` structures, 0-1. Default 0.40.' },
+        contextOpacity: { type: 'number', description: 'Opacity of the `ghost` structures, 0-1. Default 0.25. This viewer resolves opacity by COVERAGE rather than blending, so a value reads fainter here than it would elsewhere: below about 0.15 a structure nearly disappears.' },
+        supportOpacity: { type: 'number', description: 'Opacity of the `context` structures, 0-1. Default 0.55. Same coverage caveat as contextOpacity — 0.5-0.7 is what reads as translucent supporting anatomy.' },
+        supersample: { type: 'boolean', description: 'Draw at 2x and downsample, which is what makes translucent structures look smooth. Default true. Only turn it off if a render is timing out.' },
         styles: {
           type: 'array',
           description: 'Per-structure overrides. Do not pass colours — the viewer owns the palette.',
@@ -732,9 +733,14 @@ let lastClientInfo = null;
 export function clientFrom(request, env) {
   const ua = (request && request.headers && request.headers.get('User-Agent')) || '';
   const name = (lastClientInfo && lastClientInfo.name) || '';
-  const hay = `${name} ${ua}`.toLowerCase();
   const forced = (env && env.FORCE_CLIENT) || '';
-  const kind = forced || (/claude|anthropic/.test(hay) ? 'claude' : /chatgpt|openai/.test(hay) ? 'chatgpt' : 'unknown');
+  // THE CURRENT REQUEST WINS. Concatenating the remembered name with this request's
+  // User-Agent let one connection decide another's budget and carrier: a Claude
+  // `initialize` earlier in the same isolate, then a ChatGPT request, matched "claude"
+  // from the stale half of the haystack. The remembered name is consulted only when this
+  // request's own User-Agent says nothing.
+  const read = (s) => (/claude|anthropic/i.test(s) ? 'claude' : /chatgpt|openai/i.test(s) ? 'chatgpt' : '');
+  const kind = forced || read(ua) || read(name) || 'unknown';
   return { kind, name: name || null, ua: ua.slice(0, 80) || null };
 }
 
@@ -914,8 +920,13 @@ async function tComposeView(ctx, index, a) {
     structuredContent,
     _meta: { 'openai/outputTemplate': WIDGET_URI },
   });
+  // The block is a SECOND copy of the same base64 that structuredContent already carries,
+  // so it is added only when the ASSEMBLED result still fits the client cap — measured, not
+  // estimated. The widget copy is never given up here: compose_view is the link tool, and
+  // its widget is what P2 verified end to end.
   if (snapshot?.b64 && snapshot.b64.length <= MAX_IMAGE_BLOCK_B64) {
-    okResult.content.push({ type: 'image', data: snapshot.b64, mimeType: 'image/png' });
+    const withImage = { ...okResult, content: [...okResult.content, { type: 'image', data: snapshot.b64, mimeType: 'image/png' }] };
+    if (JSON.stringify(withImage).length <= MAX_RESULT_CHARS) return withImage;
   }
   return okResult;
 }
@@ -931,7 +942,11 @@ async function tComposeView(ctx, index, a) {
  * fewer structures.
  */
 function parseRenderArgs(index, a) {
-  const list = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : []);
+  // A hard bound on how much the caller may make this function think about. The scene
+  // itself is capped at MAX_STRUCTURES, but that cap only counts ids this atlas HAS, so
+  // without this a request of ten thousand absent ids is still fully parsed and reported.
+  const MAX_INPUT_IDS = 200;
+  const list = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : []).slice(0, MAX_INPUT_IDS);
   const clean = (raw, field) => {
     const out = [];
     for (const x of list(raw)) {
@@ -1018,13 +1033,13 @@ function parseRenderArgs(index, a) {
       focus,
       padding: num((a.focus && a.focus.padding), 1.35),
     },
-    roleOpacity: { primary: 1, context: num(a.supportOpacity, 0.4), ghost: num(a.contextOpacity, 0.08) },
+    roleOpacity: { primary: 1, context: num(a.supportOpacity, 0.55), ghost: num(a.contextOpacity, 0.25) },
     styles,
     annotations,
     caption: { title: t.value || '', note: n.value || '', place: a.burn_caption === false ? 'out' : 'in' },
     background: a.background === undefined ? 'light' : lower(a.background),
     size: { w: num(a.width, 960), h: num(a.height, 720) },
-    ss: a.supersample === true ? 1 : 0,
+    ss: a.supersample === false ? 0 : 1,
   });
 
   const err = validateScene(scene);
@@ -1057,10 +1072,13 @@ async function tRenderAnatomy(ctx, index, a) {
   const named = ids.map((id) => { const r = resolve(index, id); return { id, name: r.name, ...zhNames(r.row) }; });
   const shown = (n) => (scene.lang === 'zh-Hans' && n.name_zh_hans) || (scene.lang === 'zh-Hant' && n.name_zh_hant) || n.name;
 
-  // The link a human opens: `select=` is the exact list the page will report back, and the
-  // blob carries everything else. `snap` is NOT set — a person following this link wants
-  // the explorer's chrome, and the same blob renders the plate for the camera.
-  const url = buildUrl({ ids, lang: scene.lang }) + `&scene=${blob}`;
+  // THE LINK A HUMAN OPENS, and it must not be the plate. A render-mode blob puts the page
+  // into its chrome-less teaching mode, so following "Interactive 3D" would have handed
+  // Adrian a picture he could not orbit, search or explore — which is exactly the criterion
+  // the PRD's success test ends on. The link therefore carries an EXPLORE variant of the
+  // same scene: same structures, same roles and opacities, same camera, chrome restored.
+  const exploreBlob = encodeScene({ ...scene, mode: 'explore' });
+  const url = buildUrl({ ids, lang: scene.lang }) + `&scene=${exploreBlob}`;
   if (url.length > URL_CONTRACT.URL_MAX) {
     return toolError(`the composed URL would be ${url.length} characters, over the ${URL_CONTRACT.URL_MAX} limit — shorten the note or select fewer structures`);
   }
@@ -1085,6 +1103,11 @@ async function tRenderAnatomy(ctx, index, a) {
     }
   }
 
+  // BOUNDED. `unknown` is whatever the caller sent that this atlas does not carry, and a
+  // 256 KB request body can hold thousands of well-formed-but-absent ids — reporting them
+  // all would push the result past the client cap with no picture involved at all.
+  const unknownReport = unknown.slice(0, 10);
+
   let b64 = null;
   let stateNote = '';
   if (render.state === 'ok') {
@@ -1096,57 +1119,68 @@ async function tRenderAnatomy(ctx, index, a) {
   }
   if (render.state !== 'ok' && render.state !== 'skipped') stateNote = `\n\n(${render.error})`;
 
-  // Yield order when the assembled result is over the client cap. Two copies of the same
-  // base64 travel here, so on Claude both must fit inside one ~150,000-character budget.
-  let imageFits = !!b64 && b64.length <= MAX_IMAGE_BLOCK_B64;
-  let widgetFits = !!b64;
-  if (b64) {
-    const cost = (img, wid) => (img ? b64.length : 0) + (wid ? b64.length + 30 : 0) + 2500;
-    if (cost(imageFits, widgetFits) > MAX_RESULT_CHARS) {
-      // A caller that IDENTIFIED itself as Claude keeps the block (documented support) and
-      // loses the widget copy. Everyone else — including every unknown caller — keeps the
-      // widget, which is the carrier with evidence on this account, and loses the block.
-      if (client.kind === 'claude') widgetFits = false; else imageFits = false;
-    }
-    if (cost(imageFits, widgetFits) > MAX_RESULT_CHARS) { imageFits = false; widgetFits = false; stateNote = `\n\n(the rendered plate is too large to carry inline in this client; the link opens it)`; }
-  }
-
   const title = scene.caption.title || named.map(shown).join(scene.lang !== 'en' ? '、' : ', ');
   const note = scene.caption.note || '';
-  const text = [title, note, '', `Interactive 3D: ${url}`].filter((x, i) => x !== '' || i === 2).join('\n') + stateNote;
 
-  return toolBlocks([
-    // BARE base64, no data: prefix — that is what the MCP spec's ImageContent carries.
-    ...(imageFits ? [{ type: 'image', data: b64, mimeType: 'image/png' }] : []),
-    { type: 'text', text },
-  ], {
-    structuredContent: {
-      title,
-      note,
-      url,
-      ids,
-      names: named.map(shown),
-      names_shown: named.map(shown),
-      lang: scene.lang,
-      view: scene.camera.view,
-      focus: scene.camera.focus,
-      width: scene.size.w,
-      height: scene.size.h,
-      render_state: render.state === 'skipped' ? 'link_only' : render.state,
-      ...(render.cache ? { cache: render.cache } : {}),
-      ...(render.ms ? { render_ms: Number(render.ms) } : {}),
-      ...(render.settle ? { settle: render.settle } : {}),
-      // The picture size, always reported, because the size contract above is the thing
-      // most likely to silently decide whether a client sees anything.
-      ...(b64 ? { image_b64_chars: b64.length, image_bytes: render.bytes ? render.bytes.length : null } : {}),
-      image_block: imageFits,
-      client: client.kind,
-      ...(widgetFits ? { png_data_url: `data:image/png;base64,${b64}` } : {}),
-      ...(unknown.length ? { ids_unknown: unknown } : {}),
-      ...(ignored.length ? { ignored_fields: ignored } : {}),
-    },
-    _meta: { 'openai/outputTemplate': WIDGET_URI },
-  });
+  /**
+   * MEASURE THE RESULT, do not estimate it. An estimate can both ship something over the
+   * client's cap and throw away the one carrier that would have fitted. This assembles a
+   * candidate, serialises it, and only then decides — so the number the decision is made on
+   * is the number that goes on the wire.
+   */
+  const assemble = (withImage, withWidget, extraNote) => {
+    const body = [title, note, '', `Interactive 3D: ${url}`].filter((x, i) => x !== '' || i === 2).join('\n');
+    return toolBlocks([
+      // BARE base64, no data: prefix — that is what the MCP spec's ImageContent carries.
+      ...(withImage ? [{ type: 'image', data: b64, mimeType: 'image/png' }] : []),
+      { type: 'text', text: body + stateNote + (extraNote || '') },
+    ], {
+      structuredContent: {
+        title, note, url, ids,
+        names: named.map(shown),
+        names_shown: named.map(shown),
+        lang: scene.lang,
+        view: scene.camera.view,
+        focus: scene.camera.focus,
+        width: scene.size.w,
+        height: scene.size.h,
+        render_state: render.state === 'skipped' ? 'link_only' : render.state,
+        ...(render.cache ? { cache: render.cache } : {}),
+        ...(render.ms ? { render_ms: Number(render.ms) } : {}),
+        ...(render.settle ? { settle: render.settle } : {}),
+        // Always reported: the size contract is the thing most likely to decide silently
+        // whether this client sees anything at all.
+        ...(b64 ? { image_b64_chars: b64.length, image_bytes: render.bytes ? render.bytes.length : null } : {}),
+        image_block: withImage,
+        client: client.kind,
+        ...(withWidget ? { png_data_url: `data:image/png;base64,${b64}` } : {}),
+        ...(unknownReport.length ? { ids_unknown: unknownReport } : {}),
+        ...(unknown.length > unknownReport.length ? { ids_unknown_more: unknown.length - unknownReport.length } : {}),
+        ...(ignored.length ? { ignored_fields: ignored } : {}),
+      },
+      _meta: { 'openai/outputTemplate': WIDGET_URI },
+    });
+  };
+
+  const fits = (r) => JSON.stringify(r).length <= MAX_RESULT_CHARS;
+  if (!b64) return assemble(false, false);
+
+  // Yield order, measured. A caller that IDENTIFIED itself as Claude keeps the image block
+  // (Anthropic documents image tool results) and loses the widget copy; everyone else —
+  // including every unknown caller — keeps the widget, the carrier with positive evidence
+  // on this account, and loses the block. NEVER truncate, and NEVER re-render.
+  const wantImage = b64.length <= MAX_IMAGE_BLOCK_B64;
+  const both = assemble(wantImage, true);
+  if (fits(both)) return both;
+  const preferred = client.kind === 'claude'
+    ? [[wantImage, false], [false, true]]
+    : [[false, true], [wantImage, false]];
+  for (const [img, wid] of preferred) {
+    if (!img && !wid) continue;
+    const candidate = assemble(img, wid);
+    if (fits(candidate)) return candidate;
+  }
+  return assemble(false, false, '\n\n(the rendered plate is too large to carry inline in this client; the link opens it)');
 }
 
 /**

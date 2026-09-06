@@ -87,7 +87,11 @@ async function acquire(env) {
           if (!p.url().startsWith(SITE)) continue;
           // The page's OWN marker decides, not its URL: a tab that is still loading
           // the atlas would produce a blank render.
-          const isReady = await p.evaluate(() => document.documentElement.dataset.atlasReady === '1').catch(() => false);
+          // L30 P4: ...and a tab that is CARRYING AN ERROR is not reusable either. A page
+          // whose WebGL context was lost still reports ready, and re-driving it produces a
+          // blank or frozen screenshot that passes every downstream check.
+          const isReady = await p.evaluate(() => document.documentElement.dataset.atlasReady === '1'
+            && !document.documentElement.dataset.atlasError).catch(() => false);
           if (isReady) { ready = p; break; }
         }
       } catch { /* fall through to a new tab */ }
@@ -165,10 +169,29 @@ export default {
         if (!resp || resp.status() !== 200) {
           return fail(502, `the site answered ${resp ? resp.status() : 'nothing'} for the snapshot URL`, { target });
         }
-        await page.waitForSelector('html[data-atlas-ready="1"]', { timeout: READY_TIMEOUT_MS });
+        // L30 P4: the ready wait must ALSO break on an error, or a failed atlas fetch --
+        // which sets data-atlas-error and never sets data-atlas-ready -- burns the full
+        // two-minute timeout and exits through the generic 502 path, never reaching the
+        // 424 that says what actually happened.
+        await page.waitForFunction(
+          () => document.documentElement.dataset.atlasReady === '1' || !!document.documentElement.dataset.atlasError,
+          { timeout: READY_TIMEOUT_MS },
+        );
+        const early = await page.evaluate(() => document.documentElement.dataset.atlasError || '').catch(() => '');
+        if (early) return fail(424, `the page reported an error while rendering: ${String(early).slice(0, 120)}`, { target });
       } else {
         await page.setViewport({ width: size.width, height: size.height, deviceScaleFactor: 1 });
-        await page.evaluate((h) => { window.location.hash = h; }, reDriveHash(params));
+        // L30 P4: INVALIDATE SYNCHRONOUSLY, in the same evaluate that starts the re-drive.
+        // The page clears these markers too, but only once its hashchange handler runs --
+        // and between the assignment returning and React reacting, the waits below can
+        // observe the PREVIOUS request's markers and pass instantly. Two scenes over the
+        // same ids differ only in camera or opacity, so nothing downstream would notice.
+        await page.evaluate((h) => {
+          document.documentElement.removeAttribute('data-atlas-settled');
+          document.documentElement.removeAttribute('data-atlas-selected');
+          document.documentElement.removeAttribute('data-atlas-error');
+          window.location.hash = h;
+        }, reDriveHash(params));
       }
 
       // The SELECTION marker, not a sleep: the render is only meaningful once the
@@ -194,6 +217,26 @@ export default {
           { timeout: 10000 }, want,
         );
       }
+      // L30 P4: THE SCENE TOKEN. The selection wait cannot tell two scenes apart when they
+      // name the SAME structures and differ only in camera, opacity or caption -- which is
+      // the normal case for a teaching plate. `data-atlas-scene` carries a prefix of the
+      // blob the page actually applied, so this is the one wait that distinguishes them.
+      const wantScene = String(params.get('scene') || '').slice(0, 16);
+      let sceneAck = 'n/a';
+      if (wantScene) {
+        sceneAck = 'ok';
+        try {
+          await page.waitForFunction(
+            (w) => document.documentElement.dataset.atlasScene === w,
+            { timeout: reused ? 20000 : 30000 }, wantScene,
+          );
+        } catch {
+          // A site build older than P4 does not set it. Reported, never silently skipped:
+          // a check that cannot fire must at least say that it did not.
+          sceneAck = 'absent';
+        }
+      }
+
       // L30 P4: THE SETTLED MARKER, not a sleep. The camera fit is animated (OrbitControls
       // damping), and focus framing makes the flight longer, so the fixed 1.2/1.4 s wait
       // this replaces could screenshot a mid-flight camera — and R2 then caches that
@@ -243,6 +286,7 @@ export default {
         'X-Snap-Key': key,
         'X-Snap-Ms': String(Date.now() - started),
         'X-Snap-Settle': settle,
+        'X-Snap-Scene': sceneAck,
         'X-Snap-Session': sessionId || '',
       });
     } catch (err) {

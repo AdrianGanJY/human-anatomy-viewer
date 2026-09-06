@@ -292,6 +292,44 @@ test('the client guess is reported, never hidden', () => {
   assert.equal(clientFrom(ua('curl/8'), { FORCE_CLIENT: 'claude' }).kind, 'claude');
 });
 
+test('THIS request decides the client, never an earlier one in the same isolate', async () => {
+  const ua = (s) => ({ headers: { get: () => s } });
+  // A Claude `initialize` earlier in this isolate must not make a later ChatGPT request
+  // inherit Claude's budget and carrier — that is one connection reshaping another's payload.
+  await dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-ai', version: '1' } } },
+    { env: makeEnv(), origin: 'https://anatomy.adrian.my' }, OWNER);
+  assert.equal(clientFrom(ua('ChatGPT/1.0 (openai)'), {}).kind, 'chatgpt');
+  // ...but the remembered name is still the fallback when the User-Agent says nothing.
+  assert.equal(clientFrom(ua('node'), {}).kind, 'claude');
+});
+
+test('the INTERACTIVE LINK opens the explorer, not the chrome-less plate', async () => {
+  // A render-mode blob puts the page into teaching mode. Handing that back as "Interactive
+  // 3D" would give Adrian a picture he cannot orbit or search — which is the criterion the
+  // PRD success test ends on.
+  const snap = fakeSnap();
+  const res = await callRender(SCENE_ARGS, { ...makeEnv(), SNAP: snap.binding });
+  const linked = new URL(res.structuredContent.url);
+  const linkScene = pageCodec.decodeScene(linked.searchParams.get('scene'));
+  assert.equal(linkScene.mode, 'explore', 'the human link must carry an explore scene');
+  assert.equal(linked.searchParams.get('snap'), null);
+  // ...while what was RENDERED stays render mode.
+  const rendered = pageCodec.decodeScene(new URL(snap.calls[0]).searchParams.get('scene'));
+  assert.equal(rendered.mode, 'render');
+  // Same picture, same roles, same camera — only the chrome differs.
+  assert.deepEqual(linkScene.structures, rendered.structures);
+  assert.deepEqual(linkScene.camera, rendered.camera);
+  assert.deepEqual(linkScene.roleOpacity, rendered.roleOpacity);
+});
+
+test('a flood of unknown ids cannot inflate the result past the client cap', async () => {
+  const many = Array.from({ length: 5000 }, (_, i) => `FMA9${String(i).padStart(5, '0')}`);
+  const res = await callRender({ select: ['FMA22315', ...many] }, makeEnv());
+  assert.ok(res.structuredContent.ids_unknown.length <= 10, 'the unknown list is bounded');
+  assert.ok(res.structuredContent.ids_unknown_more > 0, 'and the remainder is COUNTED, not hidden');
+  assert.ok(JSON.stringify(res).length < 145000, `result was ${JSON.stringify(res).length} chars`);
+});
+
 test('the named groups in the tool text are ids that really exist in this atlas', () => {
   const ra = TOOLS.find((t) => t.name === 'render_anatomy');
   for (const id of ['FMA22357', 'FMA22438', 'FMA45887', 'FMA16580', 'FMA9611', 'FMA16203']) {

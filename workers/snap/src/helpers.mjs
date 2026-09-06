@@ -83,6 +83,13 @@ export function reDriveHash(params) {
     p.set('snap', '1');
     return `#${p.toString()}`;
   }
+  // THE OTHER DIRECTION OF THE SAME HAZARD (Astra, high). A legacy re-drive on a tab that
+  // previously rendered a SCENE could not clear it: the blob survives in the tab's query
+  // string, merge() finds it there, and the page takes its authoritative scene branch and
+  // ignores every legacy key in this hash. The selection still matched, so the wait passed
+  // and the PREVIOUS picture was cached under the new request's key. An explicit empty
+  // `scene` is defined as a CLEAR, and it is written on every legacy re-drive.
+  p.set('scene', '');
   p.set('select', params.get('select') || '');
   p.set('view', params.get('view') || 'three-quarter');
   p.set('isolate', params.get('isolate') === '0' ? '0' : '1');

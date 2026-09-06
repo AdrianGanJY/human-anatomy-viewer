@@ -56,10 +56,31 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   // every DRAWN part is the only oracle that can tell "a picture appeared" from "the picture
   // shows what was asked for" -- pixel statistics pass equally for the wrong muscles, the
   // wrong side of the body, or a stale plate served from cache.
-  (window as unknown as {__atlasTargets?:()=>unknown}).__atlasTargets=()=>({
-   w:el.clientWidth,h:el.clientHeight,
-   parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom})),
-  });
+  // `groups` resolves a NAMED concept to the union rect of its meshes. A part's own
+  // `conceptId` is NOT enough: FMA16203 "lumbar vertebral column" is a grouping of ten
+  // meshes whose individual concepts are the five vertebrae and the five discs, so matching
+  // by conceptId finds nothing and the check silently degrades to "structure absent".
+  // `camera` is exposed so a view assertion can read the direction rather than infer it
+  // from how wide something looks, which is the difference between proving the camera moved
+  // and guessing from a 3% change.
+  (window as unknown as {__atlasTargets?:(ids?:string[])=>unknown}).__atlasTargets=(ids?:string[])=>{
+   const drawn=new Map(targets.map(t=>[atlas.parts[t.index].id,t]));
+   const groups:Record<string,{left:number;right:number;top:number;bottom:number;n:number}>={};
+   for(const id of ids??[]){
+    const members=atlas.concepts.find(c=>c.id===id)?.elements??(drawn.has(id)?[id]:[]);
+    const hit=members.map(m=>drawn.get(m)).filter(Boolean) as typeof targets;
+    if(!hit.length)continue;
+    groups[id]={left:Math.min(...hit.map(t=>t.left)),right:Math.max(...hit.map(t=>t.right)),
+     top:Math.min(...hit.map(t=>t.top)),bottom:Math.max(...hit.map(t=>t.bottom)),n:hit.length};
+   }
+   return {
+    w:el.clientWidth,h:el.clientHeight,
+    camera:{x:camera.position.x,y:camera.position.y,z:camera.position.z,
+     tx:controls.target.x,ty:controls.target.y,tz:controls.target.z},
+    groups,
+    parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom})),
+   };
+  };
   const projected=new T.Vector3();
   const findTarget=(x:number,y:number,radius:number)=>{
    let best=-1,score=Infinity;

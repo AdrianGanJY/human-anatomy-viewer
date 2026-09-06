@@ -73,15 +73,30 @@ export const DEFAULTS = {
   lang: 'en',
   rest: { include: 'none', opacity: 0.08 },
   camera: { view: 'three-quarter', focus: [], padding: 1.35, explode: 0, rotate: false },
-  roleOpacity: { primary: 1, context: 0.4, ghost: 0.08 },
+  /**
+   * OPACITY IS RESOLVED BY COVERAGE, NOT BY BLENDING, so these are not the PRD's numbers.
+   *
+   * The renderer keeps a structure's fragments with probability = opacity and discards the
+   * rest (see the alphaHash hook in app/scene.tsx and the reason blending is unavailable
+   * here). LOOKED AT, 2026-09-07: the PRD's 0.40 for supporting structure and 0.08 for the
+   * rest of the body read as grainy noise and as nearly nothing — a coverage of 0.08 is one
+   * pixel in twelve, which is speckle rather than a ghost. 0.55 and 0.25 carry the PRD's
+   * intent ("supporting structure" and "a ghost of the body") under this renderer.
+   * The caller can still pass the PRD's literal numbers; they are simply fainter here.
+   */
+  roleOpacity: { primary: 1, context: 0.55, ghost: 0.25 },
   caption: { title: '', note: '', place: 'in' },
   background: 'light',
   size: { w: 960, h: 720 },
-  /** Supersample: draw the WebGL backing store at 2x the plate and let the browser
-   *  downsample on composite. alphaHash ghosting is a stochastic per-pixel dither, and
-   *  averaging four samples is the only way to turn it into a smooth wash that costs
-   *  zero extra draw calls. 0 = off. Inside the blob, so it is part of the cache key. */
-  ss: 0,
+  /**
+   * Supersample: draw the WebGL backing store at 2x the plate and let the browser
+   * downsample it on composite. Four samples averaged per output pixel is what turns the
+   * coverage dither from speckle into a wash, at ZERO extra draw calls and zero extra
+   * vertices — the only cure available without a second render pass. On by default for
+   * plates (app/scene.tsx applies it only in render mode, never in the interactive
+   * explorer). Inside the blob, so it is part of the render cache key.
+   */
+  ss: 1,
 };
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -177,6 +192,9 @@ export function normalizeScene(input) {
   const rawCap = (raw.caption && typeof raw.caption === 'object') ? raw.caption : {};
   const rawSize = (raw.size && typeof raw.size === 'object') ? raw.size : {};
 
+  // Framing treats focus as a SET — the camera unions their bounds — so two calls that
+  // name the same ids in a different order must produce the same blob and share one
+  // cached picture. Deduped and sorted.
   const focusSeen = new Set();
   const focus = [];
   for (const id of (Array.isArray(rawCam.focus) ? rawCam.focus : [])) {
@@ -184,6 +202,7 @@ export function normalizeScene(input) {
     focusSeen.add(id);
     focus.push(id);
   }
+  focus.sort();
 
   const opacity = (v, dflt) => (isNum(v) ? round3(clamp(v, 0, 1)) : dflt);
 
@@ -220,7 +239,9 @@ export function normalizeScene(input) {
       w: isNum(rawSize.w) ? Math.round(rawSize.w) : d.size.w,
       h: isNum(rawSize.h) ? Math.round(rawSize.h) : d.size.h,
     },
-    ss: raw.ss === 1 || raw.ss === true ? 1 : 0,
+    // ABSENT means "the default", not "off". Reading it as off is how a default flips to 0
+    // for every caller that simply did not mention the field.
+    ss: raw.ss === undefined || raw.ss === null ? d.ss : (raw.ss === 1 || raw.ss === true ? 1 : 0),
   };
 }
 
@@ -314,10 +335,17 @@ export function canonicalScene(scene) {
   if (!same(scene.roleOpacity, d.roleOpacity)) out.roleOpacity = scene.roleOpacity;
   if (scene.styles.length) out.styles = scene.styles;
   if (scene.annotations.length) out.annotations = scene.annotations;
+  // CAPTION TEXT ONLY COUNTS WHEN IT IS IN THE PICTURE. `place:'out'` means the words are
+  // shown by the chat client, not drawn on the plate — so two calls that differ only in
+  // their sentence render the SAME pixels and must share one cached picture. Keeping the
+  // text in the key there would silently make every new sentence a fresh metered render,
+  // which is precisely what burn_caption:false promises to avoid.
   const cap = {};
-  if (scene.caption.title) cap.title = scene.caption.title;
-  if (scene.caption.note) cap.note = scene.caption.note;
   if (scene.caption.place !== d.caption.place) cap.place = scene.caption.place;
+  if (scene.caption.place === 'in') {
+    if (scene.caption.title) cap.title = scene.caption.title;
+    if (scene.caption.note) cap.note = scene.caption.note;
+  }
   if (Object.keys(cap).length) out.caption = cap;
   if (scene.background !== d.background) out.background = scene.background;
   if (!same(scene.size, d.size)) out.size = scene.size;
@@ -325,9 +353,15 @@ export function canonicalScene(scene) {
   return JSON.stringify(out);
 }
 
-/** normalize -> canonicalise -> base64url. Feed it anything; it returns a stable blob. */
+/**
+ * normalize -> canonicalise -> base64url. Feed it anything; it returns a stable blob.
+ * It normalizes UNCONDITIONALLY: the previous version skipped that step whenever the input
+ * carried a `v`, so a versioned-but-otherwise-raw object bypassed sorting and defaulting and
+ * threw on the first missing sub-object. normalizeScene is idempotent, so re-running it on
+ * an already-normalized scene costs one pass and cannot change the result.
+ */
 export function encodeScene(scene) {
-  return b64urlEncode(canonicalScene(scene.v === undefined ? normalizeScene(scene) : scene));
+  return b64urlEncode(canonicalScene(normalizeScene(scene)));
 }
 
 /**

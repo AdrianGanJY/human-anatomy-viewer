@@ -64,12 +64,38 @@ test('20 fixtures round-trip, and canonical form is a FIXED POINT', () => {
   for (const f of fixtures) {
     const blob = encodeScene(f);
     const back = decodeScene(blob);
-    assert.deepEqual(back, f, 'decode(encode(scene)) must be the scene');
+    // The blob is a CACHE KEY, so it carries exactly what the PICTURE depends on. Caption
+    // text at place:'out' is shown by the chat client and never drawn on the plate, so it
+    // is deliberately absent from the blob — two calls that differ only in their sentence
+    // must share one cached picture, which is what burn_caption:false promises.
+    const expected = f.caption.place === 'out' ? { ...f, caption: { ...f.caption, title: '', note: '' } } : f;
+    assert.deepEqual(back, expected, 'decode(encode(scene)) must be the scene, minus what the picture does not depend on');
     // The fixed point is what makes the blob a correct cache key: re-encoding what came
     // out of the cache key must produce the SAME cache key.
     assert.equal(encodeScene(back), blob, 'encode(decode(blob)) must be the blob');
   }
   assert.equal(new Set(fixtures.map(encodeScene)).size, 20, 'no two distinct scenes may share a blob');
+});
+
+test('burn_caption:false really does share one cached picture across different sentences', () => {
+  // The promise in the tool description. Same pixels -> same blob -> one metered render.
+  const withText = (title) => normalizeScene({ ...forwardBend(), caption: { title, note: `note ${title}`, place: 'out' } });
+  assert.equal(encodeScene(withText('A')), encodeScene(withText('B')));
+  // ...and burning it in must split the key, because then the pixels really do differ.
+  const burned = (title) => normalizeScene({ ...forwardBend(), caption: { title, note: '', place: 'in' } });
+  assert.notEqual(encodeScene(burned('A')), encodeScene(burned('B')));
+});
+
+test('focus is a SET: naming the same ids in another order is the same picture', () => {
+  const a = normalizeScene({ ...forwardBend(), camera: { view: 'side', focus: ['FMA16580', 'FMA22357'] } });
+  const b = normalizeScene({ ...forwardBend(), camera: { view: 'side', focus: ['FMA22357', 'FMA16580'] } });
+  assert.equal(encodeScene(a), encodeScene(b));
+});
+
+test('encodeScene normalizes ANYTHING, including a versioned but raw object', () => {
+  assert.equal(typeof encodeScene({ v: 1, structures: ['FMA22357'] }), 'string');
+  assert.equal(typeof encodeScene({ structures: [{ id: 'FMA22357' }] }), 'string');
+  assert.equal(decodeScene(encodeScene({ v: 1, structures: ['FMA22357'] })).structures[0].id, 'FMA22357');
 });
 
 test('semantically identical scenes produce the SAME blob, so they share one cached picture', () => {
@@ -82,6 +108,7 @@ test('defaults are DROPPED, so a plain scene stays small enough for a URL', () =
   const blob = encodeScene(normalizeScene({ structures: [{ id: 'FMA22357' }] }));
   const json = canonicalScene(normalizeScene({ structures: [{ id: 'FMA22357' }] }));
   assert.equal(json, JSON.stringify({ v: SCENE_V, s: ['FMA22357'] }));
+  assert.equal(DEFAULTS.ss, 1, 'supersampling is the plate default — a plain scene must not carry ss at all');
   assert.ok(blob.length < 40, `${blob.length} chars`);
   assert.ok(encodeScene(normalizeScene(forwardBend())).length < LIMITS.SCENE_MAX_B64,
     'the PRD section 9 scene must fit the URL budget');
@@ -109,7 +136,10 @@ test('roles resolve to opacity, and an explicit style beats the role', () => {
     structures: [{ id: 'A', role: 'primary' }, { id: 'B', role: 'context' }, { id: 'C', role: 'ghost' }],
     styles: [{ id: 'C', opacity: 0.5 }],
   });
-  assert.deepEqual(structureOpacity(s), { A: 1, B: 0.4, C: 0.5 });
+  // The role defaults are CALIBRATED FOR COVERAGE, not blending — see DEFAULTS.roleOpacity.
+  assert.deepEqual(structureOpacity(s), { A: 1, B: DEFAULTS.roleOpacity.context, C: 0.5 });
+  assert.equal(DEFAULTS.roleOpacity.context, 0.55);
+  assert.equal(DEFAULTS.roleOpacity.ghost, 0.25);
 });
 
 test('contextOpacity 0 reproduces isolate exactly — nothing is drawn but the primaries', () => {
@@ -212,6 +242,17 @@ test('reDriveHash writes the P4 aliases EXPLICITLY so a warm tab can be reset', 
   for (const k of ['mode', 'focus', 'contextOpacity']) {
     assert.equal(p.get(k), '', `${k} must be written empty, not omitted`);
   }
+});
+
+test('a LEGACY re-drive can get a warm tab OUT of a scene', () => {
+  // The other direction of the top hazard: without an explicit clear, the blob survives in
+  // the tab's own query string, the page takes its authoritative scene branch, ignores every
+  // legacy key in this hash, and the PREVIOUS picture is cached under the new key.
+  const p = new URLSearchParams(reDriveHash(new URLSearchParams({ select: 'A', view: 'back' })).slice(1));
+  assert.equal(p.get('scene'), '', 'the legacy branch must clear the scene explicitly');
+  // ...and the page must READ that as a clear, not merely fail to find a blob.
+  const src = readFileSync(join(ROOT, 'app', 'url-state.ts'), 'utf8');
+  assert.match(src, /clearScene\s*=\s*true/, 'app/url-state.ts must treat an empty scene= as a clear');
 });
 
 /**

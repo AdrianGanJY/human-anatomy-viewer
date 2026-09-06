@@ -32,6 +32,8 @@ import {decodeScene,normalizeScene,type Scene} from './scene-model';
 export interface UrlState {select?:string[];visible?:SystemId[];isolate?:boolean;view?:View;explode?:number;snap?:boolean;title?:string;note?:string;lang?:Lang;
  /** The decoded scene, when the URL carried one (or enough aliases to synthesize one). */
  scene?:Scene;sceneBlob?:string;
+ /** An explicit `scene=` with an empty value: leave the scene, do not merely fail to find one. */
+ clearScene?:boolean;
  /** Raw alias values, kept separate so readUrlState can synthesize AFTER both sources merge. */
  mode?:'render'|'explore';focus?:string[];contextOpacity?:number}
 /** Bounds. A caption is a caption, not a document; a selection of everything is not a selection. */
@@ -72,10 +74,15 @@ function merge(source:string,out:UrlState){
  const lang=p.get('lang');if(lang&&isLang(lang.trim()))out.lang=lang.trim() as Lang;
  // THE SCENE. A blob that does not decode is ignored, never guessed at -- a corrupt or
  // hostile `scene=` must degrade to "no scene", not to a broken page.
+ // An EXPLICIT EMPTY value is a CLEAR, and it is the only way a legacy re-drive can get a
+ // warm tab out of a scene: the blob otherwise survives in the tab's own query string, and
+ // the authoritative scene apply below would then ignore every legacy key in the new hash
+ // and cache the PREVIOUS picture under the new request's key.
  const blob=p.get('scene');
  if(blob!==null){
-  const decoded=decodeScene(blob.trim());
-  if(decoded){out.scene=decoded;out.sceneBlob=blob.trim();}
+  const trimmed=blob.trim();
+  if(!trimmed){out.scene=undefined;out.sceneBlob=undefined;out.clearScene=true;}
+  else{const decoded=decodeScene(trimmed);if(decoded){out.scene=decoded;out.sceneBlob=trimmed;out.clearScene=false;}}
  }
  // The three PRD aliases. Empty means RESET -- see the file header.
  const mode=p.get('mode');

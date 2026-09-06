@@ -153,16 +153,26 @@ async function regionLuminance(analyser, buf, rect) {
   }, { b64: buf.toString('base64'), r: rect });
 }
 
-const targetsFor = (page) => page.evaluate(() => (window.__atlasTargets ? window.__atlasTargets() : null));
-const unionRect = (t, conceptIds) => {
-  const want = new Set(conceptIds);
-  const hit = t.parts.filter((p) => want.has(p.concept) || want.has(p.id));
-  if (!hit.length) return null;
+// A NAMED concept resolves through the page, not through part.conceptId: FMA16203 "lumbar
+// vertebral column" is a grouping of ten meshes whose own concepts are the five vertebrae
+// and the five discs, so matching on conceptId finds nothing and the check degrades to
+// "structure absent" — which is exactly how an instrument bug reads as a product bug.
+const ALL_IDS = [...Object.values(L), 'FMA22315'];
+const targetsFor = (page) => page.evaluate((ids) => (window.__atlasTargets ? window.__atlasTargets(ids) : null), ALL_IDS);
+const unionRect = (t, ids) => {
+  const boxes = ids.map((id) => t.groups[id]).filter(Boolean);
+  if (!boxes.length) return null;
   return {
-    left: Math.min(...hit.map((p) => p.left)), right: Math.max(...hit.map((p) => p.right)),
-    top: Math.min(...hit.map((p) => p.top)), bottom: Math.max(...hit.map((p) => p.bottom)),
-    n: hit.length,
+    left: Math.min(...boxes.map((b) => b.left)), right: Math.max(...boxes.map((b) => b.right)),
+    top: Math.min(...boxes.map((b) => b.top)), bottom: Math.max(...boxes.map((b) => b.bottom)),
+    n: boxes.reduce((a, b) => a + b.n, 0),
   };
+};
+/** Unit camera direction from target to eye — the thing `view` is supposed to control. */
+const camDir = (t) => {
+  const d = [t.camera.x - t.camera.tx, t.camera.y - t.camera.ty, t.camera.z - t.camera.tz];
+  const n = Math.hypot(...d) || 1;
+  return d.map((v) => v / n);
 };
 
 const analyserCtx = await browser.newContext();
@@ -251,16 +261,24 @@ try {
     wide.offBackground < px.offBackground,
     `padding 1.35 -> ${(px.offBackground * 100).toFixed(1)}% ink, padding 2.4 -> ${(wide.offBackground * 100).toFixed(1)}%`);
 
-  // view really is honoured now (it was ignored whenever isolate was on)
-  const sideT = await (async () => { await drive(page, forwardBend(), { viaHash: true }); return targetsFor(page); })();
-  const frontT = await (async () => {
-    await drive(page, forwardBend({ camera: { ...scene.camera, view: 'front' } }), { viaHash: true });
-    return targetsFor(page);
-  })();
-  const sideHip = unionRect(sideT, [L.hipBone]); const frontHip = unionRect(frontT, [L.hipBone]);
-  const widthRatio = (frontHip.right - frontHip.left) / (sideHip.right - sideHip.left);
-  check('B6 view=side and view=front really are different cameras', Math.abs(widthRatio - 1) > 0.15,
-    `hip-bone screen width ratio front/side = ${widthRatio.toFixed(2)}`);
+  // `view` really is honoured now. Read the CAMERA, do not infer it from how wide something
+  // looks: `view` was silently ignored whenever isolate was on (the direction at that line
+  // was a hard-coded vector), and a width ratio can sit near 1.0 for a shape that happens to
+  // be similar from two angles. The direction is the claim, so measure the direction.
+  const dirFor = (v) => (v === 'front' ? [0, 0.02, 1] : v === 'back' ? [0, 0.02, -1] : v === 'side' ? [1, 0.02, 0] : [0.35, 0.06, 1]);
+  const unit = (d) => { const n = Math.hypot(...d); return d.map((x) => x / n); };
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const seen = {};
+  for (const v of ['side', 'front', 'back']) {
+    await drive(page, forwardBend({ camera: { ...scene.camera, view: v } }), { viaHash: true });
+    seen[v] = camDir(await targetsFor(page));
+  }
+  const aligned = ['side', 'front', 'back'].map((v) => ({ v, d: dot(seen[v], unit(dirFor(v))) }));
+  check('B6 the camera really points where `view` says (dot > 0.9 for each)',
+    aligned.every((a) => a.d > 0.9), aligned.map((a) => `${a.v} ${a.d.toFixed(3)}`).join(' · '));
+  check('B7 side, front and back are three DIFFERENT cameras',
+    dot(seen.side, seen.front) < 0.9 && dot(seen.front, seen.back) < 0.9,
+    `side.front ${dot(seen.side, seen.front).toFixed(2)} · front.back ${dot(seen.front, seen.back).toFixed(2)}`);
 
   // ── C. GHOST ANATOMY ───────────────────────────────────────────────────────
   const ghostSamples = [];
