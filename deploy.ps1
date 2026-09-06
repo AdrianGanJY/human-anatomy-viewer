@@ -1,4 +1,4 @@
-# Build + deploy anatomy.adrian.my (Cloudflare Pages project `adrian-anatomy`, Adrey account).
+# Build + deploy anatomy.adrian.my (Cloudflare Pages project `human-anatomy-viewer`, Adrey account).
 # Usage: pwsh -File ./deploy.ps1
 #
 # Why the env file and not the wrangler OAuth session: since 2026-09-06 the OAuth session on this
@@ -18,7 +18,7 @@ try {
   npm run build
   if ($LASTEXITCODE -ne 0) { throw 'vite build failed' }
 
-  npx wrangler pages deploy dist --project-name adrian-anatomy --branch main --commit-dirty=true
+  npx wrangler pages deploy dist --project-name human-anatomy-viewer --branch main --commit-dirty=true
   if ($LASTEXITCODE -ne 0) { throw 'wrangler pages deploy failed' }
 
   Write-Host ''

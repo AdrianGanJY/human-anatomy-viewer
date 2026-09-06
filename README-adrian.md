@@ -1,4 +1,4 @@
-# This fork — anatomy.adrian.my
+# human-anatomy-viewer — the fork behind anatomy.adrian.my
 
 A fork of [`ashemag/human-atlas`](https://github.com/ashemag/human-atlas) (MIT code, CC BY 4.0
 anatomy from BodyParts3D 4.0), hosted at **https://anatomy.adrian.my** so an AI assistant can point
@@ -12,7 +12,7 @@ anatomy inspection", 2026-09-06).
 
 | Remote | Repo |
 |---|---|
-| `origin` | `AdrianGanJY/anatomy-atlas` (this fork — push here) |
+| `origin` | `AdrianGanJY/human-anatomy-viewer` (this fork — push here) |
 | `upstream` | `ashemag/human-atlas` (read-only) |
 
 Upstream moves fast, so the local changes are deliberately small and rebase-able:
@@ -58,7 +58,7 @@ are untouched and still register; they work inside browsers that expose `documen
 
 ## Hosting
 
-Cloudflare Pages project **`adrian-anatomy`** (Adrey account), custom domain `anatomy.adrian.my`,
+Cloudflare Pages project **`human-anatomy-viewer`** (Adrey account), custom domain `anatomy.adrian.my`,
 gated by the estate-wide `*.adrian.my` Cloudflare Access application. Static build only — nothing
 runs at request time; Node is the build toolchain.
 
