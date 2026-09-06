@@ -21,6 +21,6 @@ pages_build_output_dir = "dist"
 # service-token JWT carries as `common_name` (it has no `email` claim at all).
 [vars]
 ACCESS_TEAM_DOMAIN = "adrey.cloudflareaccess.com"
-ACCESS_AUD         = ""
+ACCESS_AUD         = "49062b6890f5ac56aa3fae146328acaa5bc9472c189120efe7d731463b9679d2"
 OWNER_EMAILS       = "adrianganjy@gmail.com,adrey.journey@gmail.com,mipos.agent@gmail.com"
 OWNER_TOKEN_IDS    = "cf98efdf672cbd866da74d5b1d2078fd.access"
