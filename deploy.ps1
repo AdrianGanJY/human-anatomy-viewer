@@ -7,9 +7,14 @@
 # So the token is loaded explicitly here and nulled again on the way out.
 #
 # Order matters:
-#   1. scripts/build-index.mjs writes public/api/index.json (the /mcp Function's only data source)
-#   2. vite build copies public/ -> dist/ , so the index and public/_routes.json land in the deploy
-#   3. wrangler pages deploy is run WITHOUT a directory argument: wrangler.toml sets
+#   1. scripts/build-zh.mjs writes public/i18n/*.json (the Chinese dictionaries the app lazy-loads)
+#      -- offline and deterministic; it reads scripts/zh-llm-cache.json and never calls a model
+#   2. scripts/build-index.mjs writes public/api/index.json (the /mcp Function's only data source)
+#      -- it READS the dictionaries from step 1, so it must run after them or /mcp ships with no
+#      Chinese names while the page has them
+#   3. vite build copies public/ -> dist/ , so the index, the dictionaries and public/_routes.json
+#      land in the deploy
+#   4. wrangler pages deploy is run WITHOUT a directory argument: wrangler.toml sets
 #      pages_build_output_dir, and passing the directory as well is what produces a stale
 #      Functions bundle (.claude/rules/infra/deploy-rules.md).
 $ErrorActionPreference = 'Stop'
@@ -22,14 +27,19 @@ foreach ($line in Get-Content $envFile) {
 }
 
 try {
+  node scripts/build-zh.mjs
+  if ($LASTEXITCODE -ne 0) { throw 'build-zh failed' }
+
   node scripts/build-index.mjs
   if ($LASTEXITCODE -ne 0) { throw 'build-index failed' }
 
   npm run build
   if ($LASTEXITCODE -ne 0) { throw 'vite build failed' }
 
-  if (-not (Test-Path 'dist/api/index.json')) { throw 'dist/api/index.json missing - the /mcp tools would all fail' }
-  if (-not (Test-Path 'dist/_routes.json'))   { throw 'dist/_routes.json missing - the SPA would swallow /mcp' }
+  if (-not (Test-Path 'dist/api/index.json'))     { throw 'dist/api/index.json missing - the /mcp tools would all fail' }
+  if (-not (Test-Path 'dist/_routes.json'))       { throw 'dist/_routes.json missing - the SPA would swallow /mcp' }
+  if (-not (Test-Path 'dist/i18n/zh-Hans.json'))  { throw 'dist/i18n/zh-Hans.json missing - the language switch would 404' }
+  if (-not (Test-Path 'dist/i18n/zh-Hant.json'))  { throw 'dist/i18n/zh-Hant.json missing - the language switch would 404' }
 
   npx wrangler pages deploy --project-name human-anatomy-viewer --branch main --commit-dirty=true
   if ($LASTEXITCODE -ne 0) { throw 'wrangler pages deploy failed' }

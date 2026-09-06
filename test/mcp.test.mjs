@@ -26,10 +26,17 @@ const INDEX = {
     { id: 'skeletal', name: 'Skeleton', description: 'Bones form the framework.', concepts: 1, pieces: 3 },
   ],
   concepts: [
-    { id: 'FMA22315', name: 'gluteus medius', system: 'muscular', pieces: 2 },
-    { id: 'FMA22314', name: 'gluteus maximus', system: 'muscular', pieces: 2 },
-    { id: 'FMA18060', name: 'psoas major', system: 'muscular', pieces: 2, systems: ['muscular', 'skeletal'] },
-    { id: 'FMA16580', name: 'heart', system: 'skeletal', pieces: 3, explanation: 'A muscular pump in the chest.' },
+    { id: 'FMA22315', name: 'gluteus medius', system: 'muscular', pieces: 2, name_zh_hans: '臀中肌', name_zh_hant: '臀中肌' },
+    { id: 'FMA22314', name: 'gluteus maximus', system: 'muscular', pieces: 2, name_zh_hans: '臀大肌', name_zh_hant: '臀大肌' },
+    { id: 'FMA18060', name: 'psoas major', system: 'muscular', pieces: 2, systems: ['muscular', 'skeletal'], name_zh_hans: '腰大肌', name_zh_hant: '腰大肌' },
+    { id: 'FMA16580', name: 'heart', system: 'skeletal', pieces: 3, explanation: 'A muscular pump in the chest.', name_zh_hans: '心脏', name_zh_hant: '心臟' },
+    // Deliberately no Chinese: the tools must degrade to English per-row, not per-deployment.
+    { id: 'FMA00001', name: 'unnamed structure', system: 'muscular', pieces: 1 },
+  ],
+  // P3: individual meshes. A part id is a legal `select=` value on the live page.
+  parts: [
+    { id: 'FJ0001', name: 'Right gluteus medius', concept: 'FMA22315', system: 'muscular', name_zh_hans: '右臀中肌', name_zh_hant: '右臀中肌' },
+    { id: 'FJ0002', name: 'Left gluteus medius', concept: 'FMA22315', system: 'muscular', name_zh_hans: '左臀中肌', name_zh_hant: '左臀中肌' },
   ],
 };
 
@@ -86,7 +93,14 @@ test('isId refuses anything that is not an atlas identifier', () => {
 
 // ── argument hygiene ────────────────────────────────────────────────────────
 
-const idx = { ...INDEX, _byId: new Map(INDEX.concepts.map((c) => [c.id, c])), _systemById: new Map(INDEX.systems.map((s) => [s.id, s])) };
+// Built exactly the way getIndex() builds it, so a fixture cannot pass a shape the server
+// would never see.
+const idx = {
+  ...INDEX,
+  _byId: new Map(INDEX.concepts.map((c) => [c.id, c])),
+  _systemById: new Map(INDEX.systems.map((s) => [s.id, s])),
+  _partById: new Map(INDEX.parts.map((p) => [p.id, p])),
+};
 
 test('parseViewArgs isolates by default — naming structures means wanting to see them', () => {
   assert.equal(parseViewArgs(idx, { select: ['FMA22315'] }).isolate, true);
@@ -282,4 +296,67 @@ test('_access.js is byte-identical to the hub copy it was vendored from', () => 
   const mine = readFileSync(join(ROOT, 'functions', '_access.js'));
   const hub = readFileSync('E:/Agentic/apps/hub/functions/_access.js');
   assert.equal(Buffer.compare(mine, hub), 0, 'functions/_access.js has drifted from apps/hub/functions/_access.js');
+});
+
+// ── P3: Chinese names, the lang pass-through, and part ids ──────────────────
+
+const callP3 = async (name, args, env) => parsed(await call(name, args, env ? { env } : {}));
+const rawP3 = async (name, args) => (await call(name, args)).content[0].text;
+
+test('search matches a SIMPLIFIED query, not only English', async () => {
+  const out = await callP3('find_anatomy', { query: '臀中肌' });
+  assert.equal(out.results[0].id, 'FMA22315', JSON.stringify(out.results));
+  assert.equal(out.results[0].name_zh_hans, '臀中肌');
+});
+
+test('search matches a TRADITIONAL query too — the caller need not declare a script', async () => {
+  // 心臟 exists only in name_zh_hant; 心脏 only in name_zh_hans. Both must find the heart,
+  // which is the whole point of matching across every script rather than the current one.
+  assert.equal((await callP3('find_anatomy', { query: '心臟' })).results[0]?.id, 'FMA16580');
+  assert.equal((await callP3('find_anatomy', { query: '心脏' })).results[0]?.id, 'FMA16580');
+});
+
+test('a row WITHOUT Chinese degrades to English alone, and does not invent a key', () => {
+  const withZh = __test__.shape(idx, idx._byId.get('FMA22315'));
+  const without = __test__.shape(idx, idx._byId.get('FMA00001'));
+  assert.equal(withZh.name_zh_hans, '臀中肌');
+  assert.equal('name_zh_hans' in without, false);
+  assert.equal(without.name, 'unnamed structure');
+});
+
+test('compose_view puts lang in the URL, and leaves it out for English', async () => {
+  const zh = await callP3('compose_view', { select: ['FMA22315', 'FMA22314'], lang: 'zh-Hans' });
+  assert.match(zh.url, /lang=zh-Hans/);
+  assert.equal(zh.lang, 'zh-Hans');
+  // The names it reports are the ones the user will actually SEE when the link opens.
+  assert.deepEqual(zh.names_shown, ['臀中肌', '臀大肌']);
+  const en = await callP3('compose_view', { select: ['FMA22315'] });
+  assert.equal(/lang=/.test(en.url), false, en.url);
+  assert.deepEqual(en.names_shown, ['gluteus medius']);
+});
+
+test('compose_view refuses an unknown lang instead of silently opening in English', async () => {
+  const res = await call('compose_view', { select: ['FMA22315'], lang: 'zh-Hong' });
+  assert.equal(res.isError, true);
+  assert.match(await rawP3('compose_view', { select: ['FMA22315'], lang: 'zh-Hong' }), /unknown lang/i);
+});
+
+test('a PART id resolves — it is a legal select= value on the live page', async () => {
+  const v = parseViewArgs(idx, { select: ['FJ0001'] });
+  assert.deepEqual(v.ids, ['FJ0001']);
+  assert.deepEqual(v.unknown, []);
+  const out = await callP3('get_structure', { id: 'FJ0001' });
+  assert.equal(out.kind, 'mesh');
+  assert.equal(out.name_zh_hans, '右臀中肌');
+  assert.equal(out.part_of.id, 'FMA22315');
+});
+
+test('the snapshot URL drops lang and the caption, so one picture is one cache entry', async () => {
+  const seen = [];
+  const env = { ...makeEnv(), SNAP: { fetch: async (req) => { seen.push(req.url); return new Response('nope', { status: 500 }); } } };
+  await callP3('compose_view', { select: ['FMA22315'], lang: 'zh-Hant', title: 'A', note: 'B', snapshot: true }, env);
+  assert.equal(seen.length, 1, JSON.stringify(seen));
+  assert.equal(/lang=/.test(seen[0]), false, seen[0]);
+  assert.equal(/title=|note=/.test(seen[0]), false, seen[0]);
+  assert.match(seen[0], /select=FMA22315/);
 });

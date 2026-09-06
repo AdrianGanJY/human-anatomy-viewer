@@ -58,6 +58,9 @@ const URL_CONTRACT = {
   SELECT_MAX: 24,
   URL_MAX: 2000,
   VIEWS: ['three-quarter', 'front', 'back', 'side'],
+  // P3: the interface language of the page the link opens. `en` is the default and is left
+  // out of the URL entirely, so an English link is byte-identical to the ones P2 shipped.
+  LANGS: ['en', 'zh-Hans', 'zh-Hant'],
 };
 
 const DEFAULT_FIND_LIMIT = 30;
@@ -189,6 +192,10 @@ async function getIndex(ctx) {
   if (parsed) {
     parsed._byId = new Map(parsed.concepts.map((c) => [c.id, c]));
     parsed._systemById = new Map(parsed.systems.map((s) => [s.id, s]));
+    // P3: the individual meshes. A PART id is a legal `select=` value on the live page and
+    // always has been, so resolving one here is what stops compose_view reporting a working
+    // id as unknown. Older index files have no `parts` — an empty map, not a crash.
+    parsed._partById = new Map((parsed.parts || []).map((p) => [p.id, p]));
   }
   indexByEnv.set(ctx.env, parsed);
   return parsed;
@@ -205,9 +212,10 @@ const noIndex = () => toolError(
  * Build the deep link. Every value is percent-encoded by URLSearchParams; ids were
  * already checked against ID_RE, so nothing here can add a parameter.
  */
-function buildUrl({ ids, view, isolate, explode, snap, title, note, size }) {
+function buildUrl({ ids, view, isolate, explode, snap, title, note, size, lang }) {
   const p = new URLSearchParams();
   if (ids?.length) p.set('select', ids.join(','));
+  if (lang && lang !== 'en') p.set('lang', lang);
   if (isolate) p.set('isolate', '1');
   if (view && view !== 'three-quarter') p.set('view', view);
   if (typeof explode === 'number' && explode > 0) p.set('explode', explode.toFixed(2));
@@ -244,9 +252,10 @@ function parseViewArgs(index, a) {
 
   // Resolved against the index, so the caller is TOLD which ids the viewer will
   // ignore rather than being handed a link that quietly shows fewer structures.
+  // Concept ids AND part ids resolve, because the page accepts both.
   const resolved = [];
   const unknown = [];
-  for (const id of cleaned) (index._byId.has(id) ? resolved : unknown).push(id);
+  for (const id of cleaned) (index._byId.has(id) || index._partById.has(id) ? resolved : unknown).push(id);
   if (!resolved.length) {
     return { error: `none of these ids are in this atlas: ${unknown.join(', ')} — call find_anatomy first (ids look like FMA22315)` };
   }
@@ -267,10 +276,15 @@ function parseViewArgs(index, a) {
   const n = captionText(a.note, URL_CONTRACT.NOTE_MAX, 'note');
   if (n.error) return { error: n.error };
 
+  const lang = a.lang === undefined ? undefined : str(a.lang);
+  if (lang !== undefined && !URL_CONTRACT.LANGS.includes(lang)) {
+    return { error: `unknown lang "${a.lang}" — one of ${URL_CONTRACT.LANGS.join(', ')}` };
+  }
+
   // `isolate` defaults ON: the whole point of naming structures is to see THEM. A
   // caller that wants them in context passes isolate:false.
   const isolate = a.isolate === undefined ? true : a.isolate;
-  return { ids: resolved, unknown, view, isolate, explode, title: t.value, note: n.value };
+  return { ids: resolved, unknown, view, isolate, explode, title: t.value, note: n.value, lang };
 }
 
 // ── tool registry ───────────────────────────────────────────────────────────
@@ -279,8 +293,10 @@ const INSTRUCTIONS = `A 3D human anatomy viewer (anatomy.adrian.my) that you can
 
 The atlas: 3,432 named structures (BodyParts3D), 2,234 individual meshes, grouped into 15 systems. Ids are FMA identifiers and look like FMA22315. Names are stored lowercase.
 
+CHINESE. Every structure also carries a 简体 and a 繁體 name (standard mainland 人体解剖学名词). You can SEARCH in Chinese — find_anatomy({query:"臀中肌"}) works — and you can pass lang:"zh-Hans" or "zh-Hant" to compose_view so the viewer opens in that script, with the English kept as a second line under each name. If Adrian writes to you in Chinese, use it.
+
 The normal flow
-1. find_anatomy({query:"gluteus"}) to turn words into ids. Search is case-insensitive over names and ids.
+1. find_anatomy({query:"gluteus"}) to turn words into ids. Search is case-insensitive over English names, ids, and both Chinese scripts.
 2. compose_view({select:["FMA22315","FMA22314","FMA18060"], view:"back", title:"...", note:"..."}) to build a link that opens the live 3D view with ALL of those structures highlighted together and your own sentence printed over the scene.
 3. Give Adrian the URL. Tapping it on his phone opens the real, orbitable 3D body.
 
@@ -293,11 +309,11 @@ Nothing here writes; every tool is read-only. Access is owner-only.`;
 const TOOLS = [
   {
     name: 'find_anatomy',
-    description: 'Find anatomical structures by name or atlas id. Case-insensitive substring match over both (names are stored lowercase, so "Gluteus" and "gluteus" behave the same). Returns id, name, system, how many meshes it is built from, and a ready deep link. Filter to one system with system= (see list_systems). START HERE — every other tool takes ids, and ids look like FMA22315.',
+    description: 'Find anatomical structures by name or atlas id, IN ENGLISH OR CHINESE. Case-insensitive substring match over the English name, the id, and the Chinese name in both scripts — 臀中肌 and 牙齒 find their structure directly, no need to translate first. Returns id, English name, both Chinese names, system, how many meshes it is built from, and a ready deep link. Filter to one system with system= (see list_systems). START HERE — every other tool takes ids, and ids look like FMA22315.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Free text, e.g. "gluteus", "psoas", "lumbar vertebra", or an id.' },
+        query: { type: 'string', description: 'Free text, e.g. "gluteus", "psoas", "lumbar vertebra", 臀中肌, or an id.' },
         system: { type: 'string', description: 'Restrict to one system id, e.g. "muscular" or "skeletal".' },
         limit: { type: 'number', description: `Default ${DEFAULT_FIND_LIMIT}, max ${MAX_FIND_LIMIT}.` },
       },
@@ -307,10 +323,13 @@ const TOOLS = [
   },
   {
     name: 'get_structure',
-    description: 'One structure in full: name, its system and that system\'s description, a specific explanation when the atlas has one, the number of meshes, and a deep link that opens it isolated in the 3D view.',
+    description: 'One structure in full: its English and Chinese names (简体 and 繁體), its system and that system\'s description, a specific explanation when the atlas has one, the number of meshes, and a deep link that opens it isolated in the 3D view. Accepts a concept id (FMA22315) or an individual mesh id.',
     inputSchema: {
       type: 'object',
-      properties: { id: { type: 'string', description: 'An atlas id, e.g. "FMA22315".' } },
+      properties: {
+        id: { type: 'string', description: 'An atlas id, e.g. "FMA22315".' },
+        lang: { type: 'string', enum: URL_CONTRACT.LANGS, description: 'Language the returned link should open in. Default en.' },
+      },
       required: ['id'],
     },
     annotations: READ_ONLY,
@@ -327,11 +346,14 @@ const TOOLS = [
 
 select takes up to ${URL_CONTRACT.SELECT_MAX} ids and highlights the union of their meshes; isolate (default true) hides everything else so only they are visible. view aims the camera (three-quarter, front, back, side). title (<= ${URL_CONTRACT.TITLE_MAX} chars) and note (<= ${URL_CONTRACT.NOTE_MAX} chars) are shown to the user VERBATIM as a caption on the image — write the note as the sentence you would say to him, not as a label. Ids that are not in the atlas come back in ids_unknown instead of being silently dropped.
 
+lang opens the viewer in Chinese — "zh-Hans" (简体) or "zh-Hant" (繁體) — so every structure name, panel and button he sees is in that script, with the English kept underneath. Pass it whenever the conversation is in Chinese.
+
 Pass snapshot:true to also get a rendered PNG of that exact view inline; if the renderer is unavailable the link is still returned and snapshot_error says why.`,
     inputSchema: {
       type: 'object',
       properties: {
         select: { type: 'array', items: { type: 'string' }, description: 'Atlas ids, e.g. ["FMA22315","FMA22314","FMA18060"].' },
+        lang: { type: 'string', enum: URL_CONTRACT.LANGS, description: 'Interface language of the page the link opens: en, zh-Hans (简体) or zh-Hant (繁體). Default en.' },
         view: { type: 'string', enum: URL_CONTRACT.VIEWS, description: 'Camera angle. Default three-quarter.' },
         isolate: { type: 'boolean', description: 'Show ONLY the selected structures. Default true.' },
         explode: { type: 'number', description: '0-1. Separates the body into its pieces. Default 0.' },
@@ -464,7 +486,10 @@ async function renderSnapshot(ctx, view) {
   // allowance — with no title/note in the params, the R2 cache key depends only on the
   // structures and the camera, so the same view with a DIFFERENT sentence is a cache
   // hit instead of another 60-second render.
-  const target = buildUrl({ ...view, title: undefined, note: undefined, snap: true, size: '960x720' });
+  // `lang` is dropped along with the caption: snap mode hides every piece of chrome, so the
+  // PNG is identical in all three languages — keeping it in would split the R2 cache three
+  // ways for the same picture, which matters under a metered browser allowance.
+  const target = buildUrl({ ...view, title: undefined, note: undefined, lang: undefined, snap: true, size: '960x720' });
   const query = new URL(target).searchParams.toString();
   const request = () => new Request(`${SITE_ORIGIN}/api/snap?${query}`, {
     method: 'GET',
@@ -507,19 +532,37 @@ async function renderSnapshot(ctx, view) {
 
 // ── tool implementations ────────────────────────────────────────────────────
 
-const conceptUrl = (id) => buildUrl({ ids: [id], isolate: true });
+const conceptUrl = (id, lang) => buildUrl({ ids: [id], isolate: true, lang });
 
-function shape(index, c) {
+/** The Chinese names, when the deployed index carries them. Always both scripts: a caller
+ *  asking in 简体 may well be reading in 繁體, and the pair costs a few bytes. */
+const zhNames = (row) => ({
+  ...(row.name_zh_hans ? { name_zh_hans: row.name_zh_hans } : {}),
+  ...(row.name_zh_hant ? { name_zh_hant: row.name_zh_hant } : {}),
+});
+
+function shape(index, c, lang) {
   const sys = c.system ? index._systemById.get(c.system) : null;
   return {
     id: c.id,
     name: c.name,
+    ...zhNames(c),
     system: c.system,
     system_name: sys?.name ?? null,
     pieces: c.pieces,
     ...(c.systems ? { also_in_systems: c.systems } : {}),
-    url: conceptUrl(c.id),
+    url: conceptUrl(c.id, lang),
   };
+}
+
+/** A concept id or a part id, with which one it was. The page accepts both in `select=`, so
+ *  every tool that takes an id has to as well or it contradicts the URL contract. */
+function resolve(index, id) {
+  const c = index._byId.get(id);
+  if (c) return { kind: 'concept', row: c, name: c.name, pieces: c.pieces };
+  const p = index._partById.get(id);
+  if (p) return { kind: 'part', row: p, name: p.name, pieces: 1 };
+  return null;
 }
 
 function matches(index, q, systemFilter, limit) {
@@ -527,7 +570,12 @@ function matches(index, q, systemFilter, limit) {
   const hits = [];
   for (const c of index.concepts) {
     if (systemFilter && c.system !== systemFilter) continue;
-    if (!c.name.toLowerCase().includes(term) && !c.id.toLowerCase().includes(term)) continue;
+    // Chinese is matched in BOTH scripts regardless of which one was typed, so 臀中肌 and
+    // 牙齒 both find their structure without the caller having to declare a script first.
+    if (!c.name.toLowerCase().includes(term)
+      && !c.id.toLowerCase().includes(term)
+      && !(c.name_zh_hans || '').includes(term)
+      && !(c.name_zh_hant || '').includes(term)) continue;
     hits.push(c);
   }
   // Shortest name first: "gluteus medius" should outrank "left gluteus medius tendon".
@@ -559,8 +607,28 @@ function tGetStructure(index, a) {
   const id = str(a.id);
   if (!id) return toolError('id required');
   if (!isId(id)) return toolError(`not an atlas id: "${id.slice(0, 40)}" — ids look like FMA22315`);
-  const c = index._byId.get(id);
-  if (!c) return toolError(`not in this atlas: ${id} — call find_anatomy to get a valid id`);
+  const hit = resolve(index, id);
+  if (!hit) return toolError(`not in this atlas: ${id} — call find_anatomy to get a valid id`);
+  if (hit.kind === 'part') {
+    const parent = index._byId.get(hit.row.concept);
+    const psys = index._systemById.get(hit.row.system);
+    return toolOk({
+      id: hit.row.id,
+      name: hit.row.name,
+      ...zhNames(hit.row),
+      kind: 'mesh',
+      system: hit.row.system,
+      system_name: psys?.name ?? null,
+      system_description: psys?.description ?? null,
+      pieces: 1,
+      part_of: parent ? { id: parent.id, name: parent.name, ...zhNames(parent) } : null,
+      explanation: null,
+      explanation_source: psys ? 'system' : 'none',
+      url: conceptUrl(hit.row.id, a.lang),
+      source: 'BodyParts3D 4.0, CC BY 4.0 — https://lifesciencedb.jp/bp3d/',
+    });
+  }
+  const c = hit.row;
   const sys = c.system ? index._systemById.get(c.system) : null;
   return toolOk({
     ...shape(index, c),
@@ -594,18 +662,21 @@ async function tComposeView(ctx, index, a) {
     return toolError(`the composed URL would be ${url.length} characters, over the ${URL_CONTRACT.URL_MAX} limit — shorten the note or select fewer structures`);
   }
 
-  const named = v.ids.map((id) => ({ id, name: index._byId.get(id).name }));
-  const pieces = v.ids.reduce((n, id) => n + (index._byId.get(id).pieces || 0), 0);
+  const named = v.ids.map((id) => { const r = resolve(index, id); return { id, name: r.name, ...zhNames(r.row) }; });
+  const pieces = v.ids.reduce((n, id) => n + (resolve(index, id).pieces || 0), 0);
+  // The names the USER will see when the link opens — the point of passing `lang` at all.
+  const shown = (n) => (v.lang === 'zh-Hans' && n.name_zh_hans) || (v.lang === 'zh-Hant' && n.name_zh_hant) || n.name;
 
   let snapshot = null;
   if (a.snapshot === true) snapshot = await renderSnapshot(ctx, v);
 
   const structuredContent = {
-    title: v.title || named.map((n) => n.name).join(', '),
+    // A Chinese list is separated by 、, not by a comma-space.
+    title: v.title || named.map(shown).join(v.lang && v.lang !== 'en' ? '、' : ', '),
     note: v.note || '',
     url,
     ids: v.ids,
-    names: named.map((n) => n.name),
+    names: named.map(shown),
     ...(snapshot?.data_url ? { png_data_url: snapshot.data_url } : {}),
   };
 
@@ -617,6 +688,8 @@ async function tComposeView(ctx, index, a) {
     pieces_highlighted: pieces,
     isolate: v.isolate,
     view: v.view || 'three-quarter',
+    lang: v.lang || 'en',
+    names_shown: named.map(shown),
     title: v.title || null,
     note: v.note || null,
     url_chars: url.length,
@@ -640,9 +713,9 @@ function tSearch(index, a) {
   return toolOk({
     results: page.map((c) => ({
       id: `anatomy:${c.id}`,
-      title: c.name,
+      title: c.name_zh_hans ? `${c.name} · ${c.name_zh_hans}` : c.name,
       url: conceptUrl(c.id),
-      snippet: `${c.name} — ${index._systemById.get(c.system)?.name ?? 'anatomy'}, ${c.pieces} mesh${c.pieces === 1 ? '' : 'es'}`,
+      snippet: `${c.name}${c.name_zh_hans ? ` (${c.name_zh_hans} / ${c.name_zh_hant ?? c.name_zh_hans})` : ''} — ${index._systemById.get(c.system)?.name ?? 'anatomy'}, ${c.pieces} mesh${c.pieces === 1 ? '' : 'es'}`,
     })),
     count: page.length,
     total,
@@ -655,29 +728,35 @@ function tFetch(index, a) {
   if (!raw) return toolError('id required');
   const id = raw.startsWith('anatomy:') ? raw.slice('anatomy:'.length) : raw;
   if (!isId(id)) return toolError(`not an atlas id: "${raw.slice(0, 40)}" — expected anatomy:FMA22315 or FMA22315`);
-  const c = index._byId.get(id);
-  if (!c) return toolError(`not in this atlas: ${id}`);
+  const hit = resolve(index, id);
+  if (!hit) return toolError(`not in this atlas: ${id}`);
+  const c = hit.row;
   const sys = c.system ? index._systemById.get(c.system) : null;
   const url = conceptUrl(c.id);
   const text = [
     `# ${c.name}`,
+    ...(c.name_zh_hans ? ['', `简体: ${c.name_zh_hans}`, `繁體: ${c.name_zh_hant ?? c.name_zh_hans}`] : []),
     '',
     `Atlas id: ${c.id}`,
     `System: ${sys?.name ?? 'unknown'}${c.systems ? ` (also in ${c.systems.join(', ')})` : ''}`,
-    `Modelled from ${c.pieces} mesh${c.pieces === 1 ? '' : 'es'}.`,
+    hit.kind === 'part'
+      ? `One individual mesh${index._byId.get(c.concept) ? `, part of ${index._byId.get(c.concept).name}` : ''}.`
+      : `Modelled from ${c.pieces} mesh${c.pieces === 1 ? '' : 'es'}.`,
     '',
     c.explanation ?? sys?.description ?? '',
     '',
     `Open it in the live 3D viewer: ${url}`,
+    `In Chinese: ${conceptUrl(c.id, 'zh-Hans')}`,
     '',
     'Source: BodyParts3D 4.0, © The Database Center for Life Science, CC BY 4.0.',
   ].join('\n');
   return toolOk({
     id: raw,
     title: c.name,
+    ...zhNames(c),
     text,
     url,
-    metadata: { kind: 'structure', atlas_id: c.id, system: c.system, pieces: c.pieces },
+    metadata: { kind: hit.kind === 'part' ? 'mesh' : 'structure', atlas_id: c.id, system: c.system, pieces: hit.pieces },
   });
 }
 
@@ -893,6 +972,6 @@ export async function onRequest({ request, env, waitUntil }) {
 // Exported for the test suite only — not part of the MCP surface.
 export const __test__ = {
   TOOLS, toolsFor, RESOURCES, WIDGET_HTML, WIDGET_URI, URL_CONTRACT,
-  buildUrl, parseViewArgs, captionText, isId, clampInt, matches, shape,
+  buildUrl, parseViewArgs, captionText, isId, clampInt, matches, shape, resolve, zhNames,
   SITE_ORIGIN, MAX_BATCH, MAX_PNG_DATA_URL_BYTES,
 };
