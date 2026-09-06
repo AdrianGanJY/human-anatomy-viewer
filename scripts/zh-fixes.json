@@ -1,0 +1,30 @@
+{
+ "task": "L30 P3r — second-model review of the Chinese name layer",
+ "graded_by": "claude -p --model opus",
+ "translated_by": "codex:gpt-6-astra (P3)",
+ "policy": "wrong -> standard (guarded); acceptable_variant -> kept; Traditional-in-Hans -> normalised; corroborated terms held unless a second single-term call agreed",
+ "counts": {
+  "applied": 1,
+  "normalised": 0,
+  "kept": 3431,
+  "unresolved": 0,
+  "protected_held": 0
+ },
+ "applied": [
+  {
+   "key": "lingular vein",
+   "en": "lingular vein",
+   "system": "venous",
+   "from": "舌静脉",
+   "to": "舌段静脉",
+   "reason": "舌静脉指舌的静脉，另一结构",
+   "ids": {
+    "concepts": 1,
+    "parts": 0
+   }
+  }
+ ],
+ "normalised": [],
+ "unresolved": [],
+ "protected_held": []
+}

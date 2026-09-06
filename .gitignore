@@ -47,3 +47,7 @@ workers/*/node_modules/
 # Transient work-lists for scripts/translate-zh.mjs, rewritten on every build-zh run.
 /scripts/zh-missing.json
 /scripts/zh-failed-batches.json
+# L30 P3r: per-batch grader replies from scripts/zh-grade.mjs. The COLLATED verdicts
+# (scripts/zh-grades.json) and the applied fixes (scripts/zh-fixes.json) are committed;
+# the raw per-batch files are reproducible work product.
+/.zh-grade/
