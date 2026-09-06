@@ -458,7 +458,13 @@ const WIDGET_HTML = `<div id="anatomy-card">
 async function renderSnapshot(ctx, view) {
   const { env } = ctx;
   if (!env.SNAP) return { error: 'no snapshot renderer is bound to this deployment' };
-  const target = buildUrl({ ...view, snap: true, size: '960x720' });
+  // The caption is deliberately NOT rendered into this PNG: the widget prints it as
+  // real, selectable, wrapping text right under the image, and burning it in as well
+  // showed it twice. It also buys the thing that matters most under a metered browser
+  // allowance — with no title/note in the params, the R2 cache key depends only on the
+  // structures and the camera, so the same view with a DIFFERENT sentence is a cache
+  // hit instead of another 60-second render.
+  const target = buildUrl({ ...view, title: undefined, note: undefined, snap: true, size: '960x720' });
   const query = new URL(target).searchParams.toString();
   const request = () => new Request(`${SITE_ORIGIN}/api/snap?${query}`, {
     method: 'GET',
