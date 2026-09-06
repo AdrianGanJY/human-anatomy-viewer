@@ -27,6 +27,10 @@
  * With neither, 401 — including when the secret is simply not configured.
  */
 import { resolveIdentity } from '../_access.js';
+// L30 P4: the 429/424 translation moved to `_renderer.js` so the MCP path — which reaches
+// the Worker over the service binding and never traverses this file — gets the same
+// legible rate limit instead of a truncated 502 string. Behaviour here is unchanged.
+import { classifyRendererFailure } from '../_renderer.js';
 
 const json = (status, body) => new Response(JSON.stringify(body), {
   status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -82,15 +86,19 @@ export async function onRequest({ request, env }) {
   // expected, retryable condition, so it is reported as one: 429 when the renderer was
   // rate-limited, 424 Failed Dependency otherwise. Both are 4xx, both survive the edge,
   // and both carry the renderer's own words.
+  // A 204 is the `cacheonly=1` probe answering "not cached". It is `res.ok`, carries no
+  // body and must be passed through as itself, not treated as a picture.
+  if (res.status === 204) return new Response(null, { status: 204, headers: new Headers(res.headers) });
+
   if (!res.ok) {
     const ct = res.headers.get('content-type') || '';
     const text = /json|text/i.test(ct) ? (await res.text()).slice(0, 400) : '';
-    const rateLimited = /rate limit|429/i.test(text);
-    return json(rateLimited ? 429 : 424, {
-      error: rateLimited ? 'renderer_rate_limited' : 'renderer_failed',
+    const c = classifyRendererFailure(res.status, text);
+    return json(c.status, {
+      error: c.error,
       upstream_status: res.status,
-      detail: text || `the renderer answered ${res.status}`,
-      ...(rateLimited ? { hint: 'Cloudflare Browser Rendering time is metered on this account. Cached views still serve; the deep link always works.' } : {}),
+      detail: c.detail,
+      ...(c.hint ? { hint: c.hint } : {}),
     });
   }
 

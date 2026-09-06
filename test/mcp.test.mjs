@@ -223,10 +223,11 @@ test('a JSON body without the index shape is refused', async () => {
 
 // ── the owner gate ──────────────────────────────────────────────────────────
 
-test('the owner sees exactly the six tools; a stranger sees none', () => {
-  assert.equal(toolsFor(OWNER).length, 6);
+test('the owner sees exactly the nine tools; a stranger sees none', () => {
+  assert.equal(toolsFor(OWNER).length, 9);
   assert.deepEqual(toolsFor(OWNER).map((t) => t.name).sort(),
-    ['compose_view', 'fetch', 'find_anatomy', 'get_structure', 'list_systems', 'search']);
+    ['compose_sequence', 'compose_view', 'fetch', 'find_anatomy', 'get_structure', 'list_systems',
+      'probe_image', 'render_anatomy', 'search']);
   assert.deepEqual(toolsFor(STRANGER), []);
   assert.deepEqual(toolsFor(null), []);
   assert.ok(TOOLS.every((t) => t.annotations.readOnlyHint === true));

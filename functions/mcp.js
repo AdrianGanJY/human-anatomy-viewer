@@ -38,6 +38,15 @@
  */
 
 import { resolveIdentity } from './_access.js';
+// L30 P4: the SAME FILE the Vite bundle imports through app/scene-model.ts. Not a copy —
+// the URL_CONTRACT below is what a hand-mirrored contract looks like after it drifts once,
+// and the scene is far too big a surface to mirror by hand.
+import {
+  LIMITS as SCENE_LIMITS, VIEWS as SCENE_VIEWS, LANGS as SCENE_LANGS, EMPHASIS, REST_MODES,
+  BACKGROUNDS, ANNOTATION_TYPES, DIRECTIONS,
+  normalizeScene, validateScene, encodeScene, decodeScene, sceneSelectIds, structureOpacity,
+} from '../app/scene-codec.js';
+import { callRenderer, toBase64 } from './_renderer.js';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const SUPPORTED_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
@@ -85,7 +94,75 @@ const MAX_PNG_DATA_URL_BYTES = 400 * 1024;
  */
 const SNAPSHOT_BUDGET_MS = 20000;
 
+/**
+ * render_anatomy's budgets. compose_view's 20 s is deliberately NOT moved: it is the LINK
+ * tool and must answer fast. render_anatomy is the PICTURE tool, so it waits.
+ *
+ * Two numbers because the two clients have different ceilings. Anthropic documents a 300 s
+ * tool timeout, so 75 s is comfortable and is the first budget that can catch the measured
+ * 67 s cold render. OpenAI staff have stated a HARD one-minute limit on any tool call, so a
+ * ChatGPT-shaped caller gets 50 s — long enough for the measured warm-tab band (21-27 s)
+ * and the warm-session-new-tab case, and short enough to answer before the client gives up.
+ * Unknown clients get the conservative number.
+ */
+const RENDER_BUDGET_CLAUDE_MS = 75000;
+const RENDER_BUDGET_DEFAULT_MS = 50000;
+/** Long enough for an R2 GET and its service hop, short enough not to be felt. */
+const CACHE_PROBE_BUDGET_MS = 3000;
+
+/**
+ * THE SIZE CONTRACT, and it decides what a plate may weigh rather than decorating it.
+ *
+ * claude.ai and Claude Desktop cap a whole tool result at roughly 150,000 characters. The
+ * image block and the widget's data URI are TWO COPIES OF THE SAME BASE64, so on that
+ * client both have to fit inside one budget. Yield order when the assembled result is over:
+ * drop the WIDGET copy for a caller that identified itself as Claude (where the image block
+ * is the carrier with vendor support), otherwise drop the IMAGE BLOCK and keep the widget
+ * (the carrier with positive evidence on this account, and the one ChatGPT displays).
+ * NEVER truncate, and never re-render — a second render spends the metered resource again.
+ */
+const MAX_IMAGE_BLOCK_B64 = 140000;
+const MAX_RESULT_CHARS = 145000;
+/** A plate this big is a bug, not a picture; report it rather than shipping it. */
+const MAX_PNG_BYTES = 300 * 1024;
+
 const WIDGET_URI = 'ui://widget/anatomy-view.html';
+
+/**
+ * A 96x64 PNG, 371 bytes, obviously synthetic. `probe_image` returns it as a bare MCP image
+ * block with NO widget template attached, which makes it the five-minute experiment that
+ * settles a question no amount of reading can: does THIS client render an MCP image block
+ * at all, and does it still do so when no widget is competing for the same result? Every
+ * agent-side claim about that is inference from third-party reports; only Adrian's eyes can
+ * measure it, and this is the cheapest thing to put in front of them.
+ */
+const PROBE_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAGAAAABACAIAAABqVuVZAAABOklEQVR42u3cWxHDQAxD0UApjiIolhANhqBpAbTNPmJ7ZckeIThzv709nq/axbYiKCAjoPfX7echuy4gZaYfQPt5lFED6MJIjekv0DVTAbWNRJjaQOIp9QLJpjQApJnSMJBaSjNAUinNA4mkdAtIISUDIO6UbICIU7IEokzJGIgvJRcgppS8gGhS8gUiSMkdKHtKQUB5U4oDSppSNFC6lBYA5UppGVCWlFYCpUhpPRB4ShBAyCkBAWGmhAUEmBIiEFRKoEA4KUEDIaSEDrQ8pRxAC1NKA7QqpWRA8SnlAwpOKStQWEqJgWJSSg/knRIDkGtKPEBOKVEBeaRECGSbEieQYUrMQCYpkQPdT0kC6E5KKkDTKWkBTaQkBzSakihQf0q6QJ0pqQM1UyqgBlMBNYzqNUX97iigmH0AKHGufKlR/bQAAAAASUVORK5CYII=';
+
+/**
+ * NAMED GROUPS. Every one of these was checked against the deployed atlas (2026-09-07);
+ * they are in the tool descriptions and the server instructions so the model does not have
+ * to rediscover them, and so it cannot land on the traps beside them.
+ *
+ *   `hamstrings` is not a concept in this atlas at all — a search for it returns nothing.
+ *     It is exactly three heads. FMA45890 (short head of biceps femoris) is NOT one of them
+ *     for a forward-bend plate: it originates on the femur and crosses only the knee, so it
+ *     takes no part in hip-flexion limitation. FMA45881 folds both heads together and is
+ *     the id a naive search lands on.
+ *   `pelvis` is ambiguous: FMA16580 "bony pelvis" is 3 skeletal meshes; FMA9578 "pelvis" is
+ *     8 meshes spanning muscular + integumentary + skeletal and drags body surface into the
+ *     frame. Teaching plates mean FMA16580.
+ *   `lumbar spine` is named "lumbar vertebral column" here, so an exact-name lookup fails.
+ *   `view:"side"` puts the camera at +X, which is the body's LEFT. Every concept above is
+ *     BILATERAL, so a side plate superimposes both limbs at a slight offset — under ghost
+ *     anatomy that reads as one doubled, blurred muscle. The left-sided siblings are the
+ *     clean sagittal set.
+ */
+const GROUPS = `hamstrings = FMA22357 (semitendinosus) + FMA22438 (semimembranosus) + FMA45887 (long head of biceps femoris). Not FMA45881, which folds in the short head, and not FMA45890, which crosses only the knee.
+left hamstrings = FMA22359 + FMA22449 + FMA45889.
+pelvis = FMA16580 (bony pelvis). Not FMA9578, which drags in body surface. Left hip bone = FMA16587.
+femur = FMA9611. Left femur = FMA24475.
+lumbar spine = FMA16203 (this atlas calls it "lumbar vertebral column"). Lumbar discs = FMA13894. Sacrum = FMA16202.
+view:"side" looks at the body's LEFT side. These concepts are bilateral, so for a clean sagittal plate pass the left-sided ids above; FMA16203 and FMA16202 are midline and stay whole.`;
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -115,6 +192,17 @@ const toolOk = (data, extra) => ({
   ...(extra || {}),
 });
 const toolError = (m) => ({ content: [{ type: 'text', text: `Error: ${m}` }], isError: true });
+/**
+ * L30 P4: a result with SEVERAL content blocks. A sibling of toolOk rather than a change to
+ * it, because every existing tool and every existing test depends on toolOk's exact shape —
+ * one text block — and this is not the phase to renegotiate that.
+ *
+ * `isError:false` even when no picture was produced, deliberately: a missing picture is not
+ * a failed answer, and `isError:true` makes clients hide the text block too, which would
+ * take the working interactive link down with it. isError is reserved for caller-fixable
+ * input faults.
+ */
+const toolBlocks = (blocks, extra) => ({ content: blocks, isError: false, ...(extra || {}) });
 const rpcResult = (id, result) => ({ jsonrpc: '2.0', id, result });
 const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
@@ -297,8 +385,12 @@ CHINESE. Every structure also carries a 简体 and a 繁體 name (standard mainl
 
 The normal flow
 1. find_anatomy({query:"gluteus"}) to turn words into ids. Search is case-insensitive over English names, ids, and both Chinese scripts.
-2. compose_view({select:["FMA22315","FMA22314","FMA18060"], view:"back", title:"...", note:"..."}) to build a link that opens the live 3D view with ALL of those structures highlighted together and your own sentence printed over the scene.
-3. Give Adrian the URL. Tapping it on his phone opens the real, orbitable 3D body.
+2. render_anatomy({select:[...], context:[...], focus:{ids:[...]}, title:"...", note:"..."}) for a PICTURE inside this conversation. This is the tool to reach for whenever a visual would help — which, for a body question, is almost always.
+3. compose_view({select:["FMA22315","FMA22314","FMA18060"], view:"back", title:"...", note:"..."}) for a LINK he can open and orbit himself.
+4. Give Adrian the URL as well as the picture. Tapping it on his phone opens the real, orbitable 3D body.
+
+Groups worth knowing, all verified against this atlas — pass ids, never names:
+${GROUPS}
 
 compose_view is the important one. It takes SEVERAL ids at once, because the useful anatomical answer is usually a group ("these three stabilise the pelvis"), not one muscle. \`note\` is shown to him verbatim as a caption on the image — write it for him, in your own words, not as a label. Pass snapshot:true to also get a rendered PNG of that exact view when the renderer is available.
 
@@ -365,6 +457,116 @@ Pass snapshot:true to also get a rendered PNG of that exact view inline; if the 
     },
     annotations: READ_ONLY,
     _meta: { 'openai/outputTemplate': WIDGET_URI },
+  },
+  {
+    name: 'render_anatomy',
+    description: `Render a clean educational anatomy image and return the PNG directly to the conversation. Use this tool whenever a visual would make an anatomical, exercise, yoga, posture or movement explanation easier to understand. Prefer this over compose_view when the user does not need to interactively explore the anatomy.
+
+Framing is automatic: pass focus with the ids the explanation is ABOUT and the camera fits itself around them. Pass context ids to keep surrounding anatomy visible as translucent scaffolding, and ghost ids for the faint outline of everything else — contextOpacity 0.05-0.10 reads as a ghost of the body, supportOpacity 0.3-0.5 as supporting structure.
+
+A view this atlas has not drawn before takes about a minute and this call will wait for it; the same view afterwards is instant. If the result says the picture is still rendering, call this tool AGAIN with the SAME arguments — the second call returns it immediately. The interactive link always works, even when the picture does not.
+
+Ids only, never names. Useful groups, all checked against this atlas:
+${GROUPS}
+
+There are no joints in this atlas — BodyParts3D ships meshes, so there is no hip-joint structure to point at. Name the structure that moves instead.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        select: { type: 'array', items: { type: 'string' }, description: 'The structures the explanation is ABOUT — drawn at full opacity and highlighted. e.g. ["FMA22357","FMA22438","FMA45887"] for the hamstrings.' },
+        context: { type: 'array', items: { type: 'string' }, description: 'Supporting structures, drawn translucent at supportOpacity. e.g. ["FMA16580","FMA9611"] for pelvis and femur.' },
+        ghost: { type: 'array', items: { type: 'string' }, description: 'Structures kept as a faint outline at contextOpacity, for orientation only.' },
+        rest: { type: 'string', enum: REST_MODES, description: 'Also show the rest of the body: "none" (default) or "skeletal" at restOpacity. "all" is not available — it costs a full 33 MB load.' },
+        restOpacity: { type: 'number', description: 'Opacity for rest:"skeletal". Default 0.08.' },
+        view: { type: 'string', enum: SCENE_VIEWS, description: 'Camera angle. Default three-quarter. "side" looks at the body\'s LEFT.' },
+        focus: {
+          type: 'object',
+          description: 'Automatic framing. Pass the ids the picture is about; the camera fits itself around their combined extent.',
+          properties: {
+            ids: { type: 'array', items: { type: 'string' }, description: 'Ids to frame. They must already be in select, context or ghost.' },
+            padding: { type: 'number', description: 'Camera DISTANCE multiplier, 1.0-3.0. Default 1.35; 2.0 pulls back. It is not a percentage.' },
+          },
+        },
+        contextOpacity: { type: 'number', description: 'Opacity of the `ghost` structures, 0-1. Default 0.08.' },
+        supportOpacity: { type: 'number', description: 'Opacity of the `context` structures, 0-1. Default 0.40.' },
+        styles: {
+          type: 'array',
+          description: 'Per-structure overrides. Do not pass colours — the viewer owns the palette.',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              emphasis: { type: 'string', enum: EMPHASIS, description: 'Semantic emphasis. Stored now, drawn in a later version.' },
+              opacity: { type: 'number', description: 'Overrides the role opacity for this structure.' },
+            },
+            required: ['id'],
+          },
+        },
+        annotations: {
+          type: 'array',
+          maxItems: SCENE_LIMITS.MAX_ANNOTATIONS,
+          description: 'Labels and arrows anchored to structures. Accepted and carried now; DRAWN in a later version — do not rely on them being visible yet.',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ANNOTATION_TYPES },
+              target: { type: 'string' }, from: { type: 'string' }, to: { type: 'string' },
+              direction: { type: 'string', enum: DIRECTIONS },
+              text: { type: 'string', description: `<= ${SCENE_LIMITS.MAX_ANNOTATION_TEXT} chars — two or three words.` },
+            },
+            required: ['type'],
+          },
+        },
+        title: { type: 'string', description: `Printed on the plate, <= ${SCENE_LIMITS.TITLE_MAX} chars.` },
+        note: { type: 'string', description: `Printed on the plate under the title, <= ${SCENE_LIMITS.NOTE_MAX} chars. Write it as the sentence you would say to him.` },
+        burn_caption: { type: 'boolean', description: 'Put title and note IN the picture. Default true. false keeps the plate wordless, and makes the same view a cache hit whatever you write.' },
+        lang: { type: 'string', enum: SCENE_LANGS, description: 'Language of the interactive link and of any burned-in structure names. Default en.' },
+        width: { type: 'number', description: `Plate width, ${SCENE_LIMITS.W_MIN}-${SCENE_LIMITS.W_MAX}. Default 960. Below ${SCENE_LIMITS.W_MIN} the viewer switches to its phone layout.` },
+        height: { type: 'number', description: `Plate height, ${SCENE_LIMITS.H_MIN}-${SCENE_LIMITS.H_MAX}. Default 720.` },
+        background: { type: 'string', enum: BACKGROUNDS, description: 'Default light.' },
+        interactive_only: { type: 'boolean', description: 'Skip the render and return only the link. Default false.' },
+      },
+      required: ['select'],
+    },
+    annotations: READ_ONLY,
+    _meta: { 'openai/outputTemplate': WIDGET_URI },
+  },
+  {
+    name: 'compose_sequence',
+    description: 'Create a short animated anatomy teaching sequence showing relationships, movement direction, highlights and explanatory steps. Returns a link that plays the sequence plus a still filmstrip of the key moments. This tool never produces video, and it is NOT enabled on this deployment yet — it will refuse. Use render_anatomy for a still plate.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        base: { type: 'object', description: 'The scene every step starts from — same shape as render_anatomy.' },
+        loop: { type: 'boolean' },
+        steps: {
+          type: 'array', minItems: 1, maxItems: 8,
+          description: 'Ordered steps. Every id is an atlas id like FMA16580, never a name.',
+          items: {
+            type: 'object',
+            properties: {
+              duration: { type: 'number', description: 'Seconds, 0.5-8.' },
+              show: { type: 'array', items: { type: 'string' } },
+              hide: { type: 'array', items: { type: 'string' } },
+              focus: { type: 'array', items: { type: 'string' } },
+              highlight: { type: 'array', items: { type: 'string' } },
+              contextOpacity: { type: 'number' },
+              view: { type: 'string', enum: SCENE_VIEWS },
+              caption: { type: 'string' },
+            },
+          },
+        },
+      },
+      required: ['steps'],
+    },
+    annotations: READ_ONLY,
+  },
+  {
+    name: 'probe_image',
+    description: 'Return one tiny test PNG as a plain MCP image content block, with no interactive card attached. It exists to answer a single question that cannot be answered by reading documentation: does THIS chat client display an MCP image block inline? Call it once and describe to the user exactly what appeared.',
+    inputSchema: { type: 'object', properties: {} },
+    annotations: READ_ONLY,
   },
   {
     name: 'search',
@@ -491,43 +693,49 @@ async function renderSnapshot(ctx, view) {
   // ways for the same picture, which matters under a metered browser allowance.
   const target = buildUrl({ ...view, title: undefined, note: undefined, lang: undefined, snap: true, size: '960x720' });
   const query = new URL(target).searchParams.toString();
-  const request = () => new Request(`${SITE_ORIGIN}/api/snap?${query}`, {
-    method: 'GET',
-    headers: { 'X-Snap-Secret': env.SNAP_SHARED_SECRET || '' },
-  });
-  try {
-    // A BUDGET, not a wait. Measured on this account 2026-09-06: a cold render is
-    // ~60 s (a new browser plus 33 MB of geometry), a warm tab ~21 s, an R2 cache hit
-    // under 1 s. A chat client will abandon the tool call long before 60 s, so the
-    // rule is: answer with the link now, and let the render finish in the background
-    // so the SAME request a moment later is a cache hit.
-    const res = await Promise.race([
-      env.SNAP.fetch(request()),
-      new Promise((resolve) => setTimeout(() => resolve(null), SNAPSHOT_BUDGET_MS)),
-    ]);
-    if (res === null) {
-      // Keep the render alive past this response: that is what turns a retry into an
-      // instant hit instead of a second 60-second wait.
-      if (ctx.waitUntil) ctx.waitUntil(env.SNAP.fetch(request()).catch(() => {}));
-      return { error: `not rendered within ${SNAPSHOT_BUDGET_MS} ms — a first render of a new view costs about a minute on this account. It is still rendering; ask again in a minute and it will be instant. The link works now.` };
-    }
-    const ct = res.headers.get('content-type') || '';
-    if (!res.ok || !/image\/png/i.test(ct)) {
-      const detail = /json|text/i.test(ct) ? (await res.text()).slice(0, 200) : '';
-      return { error: `renderer answered ${res.status} ${ct || 'no content-type'}${detail ? `: ${detail}` : ''}` };
-    }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    let bin = '';
-    for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode(...buf.subarray(i, i + 8192));
-    const data_url = `data:image/png;base64,${btoa(bin)}`;
-    if (data_url.length > MAX_PNG_DATA_URL_BYTES) {
-      return { error: `rendered PNG is ${Math.round(data_url.length / 1024)} KB as a data URI, over the ${Math.round(MAX_PNG_DATA_URL_BYTES / 1024)} KB ceiling — the link still works` };
-    }
-    return { data_url, cache: res.headers.get('X-Snap-Cache') || null, ms: res.headers.get('X-Snap-Ms') || null };
-  } catch (err) {
-    console.error('snapshot failed:', err);
-    return { error: 'the snapshot renderer could not be reached' };
+  // A BUDGET, not a wait. Measured on this account 2026-09-06: a cold render is ~67 s (a
+  // new browser plus 33 MB of geometry), a warm tab 21-27 s, an R2 cache hit under 1 s. A
+  // chat client abandons the tool call long before 67 s, so the rule for the LINK tool is:
+  // answer with the link now, and let the render finish so the same request a moment later
+  // is a cache hit. `callRenderer` now hands the SAME promise to the race and to waitUntil,
+  // which is what stops a timed-out render costing two concurrent browsers.
+  const r = await callRenderer(env, query, SNAPSHOT_BUDGET_MS, ctx);
+  if (r.state !== 'ok') return { error: r.error, state: r.state };
+  const b64 = toBase64(r.bytes);
+  const data_url = `data:image/png;base64,${b64}`;
+  if (data_url.length > MAX_PNG_DATA_URL_BYTES) {
+    return { error: `rendered PNG is ${Math.round(data_url.length / 1024)} KB as a data URI, over the ${Math.round(MAX_PNG_DATA_URL_BYTES / 1024)} KB ceiling — the link still works` };
   }
+  return { data_url, b64, cache: r.cache, ms: r.ms };
+}
+
+// ── the client, so a result can be shaped for who asked ─────────────────────
+
+/**
+ * Which client is on the other end, best effort, and honestly reported.
+ *
+ * It matters because the two clients want opposite things from the same result: Claude
+ * documents image tool results as supported and caps the whole result at ~150,000
+ * characters, while ChatGPT is the client where the widget is the carrier with positive
+ * evidence on this account. Shipping both copies of the base64 to Claude can blow its cap;
+ * dropping the widget for ChatGPT would blind it.
+ *
+ * There is no session on this transport (no Mcp-Session-Id is ever issued) and the Function
+ * is stateless per request, so `clientInfo` from `initialize` is remembered in a module
+ * global that lives as long as the isolate — usually a conversation, sometimes less. The
+ * User-Agent is the independent second signal. Whatever it concluded is echoed back in
+ * structuredContent.client, so the transcript SHOWS the guess rather than hiding it, and a
+ * wrong guess is diagnosable instead of merely puzzling.
+ */
+let lastClientInfo = null;
+
+export function clientFrom(request, env) {
+  const ua = (request && request.headers && request.headers.get('User-Agent')) || '';
+  const name = (lastClientInfo && lastClientInfo.name) || '';
+  const hay = `${name} ${ua}`.toLowerCase();
+  const forced = (env && env.FORCE_CLIENT) || '';
+  const kind = forced || (/claude|anthropic/.test(hay) ? 'claude' : /chatgpt|openai/.test(hay) ? 'chatgpt' : 'unknown');
+  return { kind, name: name || null, ua: ua.slice(0, 80) || null };
 }
 
 // ── tool implementations ────────────────────────────────────────────────────
@@ -698,10 +906,266 @@ async function tComposeView(ctx, index, a) {
     ...(snapshot?.error ? { snapshot_error: snapshot.error } : {}),
   };
 
-  return toolOk(payload, {
+  // L30 P4: when compose_view DID render a picture it now also emits it as an image block,
+  // through the same helper render_anatomy uses, so the two tools cannot disagree about how
+  // a picture is delivered. Everything else about this result is byte-identical to P3 --
+  // the first block is still the same JSON text block every existing test reads.
+  const okResult = toolOk(payload, {
     structuredContent,
     _meta: { 'openai/outputTemplate': WIDGET_URI },
   });
+  if (snapshot?.b64 && snapshot.b64.length <= MAX_IMAGE_BLOCK_B64) {
+    okResult.content.push({ type: 'image', data: snapshot.b64, mimeType: 'image/png' });
+  }
+  return okResult;
+}
+
+// ── render_anatomy — the teaching plate ─────────────────────────────────────
+
+/**
+ * Tool arguments into a validated Scene. One reading of the request builds the picture AND
+ * the link, so the two can never disagree about what was asked for.
+ *
+ * Ids are checked against the deployed index, not merely against the id pattern: a caller
+ * is TOLD which ids the viewer would ignore rather than handed a link that quietly shows
+ * fewer structures.
+ */
+function parseRenderArgs(index, a) {
+  const list = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v ? v.split(',') : []);
+  const clean = (raw, field) => {
+    const out = [];
+    for (const x of list(raw)) {
+      const v = str(x);
+      if (!v) continue;
+      if (!isId(v)) return { error: `${field} contains "${String(x).slice(0, 40)}", which is not an atlas id — ids look like FMA22315` };
+      if (!out.includes(v)) out.push(v);
+    }
+    return { ids: out };
+  };
+
+  const sel = clean(a.select, 'select'); if (sel.error) return sel;
+  if (!sel.ids.length) {
+    return { error: 'select is required: an array of atlas ids, e.g. ["FMA22357","FMA22438","FMA45887"]. Use find_anatomy to get them.' };
+  }
+  const ctx2 = clean(a.context, 'context'); if (ctx2.error) return ctx2;
+  const gh = clean(a.ghost, 'ghost'); if (gh.error) return gh;
+
+  const roleFor = new Map();
+  for (const id of gh.ids) roleFor.set(id, 'ghost');
+  for (const id of ctx2.ids) roleFor.set(id, 'context');
+  for (const id of sel.ids) roleFor.set(id, 'primary');   // select wins every collision
+
+  const unknown = [];
+  const structures = [];
+  for (const [id, role] of roleFor) {
+    if (index._byId.has(id) || index._partById.has(id)) structures.push({ id, role });
+    else unknown.push(id);
+  }
+  if (!structures.length) {
+    return { error: `none of these ids are in this atlas: ${unknown.join(', ')} — call find_anatomy first (ids look like FMA22315)` };
+  }
+
+  const focusRaw = clean((a.focus && a.focus.ids) || a.focus, 'focus.ids'); if (focusRaw.error) return focusRaw;
+  const focus = focusRaw.ids.filter((id) => !unknown.includes(id));
+
+  if (a.view !== undefined && !SCENE_VIEWS.includes(lower(a.view))) {
+    return { error: `unknown view "${a.view}" — one of ${SCENE_VIEWS.join(', ')}` };
+  }
+  if (a.background !== undefined && !BACKGROUNDS.includes(lower(a.background))) {
+    return { error: `background "${a.background}" is not available — use ${BACKGROUNDS.join(' or ')} (transparent is not enabled on this deployment yet)` };
+  }
+  if (a.rest !== undefined && !REST_MODES.includes(lower(a.rest))) {
+    return {
+      error: lower(a.rest) === 'all'
+        ? 'rest:"all" is not available — the whole body at low opacity costs a full 33 MB geometry load and a cold render. Use rest:"skeletal" for context.'
+        : `rest "${a.rest}" — one of ${REST_MODES.join(', ')}`,
+    };
+  }
+  if (a.lang !== undefined && !SCENE_LANGS.includes(str(a.lang))) {
+    return { error: `unknown lang "${a.lang}" — one of ${SCENE_LANGS.join(', ')}` };
+  }
+
+  const t = captionText(a.title, SCENE_LIMITS.TITLE_MAX, 'title'); if (t.error) return { error: t.error };
+  const n = captionText(a.note, SCENE_LIMITS.NOTE_MAX, 'note'); if (n.error) return { error: n.error };
+
+  // ACCEPTED AND IGNORED, then REPORTED. Rejecting these outright turns a soft mistake by
+  // a model copying the PRD into a hard failure with no picture; swallowing them silently
+  // teaches it nothing. Report-and-continue does both jobs.
+  const ignored = [];
+  const styles = [];
+  for (const [i, s] of (Array.isArray(a.styles) ? a.styles : []).entries()) {
+    if (!s || typeof s !== 'object' || !isId(str(s.id))) return { error: `styles[${i}] needs an atlas id` };
+    if (s.color !== undefined) ignored.push(`styles[${i}].color`);
+    styles.push({ id: str(s.id), ...(s.emphasis !== undefined ? { emphasis: String(s.emphasis) } : {}), ...(s.opacity !== undefined ? { opacity: Number(s.opacity) } : {}) });
+  }
+  const annotations = [];
+  for (const [i, an] of (Array.isArray(a.annotations) ? a.annotations : []).entries()) {
+    if (!an || typeof an !== 'object') return { error: `annotations[${i}] must be an object` };
+    // There is no hip joint in this atlas — there are no articulation concepts at all.
+    // BodyParts3D ships meshes, not joints, so `axis` can never resolve to geometry.
+    if (an.axis !== undefined) ignored.push(`annotations[${i}].axis`);
+    annotations.push({ ...an, axis: undefined });
+  }
+
+  const num = (v, dflt) => (v === undefined ? dflt : Number(v));
+  const scene = normalizeScene({
+    mode: 'render',
+    lang: a.lang === undefined ? 'en' : str(a.lang),
+    structures,
+    rest: { include: a.rest === undefined ? 'none' : lower(a.rest), opacity: num(a.restOpacity, 0.08) },
+    camera: {
+      view: a.view === undefined ? 'three-quarter' : lower(a.view),
+      focus,
+      padding: num((a.focus && a.focus.padding), 1.35),
+    },
+    roleOpacity: { primary: 1, context: num(a.supportOpacity, 0.4), ghost: num(a.contextOpacity, 0.08) },
+    styles,
+    annotations,
+    caption: { title: t.value || '', note: n.value || '', place: a.burn_caption === false ? 'out' : 'in' },
+    background: a.background === undefined ? 'light' : lower(a.background),
+    size: { w: num(a.width, 960), h: num(a.height, 720) },
+    ss: a.supersample === true ? 1 : 0,
+  });
+
+  const err = validateScene(scene);
+  if (err) return { error: err };
+  const blob = encodeScene(scene);
+  if (blob.length > SCENE_LIMITS.SCENE_MAX_B64) {
+    return { error: `the scene encodes to ${blob.length} characters, over the ${SCENE_LIMITS.SCENE_MAX_B64} limit — send fewer annotations or shorten the note` };
+  }
+  return { scene, blob, unknown, ignored };
+}
+
+/**
+ * PRD section 19's P0 through P3, in one tool: an image inside the conversation, a clean
+ * teaching plate rather than a screenshot of software, automatic framing, and ghosted
+ * context anatomy.
+ *
+ * The result carries the picture THREE WAYS on purpose, because no agent-side evidence
+ * settles which one a given client will display:
+ *   1. an MCP `{type:'image'}` block — what the spec says and what Anthropic documents;
+ *   2. the widget's `png_data_url` — the carrier with positive evidence on this account;
+ *   3. the interactive link in the text block — which works in every client, always.
+ * The picture degrades; the answer never does.
+ */
+async function tRenderAnatomy(ctx, index, a) {
+  const v = parseRenderArgs(index, a);
+  if (v.error) return toolError(v.error);
+  const { scene, blob, unknown, ignored } = v;
+
+  const ids = sceneSelectIds(scene);
+  const named = ids.map((id) => { const r = resolve(index, id); return { id, name: r.name, ...zhNames(r.row) }; });
+  const shown = (n) => (scene.lang === 'zh-Hans' && n.name_zh_hans) || (scene.lang === 'zh-Hant' && n.name_zh_hant) || n.name;
+
+  // The link a human opens: `select=` is the exact list the page will report back, and the
+  // blob carries everything else. `snap` is NOT set — a person following this link wants
+  // the explorer's chrome, and the same blob renders the plate for the camera.
+  const url = buildUrl({ ids, lang: scene.lang }) + `&scene=${blob}`;
+  if (url.length > URL_CONTRACT.URL_MAX) {
+    return toolError(`the composed URL would be ${url.length} characters, over the ${URL_CONTRACT.URL_MAX} limit — shorten the note or select fewer structures`);
+  }
+
+  const client = ctx.client || { kind: 'unknown' };
+  const query = new URLSearchParams({
+    select: ids.join(','),
+    scene: blob,
+    snap: '1',
+    size: `${scene.size.w}x${scene.size.h}`,
+  }).toString();
+
+  let render = { state: 'skipped' };
+  if (a.interactive_only !== true) {
+    // PROBE FIRST. A view this atlas has drawn before comes back in about a second; asking
+    // costs one R2 GET and never touches a browser. Only on a miss do we spend the metered
+    // resource and hold the tool call open.
+    render = await callRenderer(ctx.env, `${query}&cacheonly=1`, CACHE_PROBE_BUDGET_MS, ctx);
+    if (render.state === 'not_cached' || render.state === 'pending') {
+      const budget = client.kind === 'claude' ? RENDER_BUDGET_CLAUDE_MS : RENDER_BUDGET_DEFAULT_MS;
+      render = await callRenderer(ctx.env, query, budget, ctx);
+    }
+  }
+
+  let b64 = null;
+  let stateNote = '';
+  if (render.state === 'ok') {
+    if (render.bytes.length > MAX_PNG_BYTES) {
+      render = { state: 'image_too_large', error: `the rendered plate is ${Math.round(render.bytes.length / 1024)} KB, over the ${Math.round(MAX_PNG_BYTES / 1024)} KB ceiling — the link still works` };
+    } else {
+      b64 = toBase64(render.bytes);
+    }
+  }
+  if (render.state !== 'ok' && render.state !== 'skipped') stateNote = `\n\n(${render.error})`;
+
+  // Yield order when the assembled result is over the client cap. Two copies of the same
+  // base64 travel here, so on Claude both must fit inside one ~150,000-character budget.
+  let imageFits = !!b64 && b64.length <= MAX_IMAGE_BLOCK_B64;
+  let widgetFits = !!b64;
+  if (b64) {
+    const cost = (img, wid) => (img ? b64.length : 0) + (wid ? b64.length + 30 : 0) + 2500;
+    if (cost(imageFits, widgetFits) > MAX_RESULT_CHARS) {
+      // A caller that IDENTIFIED itself as Claude keeps the block (documented support) and
+      // loses the widget copy. Everyone else — including every unknown caller — keeps the
+      // widget, which is the carrier with evidence on this account, and loses the block.
+      if (client.kind === 'claude') widgetFits = false; else imageFits = false;
+    }
+    if (cost(imageFits, widgetFits) > MAX_RESULT_CHARS) { imageFits = false; widgetFits = false; stateNote = `\n\n(the rendered plate is too large to carry inline in this client; the link opens it)`; }
+  }
+
+  const title = scene.caption.title || named.map(shown).join(scene.lang !== 'en' ? '、' : ', ');
+  const note = scene.caption.note || '';
+  const text = [title, note, '', `Interactive 3D: ${url}`].filter((x, i) => x !== '' || i === 2).join('\n') + stateNote;
+
+  return toolBlocks([
+    // BARE base64, no data: prefix — that is what the MCP spec's ImageContent carries.
+    ...(imageFits ? [{ type: 'image', data: b64, mimeType: 'image/png' }] : []),
+    { type: 'text', text },
+  ], {
+    structuredContent: {
+      title,
+      note,
+      url,
+      ids,
+      names: named.map(shown),
+      names_shown: named.map(shown),
+      lang: scene.lang,
+      view: scene.camera.view,
+      focus: scene.camera.focus,
+      width: scene.size.w,
+      height: scene.size.h,
+      render_state: render.state === 'skipped' ? 'link_only' : render.state,
+      ...(render.cache ? { cache: render.cache } : {}),
+      ...(render.ms ? { render_ms: Number(render.ms) } : {}),
+      ...(render.settle ? { settle: render.settle } : {}),
+      // The picture size, always reported, because the size contract above is the thing
+      // most likely to silently decide whether a client sees anything.
+      ...(b64 ? { image_b64_chars: b64.length, image_bytes: render.bytes ? render.bytes.length : null } : {}),
+      image_block: imageFits,
+      client: client.kind,
+      ...(widgetFits ? { png_data_url: `data:image/png;base64,${b64}` } : {}),
+      ...(unknown.length ? { ids_unknown: unknown } : {}),
+      ...(ignored.length ? { ignored_fields: ignored } : {}),
+    },
+    _meta: { 'openai/outputTemplate': WIDGET_URI },
+  });
+}
+
+/**
+ * Registered from day one, refusing until it is built. That teaches the model the surface
+ * exists AND that no GIF or MP4 is coming, which is better than letting it discover the
+ * generic "Tool not implemented" — and better than leaving it to guess that an eight-step
+ * sequence rendered frame by frame would be 200+ metered browser renders against an
+ * allowance that answers 429 after about six.
+ */
+function tComposeSequence() {
+  return toolError('compose_sequence is not enabled on this deployment yet — use render_anatomy for a still plate, or compose_view for a link the user can open and explore. Steps take atlas ids like FMA16580, never names; call find_anatomy first.');
+}
+
+/** The five-minute experiment. A bare image block, no widget attached. */
+function tProbeImage() {
+  return toolBlocks([
+    { type: 'image', data: PROBE_PNG_B64, mimeType: 'image/png' },
+    { type: 'text', text: 'That was a 371-byte test PNG returned as an MCP image content block, with no widget attached. If you can see a small teal rectangle with a white diagonal, this client renders MCP image blocks inline. If you see nothing, a placeholder, or a wall of base64, it does not — and render_anatomy should lean on its other carriers in this client.' },
+  ]);
 }
 
 function tSearch(index, a) {
@@ -770,6 +1234,9 @@ async function callTool(name, args, ctx, identity) {
       case 'get_structure': return tGetStructure(index, a);
       case 'list_systems': return tListSystems(index);
       case 'compose_view': return await tComposeView(ctx, index, a);
+      case 'render_anatomy': return await tRenderAnatomy(ctx, index, a);
+      case 'compose_sequence': return tComposeSequence();
+      case 'probe_image': return tProbeImage();
       case 'search': return tSearch(index, a);
       case 'fetch': return tFetch(index, a);
       default: return toolError(`Tool not implemented: ${name}`);
@@ -823,6 +1290,13 @@ export async function dispatch(req, ctx, identity) {
     switch (method) {
       case 'initialize': {
         const want = params?.protocolVersion;
+        // L30 P4: remember WHO connected. There is no session on this transport, so this is
+        // a best-effort module global with the User-Agent as a second signal; whatever it
+        // concludes is echoed back in every render result so a wrong guess is visible in
+        // the transcript rather than silently reshaping the payload.
+        if (params?.clientInfo && typeof params.clientInfo === 'object') {
+          lastClientInfo = { name: str(params.clientInfo.name), version: str(params.clientInfo.version) };
+        }
         const negotiated = SUPPORTED_VERSIONS.includes(want) ? want : PROTOCOL_VERSION;
         return rpcResult(id, {
           protocolVersion: negotiated,
@@ -950,7 +1424,7 @@ export async function onRequest({ request, env, waitUntil }) {
     }
   }
 
-  const ctx = { env, origin: new URL(request.url).origin, waitUntil };
+  const ctx = { env, origin: new URL(request.url).origin, waitUntil, client: clientFrom(request, env) };
 
   if (Array.isArray(body)) {
     if (body.length === 0) {
@@ -974,4 +1448,11 @@ export const __test__ = {
   TOOLS, toolsFor, RESOURCES, WIDGET_HTML, WIDGET_URI, URL_CONTRACT,
   buildUrl, parseViewArgs, captionText, isId, clampInt, matches, shape, resolve, zhNames,
   SITE_ORIGIN, MAX_BATCH, MAX_PNG_DATA_URL_BYTES,
+  // L30 P4. The codec functions are re-exported so a test can assert that THIS module and
+  // the page's module are the SAME module — the anti-drift check that makes "one definition,
+  // two importers" a fact rather than an intention.
+  parseRenderArgs, clientFrom, PROBE_PNG_B64, GROUPS,
+  MAX_IMAGE_BLOCK_B64, MAX_RESULT_CHARS, MAX_PNG_BYTES,
+  RENDER_BUDGET_CLAUDE_MS, RENDER_BUDGET_DEFAULT_MS, CACHE_PROBE_BUDGET_MS,
+  codec: { normalizeScene, validateScene, encodeScene, decodeScene, sceneSelectIds, structureOpacity, SCENE_LIMITS },
 };
