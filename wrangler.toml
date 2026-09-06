@@ -1,0 +1,26 @@
+name = "human-anatomy-viewer"
+compatibility_date = "2024-12-01"
+pages_build_output_dir = "dist"
+
+# Config for the /mcp endpoint only (L30 P2). NONE of these are secrets — a CF Access
+# `aud` tag and a service-token Client ID are public identifiers; the token's
+# client_secret never appears here and is never committed.
+#
+# ACCESS_AUD is the aud of the DEDICATED, PATH-SCOPED Access app
+# `anatomy.adrian.my/mcp` — the same shape A234 created for hub.adrian.my/mcp and A235
+# for research.adrian.my/mcp. A path app is the most specific match, so it overrides
+# the `*.adrian.my` wildcard without the wildcard being touched.
+#
+# Do NOT put the wildcard aud (c1abeb31…) here. It is shared by every adrian.my host,
+# so pinning it would accept a JWT minted for any of them — A234 measured exactly that
+# and confirmed the dedicated aud rejects it. Emptying this value is the kill switch:
+# functions/_access.js then 401s every request to /mcp.
+#
+# OWNER_EMAILS mirrors the `adr-adrian` reusable Access policy's include list.
+# OWNER_TOKEN_IDS is the adr agent service token's Client ID, which is what a
+# service-token JWT carries as `common_name` (it has no `email` claim at all).
+[vars]
+ACCESS_TEAM_DOMAIN = "adrey.cloudflareaccess.com"
+ACCESS_AUD         = ""
+OWNER_EMAILS       = "adrianganjy@gmail.com,adrey.journey@gmail.com,mipos.agent@gmail.com"
+OWNER_TOKEN_IDS    = "cf98efdf672cbd866da74d5b1d2078fd.access"
