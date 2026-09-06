@@ -70,6 +70,30 @@ export async function onRequest({ request, env }) {
     headers: { 'X-Snap-Secret': env.SNAP_SHARED_SECRET || '' },
   });
   const res = await env.SNAP.fetch(upstream);
+
+  // A 5xx returned from here does not reach the caller: measured 2026-09-06, a Function
+  // answering 502 is replaced by Cloudflare's branded HTML error page (6,440 bytes of
+  // it), while the SAME forwarder passes the renderer's 400 through untouched. So a
+  // caller polling this endpoint saw "502 text/html" and could not tell a rate limit
+  // from a broken deployment — the failure was legible over the service binding
+  // (functions/mcp.js reads it fine) and illegible over HTTP.
+  //
+  // These are not server faults anyway. A rate-limited renderer is a well-defined,
+  // expected, retryable condition, so it is reported as one: 429 when the renderer was
+  // rate-limited, 424 Failed Dependency otherwise. Both are 4xx, both survive the edge,
+  // and both carry the renderer's own words.
+  if (!res.ok) {
+    const ct = res.headers.get('content-type') || '';
+    const text = /json|text/i.test(ct) ? (await res.text()).slice(0, 400) : '';
+    const rateLimited = /rate limit|429/i.test(text);
+    return json(rateLimited ? 429 : 424, {
+      error: rateLimited ? 'renderer_rate_limited' : 'renderer_failed',
+      upstream_status: res.status,
+      detail: text || `the renderer answered ${res.status}`,
+      ...(rateLimited ? { hint: 'Cloudflare Browser Rendering time is metered on this account. Cached views still serve; the deep link always works.' } : {}),
+    });
+  }
+
   // Pass the render telemetry through; it is how a caller tells a cache hit from a
   // cold 60-second render.
   const headers = new Headers(res.headers);
