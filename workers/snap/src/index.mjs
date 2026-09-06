@@ -24,6 +24,9 @@
  *   SNAP_SHARED_SECRET            optional; when set, callers must present it
  */
 import puppeteer from '@cloudflare/puppeteer';
+// L30 P4: the cache-key surface lives next door so `node --test` can reach it. Nothing in
+// THIS file can be imported by a test — the puppeteer import above is module scope.
+import { canonical, parseSize, reDriveHash, sha256Hex } from './helpers.mjs';
 
 const SITE = 'https://anatomy.adrian.my';
 const READY_TIMEOUT_MS = 120000;
@@ -52,37 +55,6 @@ const png = (body, extra) => new Response(body, {
 const fail = (status, message, extra = {}) => new Response(JSON.stringify({ error: message, ...extra }), {
   status, headers: { 'Content-Type': 'application/json' },
 });
-
-/**
- * The canonical parameter string: the same view must always produce the same key, and
- * two different views must never share one. Params are sorted and re-encoded, so
- * `?a=1&b=2` and `?b=2&a=1` are one cache entry, while a different note is a different
- * one.
- */
-function canonical(params) {
-  const keep = ['select', 'view', 'isolate', 'explode', 'title', 'note', 'size', 'system'];
-  const p = new URLSearchParams();
-  for (const k of keep.sort()) {
-    const v = params.get(k);
-    if (v !== null && v !== '') p.set(k, v);
-  }
-  return p.toString();
-}
-
-async function sha256Hex(s) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** WxH, bounded. A caller cannot ask for a 10000x10000 render. */
-function parseSize(raw) {
-  const m = /^(\d{2,4})x(\d{2,4})$/.exec(String(raw || ''));
-  if (!m) return { width: 960, height: 720 };
-  return {
-    width: Math.min(Math.max(Number(m[1]), 200), MAX_W),
-    height: Math.min(Math.max(Number(m[2]), 200), MAX_H),
-  };
-}
 
 /**
  * A warm session if there is one, otherwise a new browser — and, crucially, a warm
@@ -126,26 +98,6 @@ async function acquire(env) {
   return { browser, warm: false, page: null };
 }
 
-/**
- * The hash that re-drives an already-loaded page.
- *
- * EVERY key is written, including empty ones, because the app only overwrites what the
- * URL mentions: a hash that omitted `title` would leave the PREVIOUS request's caption
- * printed over this request's structures — the picture would be confidently wrong.
- */
-function reDriveHash(params) {
-  const p = new URLSearchParams();
-  p.set('select', params.get('select') || '');
-  p.set('view', params.get('view') || 'three-quarter');
-  p.set('isolate', params.get('isolate') === '0' ? '0' : '1');
-  p.set('explode', params.get('explode') || '0');
-  p.set('title', params.get('title') || '');
-  p.set('note', params.get('note') || '');
-  if (params.get('system')) p.set('system', params.get('system'));
-  p.set('snap', '1');
-  return `#${p.toString()}`;
-}
-
 export default {
   async fetch(request, env) {
     const started = Date.now();
@@ -167,7 +119,7 @@ export default {
 
     const params = url.searchParams;
     if (!params.get('select')) return fail(400, 'select is required');
-    const size = parseSize(params.get('size'));
+    const size = parseSize(params.get('size'), MAX_W, MAX_H);
     const canon = canonical(params);
     // The build id is part of the key, so a redeploy of the site cannot serve a picture
     // rendered by the previous build. `SITE_BUILD` is set at deploy time.
@@ -178,6 +130,18 @@ export default {
       if (hit) {
         return png(hit.body, { 'X-Snap-Cache': 'hit', 'X-Snap-Key': key, 'X-Snap-Ms': String(Date.now() - started) });
       }
+    }
+
+    // L30 P4: THE CACHE PROBE. `cacheonly=1` answers from R2 or gives up — it must never
+    // touch a browser. render_anatomy asks this first with a 3-second budget, so the common
+    // case (a view this atlas has drawn before) returns a picture in about a second instead
+    // of holding a chat client open on the off-chance the render is warm. It is also the
+    // only way to ASK about the cache without spending the metered resource to find out.
+    if (params.get('cacheonly') === '1') {
+      return new Response(null, {
+        status: 204,
+        headers: { 'X-Snap-Cache': 'miss', 'X-Snap-Key': key, 'X-Snap-Ms': String(Date.now() - started) },
+      });
     }
 
     const target = `${SITE}/?${canon}${canon ? '&' : ''}snap=1`;
@@ -230,8 +194,37 @@ export default {
           { timeout: 10000 }, want,
         );
       }
-      // One frame for the camera fit to settle after the isolate framing.
-      await new Promise((r) => setTimeout(r, reused ? 1400 : 1200));
+      // L30 P4: THE SETTLED MARKER, not a sleep. The camera fit is animated (OrbitControls
+      // damping), and focus framing makes the flight longer, so the fixed 1.2/1.4 s wait
+      // this replaces could screenshot a mid-flight camera — and R2 then caches that
+      // half-flown frame for 24 hours under a perfectly valid key. The page sets the marker
+      // after three consecutive frames with nothing left to draw, and CLEARS it first thing
+      // on every re-drive so a reused tab's previous marker cannot satisfy this instantly.
+      let settle = 'marker';
+      try {
+        await page.waitForFunction(
+          () => document.documentElement.dataset.atlasSettled === '1',
+          { timeout: reused ? 25000 : 40000 },
+        );
+      } catch {
+        // A site build older than P4 does not set the marker. Fall back to the old sleep
+        // rather than failing the render, and SAY SO in a header so a plate rendered
+        // against a stale bundle is diagnosable instead of merely suspicious.
+        settle = 'sleep';
+        await new Promise((r) => setTimeout(r, reused ? 1400 : 1200));
+      }
+      // A floor under the marker: three still frames means the state settled, not that the
+      // compositor has presented it.
+      await new Promise((r) => setTimeout(r, 250));
+
+      // L30 P4: MAKE FAILURE LOUD. The page's error card carries `.loading`, which snap mode
+      // hides — so a load failure used to render as a silently BLANK plate that this Worker
+      // returned at HTTP 200 and cached for 24 hours. 424 survives Cloudflare's edge (a 502
+      // is replaced by a branded HTML page), and returning here is what SKIPS the R2 put.
+      const pageError = await page.evaluate(() => document.documentElement.dataset.atlasError || '').catch(() => '');
+      if (pageError) {
+        return fail(424, `the page reported an error while rendering: ${String(pageError).slice(0, 120)}`, { target });
+      }
 
       const shot = await page.screenshot({ type: 'png' });
       // The tab is the cache. Closing it here is what made the "warm" path cost 51 s.
@@ -249,6 +242,7 @@ export default {
         'X-Snap-Tab': reused ? 'reused' : 'new',
         'X-Snap-Key': key,
         'X-Snap-Ms': String(Date.now() - started),
+        'X-Snap-Settle': settle,
         'X-Snap-Session': sessionId || '',
       });
     } catch (err) {

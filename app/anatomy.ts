@@ -20,7 +20,29 @@ export interface Part {id:string;name:string;conceptId:string;system:SystemId;ch
 export interface Concept {id:string;name:string;elements:string[]}
 export interface Atlas {version:string;sex?:'male';source?:string;scope?:string;parts:Part[];concepts:Concept[];chunks:{url:string;bytes:number;gzip?:string;gzipBytes?:number}[];triangles:number}
 export type View = 'three-quarter'|'front'|'back'|'side';
-export interface SceneState {inspectorOpen?:boolean;explode:number;visible:SystemId[];selected:string[];isolate:boolean;view:View;rotate:boolean;reset:number}
+export interface SceneState {inspectorOpen?:boolean;explode:number;visible:SystemId[];selected:string[];isolate:boolean;view:View;rotate:boolean;reset:number;
+ // L30 P4 -- the teaching plate. All optional, all absent in Explorer mode, so nothing
+ // upstream changes shape. `focus` and `opacity` are keyed by PART id (already expanded
+ // from concept ids by the page), which is the only vocabulary the scene effect speaks.
+ /** Chrome-less teaching plate: no studio floor, no auto-rotate, uniform framing bands. */
+ render?:boolean;
+ /** Frame the camera on THESE parts rather than on the whole selection. */
+ focus?:string[];
+ /** Camera DISTANCE multiplier for the focus fit -- larger is further away, not a percentage. */
+ focusPadding?:number;
+ /** Per-part alpha 0..1. A fresh object identity on every change: the animate loop's
+  *  change guard is reference equality, so a map mutated in place never reaches the GPU
+  *  and the failure is a correct-looking render of the PREVIOUS scene. */
+ opacity?:Record<string,number>;
+ /** Alpha for parts that are visible but not named by the scene (`rest: skeletal`). */
+ restOpacity?:number;
+ /** Part ids the plate HIGHLIGHTS (role `primary`). On a teaching plate the highlight
+  *  tint follows this rather than the whole selection, which also carries the context
+  *  and ghost structures. Absent in Explorer mode, where selection IS the highlight. */
+ primary?:string[];
+ background?:'light'|'dark';
+ /** 1 = draw the backing store at 2x and let the composite downsample it. */
+ ss?:number}
 export const DEFAULT_VISIBLE:SystemId[] = ['cardiac','sensory','skeletal','muscular','arterial','venous','nervous','respiratory','digestive','urinary','lymphatic','endocrine','reproductive','connective'];
 export const EXPLANATIONS:Record<string,string> = {
  'heart':'A muscular pump in the chest. Its right side sends blood to the lungs; its left side sends blood through the systemic circulation.',

@@ -216,3 +216,33 @@ html:lang(zh-Hans),html:lang(zh-Hant){font-family:"Noto Sans CJK SC","Source Han
 html:lang(zh-Hans) .structure-title,html:lang(zh-Hant) .structure-title{letter-spacing:0}
 html:lang(zh-Hans) .eyebrow,html:lang(zh-Hant) .eyebrow{letter-spacing:.08em}
 @media(max-width:767px){.result-en{display:none}}
+
+
+/* L30 P4 -- TEACHING / RENDER MODE (PRD section 10). An "AI-generated anatomy plate",
+   not a screenshot of anatomy software. Purely ADDITIVE: it adds rules, it never edits
+   one above it, so this file cannot conflict on an upstream rebase.
+
+   `body.render-mode` always implies `body.snap-mode` (set together in url-state.ts), so
+   everything the snapshot already hides stays hidden and this block only names what snap
+   mode does NOT hide:
+     .vignette   a full-frame radial gradient that tints every plate -- and the single
+                 worst thing you can hand a PNG encoder, since it is a smooth ramp over
+                 the entire image;
+     .part-hover the mouse tooltip, which a headless driver can leave on screen;
+     .lang-switch shipped in P3 and never added to the snap hide list, so it has been
+                 appearing in snapshot plates ever since. Hidden in BOTH modes here --
+                 a language switch is chrome, and a picture must not carry it.
+   The caption is deliberately NOT hidden: PRD sections 10 and 17 put the title and the
+   short explanation inside the plate, and the P2 comment above says the caption is part
+   of the PICTURE. */
+body.snap-mode .lang-switch,
+body.render-mode .vignette,
+body.render-mode .part-hover{display:none!important}
+
+/* A plate's caption is the only text in the frame, so it can be bigger and calmer than
+   the explorer's. Same node, same placement as snap mode; more room and more contrast. */
+body.render-mode .atlas-caption{left:4.5%;bottom:5.5%;width:min(52ch,84vw);max-height:34%;
+ padding:18px 20px;border-radius:14px;background:#ffffffef}
+body.render-mode .atlas-caption h2{font-size:19px;line-height:1.3;margin-bottom:9px}
+body.render-mode .atlas-caption p{font-size:15px;line-height:1.62;color:#3f4a55}
+@media(prefers-color-scheme:dark){body.render-mode .atlas-caption{background:#ffffffef}}

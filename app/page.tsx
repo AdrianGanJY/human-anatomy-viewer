@@ -1,6 +1,7 @@
 import {flushSync} from 'react-dom';
 import {registerAtlasTools} from './agent-tools';
-import {markReady,markSelected,readUrlState,setSnapMode,writeUrlState,type UrlState} from './url-state';
+import {markError,markReady,markScene,markSelected,markSettled,readUrlState,setModes,writeUrlState,type UrlState} from './url-state';
+import {encodeScene,sceneSelectIds,structureOpacity,type Scene} from './scene-model';
 const NO_IDS:string[]=[];
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Activity,ArrowUpRight,ChevronRight,Focus,Info,Layers3,ListChecks,Pause,Plus,RotateCcw,RotateCw,Search,X} from 'lucide-react';
@@ -48,7 +49,14 @@ export default function Home(){
  },[]);
  // The assistant's own words, rendered verbatim over the scene. Text nodes only.
  const [caption,setCaption]=useState<{title?:string;note?:string}>({});
- useEffect(()=>{const abort=new AbortController();setProgress(0);setError('');setAtlas(null);setPicks(NO_IDS);setFocusId(null);setDetails(false);setState({...initial,visible:DEFAULT_VISIBLE});fetch('/models/atlas.json',{signal:abort.signal}).then(r=>{if(!r.ok)throw new Error(UI['load.failed']);return r.json();}).then(data=>setAtlas(data as Atlas)).catch(e=>{if(e.name!=='AbortError')setError(e.message);});return()=>abort.abort();},[]);
+ // L30 P4 -- THE TEACHING SCENE. Present only when the URL carried one (`scene=`, or the
+ // PRD's `mode=render` alias form). While it is set the page is a PLATE, not an explorer:
+ // roles decide opacity, `camera.focus` decides framing, and every field the scene owns is
+ // applied EXPLICITLY on each re-drive. That last part is load-bearing on a warm tab -- an
+ // empty value resets nothing except title/note, so "clear the legacy keys" does not work
+ // and only an authoritative apply can stop the previous request bleeding into this one.
+ const [scene,setScene]=useState<Scene|null>(null);
+ useEffect(()=>{const abort=new AbortController();setProgress(0);setError('');setAtlas(null);setPicks(NO_IDS);setFocusId(null);setDetails(false);setState({...initial,visible:DEFAULT_VISIBLE});fetch('/models/atlas.json',{signal:abort.signal}).then(r=>{if(!r.ok)throw new Error(UI['load.failed']);return r.json();}).then(data=>setAtlas(data as Atlas)).catch(e=>{if(e.name!=='AbortError'){markError('atlas');setError(e.message);}});return()=>abort.abort();},[]);
  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==='/'&&!(e.target instanceof HTMLInputElement)&&!(e.target instanceof HTMLTextAreaElement)){e.preventDefault();setPanel('search');setDetails(false);}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);},[]);
  const parts=useMemo(()=>new Map(atlas?.parts.map(p=>[p.id,p])),[atlas]);
  const conceptsById=useMemo(()=>new Map(atlas?.concepts.map(c=>[c.id,c])),[atlas]);
@@ -95,7 +103,55 @@ export default function Home(){
  /** The in-page tools read the LIVE basket, not the one that existed when they registered. */
  const live=useRef<Pick[]>(basket);live.current=basket;
  useEffect(()=>{if(!atlas)return;return registerAtlasTools(atlas,c=>flushSync(()=>choose(c)),id=>flushSync(()=>addToPicks(id)),()=>live.current.map(p=>({id:p.id,name:p.name,pieces:p.elements.length})));},[atlas]);
- const applyUrl=(u:UrlState)=>{setSnapMode(!!u.snap);if(u.lang)applyLang(u.lang);if(u.title!==undefined||u.note!==undefined)setCaption({title:u.title,note:u.note});if(u.select&&atlas)replacePicks(u.select);setState(s=>({...s,...(u.visible?{visible:u.visible}:{}),...(u.view?{view:u.view}:{}),...(u.explode!==undefined?{explode:u.explode}:{}),...(u.isolate!==undefined?{isolate:u.isolate}:{}),reset:s.reset+1}));};
+ const applyUrl=(u:UrlState)=>{
+  // A re-drive is not settled and has no error until this one proves otherwise. These two
+  // MUST be first: a reused tab still carrying the previous request's markers satisfies the
+  // renderer's waits instantly, which is exactly the bug the exact-selection wait exists to
+  // prevent, one level up.
+  markSettled(false);markError('');
+  if(u.scene){
+   // AUTHORITATIVE. Every field the scene owns is set from the scene, legacy keys ignored,
+   // so a warm tab that previously served a plain `select=` render is fully overwritten.
+   const sc=u.scene;
+   setScene(sc);
+   markScene(u.sceneBlob??encodeScene(sc));
+   setModes(true,sc.mode==='render');
+   applyLang(sc.lang);
+   setCaption({title:sc.caption.place==='in'&&sc.caption.title?sc.caption.title:undefined,note:sc.caption.place==='in'&&sc.caption.note?sc.caption.note:undefined});
+   if(atlas)replacePicks(sceneSelectIds(sc));
+   setState(s=>({...s,
+    view:sc.camera.view,explode:sc.camera.explode,rotate:sc.camera.rotate,
+    // `rest:none` is today's isolate exactly, so every P1-P3 deep link keeps working.
+    isolate:sc.rest.include==='none',
+    visible:sc.rest.include==='skeletal'?['skeletal']:s.visible,
+    reset:s.reset+1}));
+   return;
+  }
+  setScene(null);markScene('');
+  setModes(!!u.snap,false);if(u.lang)applyLang(u.lang);if(u.title!==undefined||u.note!==undefined)setCaption({title:u.title,note:u.note});if(u.select&&atlas)replacePicks(u.select);setState(s=>({...s,...(u.visible?{visible:u.visible}:{}),...(u.view?{view:u.view}:{}),...(u.explode!==undefined?{explode:u.explode}:{}),...(u.isolate!==undefined?{isolate:u.isolate}:{}),reset:s.reset+1}));};
+ /** Role -> per-PART alpha, and the framing set, both expanded through the resolved basket
+  *  because a scene names CONCEPTS while the renderer speaks in meshes. A fresh object
+  *  identity every time, because the animate loop's change guard is reference equality. */
+ const plate=useMemo(()=>{
+  if(!scene)return null;
+  const alpha=structureOpacity(scene) as Record<string,number>;
+  const roleOf=new Map(scene.structures.map(s=>[s.id,s.role]));
+  const wantFocus=new Set(scene.camera.focus);
+  const opacity:Record<string,number>={},focus:string[]=[],primary:string[]=[];
+  for(const p of basket){
+   const a=alpha[p.id];
+   for(const el of p.elements){
+    // A mesh shared by two named structures takes the MOST opaque of them: primary wins.
+    if(a!==undefined)opacity[el]=Math.max(opacity[el]??0,a);
+    if(roleOf.get(p.id)==='primary')primary.push(el);
+    if(wantFocus.has(p.id))focus.push(el);
+   }
+  }
+  return {opacity,focus,primary,
+   focusPadding:scene.camera.padding,
+   restOpacity:scene.rest.include==='skeletal'?scene.rest.opacity:undefined,
+   render:scene.mode==='render',background:scene.background,ss:scene.ss};
+ },[scene,basket]);
  const urlApplied=useRef(false);
  useEffect(()=>{if(!atlas||urlApplied.current)return;urlApplied.current=true;applyUrl(readUrlState());},[atlas]);
  useEffect(()=>{if(!atlas)return;const reapply=()=>applyUrl(readUrlState());window.addEventListener('hashchange',reapply);return()=>window.removeEventListener('hashchange',reapply);},[atlas]);
@@ -115,7 +171,11 @@ export default function Home(){
   return EXPLANATIONS[key]?t.explanation(key,en):t.systemDesc(sys,en);
  };
  return <main className="studio">
-  {atlas&&<AnatomyScene atlas={atlas} state={{...state,inspectorOpen:details&&selectedParts.length>0}} onSelect={choosePart} onProgress={n=>{setProgress(n);if(n===100){setError('');markReady();}}} onError={setError}/>}
+  {/* L30 P4: `plate` is spread last, so a teaching scene owns opacity, focus and framing.
+      inspectorOpen is forced FALSE in render mode: the detail sheet is display:none there,
+      but the camera fit still reserves 335-370 px on the right for it, which is a large
+      part of why the PRD says the subject occupies about a fifth of the frame. */}
+  {atlas&&<AnatomyScene atlas={atlas} state={{...state,inspectorOpen:!plate?.render&&details&&selectedParts.length>0,...(plate??{})}} onSelect={choosePart} onProgress={n=>{setProgress(n);if(n===100){setError('');markReady();}}} onError={e=>{markError('load');setError(e);}}/>}
   <div className="vignette"/>
   <header className="identity"><div className="eyebrow"><span className="status-dot"/> {t.ui('app.eyebrow')}</div><h1>{t.ui('app.title')}<Badge variant="outline" className="edition">3D</Badge></h1><div className="identity-meta">{t.ui('app.pieces',{n:(atlas?atlas.parts.length:2234).toLocaleString()})} <span>·</span> BodyParts3D</div></header>
   {/* One node, positioned per breakpoint (under the header on a desktop, bottom-left on a

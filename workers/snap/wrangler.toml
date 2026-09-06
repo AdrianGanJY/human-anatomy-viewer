@@ -24,4 +24,9 @@ bucket_name = "human-anatomy-snaps"
 # The CF Access service token (SNAP_CF_ID / SNAP_CF_SECRET) and SNAP_SHARED_SECRET are
 # Worker SECRETS set with `wrangler secret put` — never here, never committed.
 [vars]
-SITE_BUILD = "p2"
+# P4 changes what a plate LOOKS like (render mode, focus framing, ghost anatomy), so every
+# cached picture from the previous build is now wrong for the same key. Bumping this is what
+# invalidates them. It was still "p2" while the site had shipped P3 and P3r, which means
+# pre-P3 pictures were being served for post-P3r views -- deploy.ps1 now fails the build if
+# a render-path file changed and this literal did not.
+SITE_BUILD = "p4"
