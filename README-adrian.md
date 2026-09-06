@@ -89,21 +89,44 @@ and redeploy. Manual beats everything.
 
 ### 2. `POST /mcp` — a read-only MCP server
 
-Six owner-only tools: `find_anatomy`, `get_structure`, `list_systems`, **`compose_view`**, and the
-ChatGPT connector pair `search` / `fetch`. `compose_view` is the point — an assistant names several
-structures and its own sentence, and gets back a link that opens the live view with all of them
-highlighted and that sentence printed over the scene, plus (best-effort) a rendered PNG inline.
+Nine owner-only tools. **`render_anatomy`** is the point since P4: an assistant names the structures
+an explanation is about, what to keep as translucent context, and what to ghost — and gets back a
+clean teaching PLATE as a real MCP image block, plus a link into the live 3D view. `compose_view`
+remains the LINK tool, `find_anatomy` / `get_structure` / `list_systems` turn words into ids,
+`search` / `fetch` are the ChatGPT connector pair, `compose_sequence` is registered and refusing
+until it is built, and `probe_image` returns one tiny PNG so you can see for yourself whether a
+given chat client displays an MCP image block at all.
+
+The picture travels THREE ways on one result, because no evidence settles which one a client will
+show: the image block (spec, and documented by Anthropic), the Apps SDK widget's data URI (the
+carrier with positive evidence on this account — your "Open in 3D" card is that widget), and the
+link in the text. The picture degrades; the answer never does.
+
+**Named groups worth knowing** (checked against this atlas): `hamstrings` is not a concept here at
+all — it is FMA22357 + FMA22438 + FMA45887, and *not* FMA45881, which folds in the short head.
+`pelvis` means FMA16580 "bony pelvis", not FMA9578, which drags in body surface. "Lumbar spine" is
+stored as "lumbar vertebral column" (FMA16203), so an exact-name lookup fails. `view:"side"` looks
+at the body's LEFT, and these concepts are bilateral, so a clean sagittal plate wants the left-sided
+ids. There are no joints in this atlas — BodyParts3D ships meshes — so nothing can point at a hip
+joint.
+
+**Opacity is resolved by COVERAGE, not blending** (the geometry is merged per system and there is no
+depth sort available), so the numbers read fainter here than elsewhere: the defaults are 0.55 for
+context and 0.25 for ghost, and plates are supersampled 2x so the dither reads as a wash rather than
+as speckle. Below about 0.15 a structure nearly disappears.
 
 - `functions/_access.js` is a **byte-identical vendored copy** of `E:/Agentic/apps/hub/functions/_access.js`
   (A234). `test/mcp.test.mjs` asserts that, so drift is a failing test rather than a discovery.
   Fail-closed: no `ACCESS_AUD`, no access.
 - Auth is a dedicated **path-scoped** Cloudflare Access app on `anatomy.adrian.my/mcp`
-  (aud `49062b68…`, policies `adr-adrian` + `adr-adrian-agent`) with Managed OAuth. The
+  (aud `b603427b…` — the live value is `ACCESS_AUD` in `wrangler.toml`; the `49062b68…` this
+  line used to name was replaced in P2b when Ashley was added and has been dead since),
+  policies `adr-adrian` + `adr-ashley`, with Managed OAuth. The
   `*.adrian.my` wildcard app is never touched. A JWT minted for the wildcard is *rejected* here —
   measured, both via `Authorization: Bearer` and `Cf-Access-Jwt-Assertion`.
 - **Kill switch**: set `ACCESS_AUD = ""` in `wrangler.toml` and redeploy; the function then 401s
   everything.
-- `scripts/build-index.mjs` writes `public/api/index.json` (3,432 concepts, ~300 KB) at deploy time
+- `scripts/build-index.mjs` writes `public/api/index.json` (3,432 concepts, ~913 KB) at deploy time
   and *imports* the systems table and explanations from `app/anatomy.ts`, so the index cannot
   disagree with the UI. The file is gitignored — it is derived from `public/models/atlas.json`.
 
@@ -120,12 +143,23 @@ binding. Measured on this account, 2026-09-06:
 | warm session, **reused tab** (hash re-drive) | **21–27 s** |
 | R2 cache hit | **0.2–1.1 s** |
 
-⚠️ **Browser time is metered and this account has a limit.** After roughly six renders in twenty
-minutes, `puppeteer.launch` answered `429 Rate limit exceeded` while cache hits kept serving. An
-idle keep-alive bills like a working one, so `KEEP_ALIVE_MS` is 2 minutes, not the 10-minute
-maximum. `compose_view` therefore treats the picture as best-effort: a 20-second budget, then it
-answers with the link and finishes the render in `waitUntil` so the same request a minute later is
-instant. **The link always works.**
+⚠️ **Browser time is metered and this account is on the FREE plan, which is the real ceiling on
+this whole feature.** After roughly six renders in twenty minutes, `puppeteer.launch` answers
+`429 Rate limit exceeded` while cache hits keep serving. An idle keep-alive bills like a working
+one, so `KEEP_ALIVE_MS` is 2 minutes, not the 10-minute maximum.
+
+**Measured 2026-09-06 21:45–21:49 UTC: the allowance was exhausted and did NOT clear across four
+attempts over 3.5 minutes** — which rules out the free tier's one-new-browser-per-20-seconds rate
+cap and leaves the account-level daily allowance, resetting at 00:00 UTC. So a teaching feature
+that renders per explanation gets a handful of pictures a day on Free. Workers Paid ($5/mo) removes
+the daily cap and includes 10 browser-hours/month, then $0.09/hr. **This is an Adrian decision and
+it gates how usable the feature is**, not a code problem.
+
+Budgets: `compose_view` keeps a 20-second budget (it is the LINK tool and must answer fast).
+`render_anatomy` waits 75 s for a caller that identifies as Claude and 50 s otherwise (OpenAI staff
+have stated a hard one-minute ceiling on any tool call), after first probing the R2 cache with
+`cacheonly=1`, which answers in about a second and never touches a browser. A timed-out render is
+kept alive on the SAME promise, so it is not paid for twice. **The link always works.**
 
 > `/api/snap` carries its own gate and must: measured, `GET /api/index.json` and `/api/nothing-here`
 > on this host both answer **200 anonymously**, because the estate runs a public
