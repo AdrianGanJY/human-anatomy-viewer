@@ -29,4 +29,9 @@ bucket_name = "human-anatomy-snaps"
 # invalidates them. It was still "p2" while the site had shipped P3 and P3r, which means
 # pre-P3 pictures were being served for post-P3r views -- deploy.ps1 now fails the build if
 # a render-path file changed and this literal did not.
-SITE_BUILD = "p4"
+#
+# p4 -> p4a: the adversarial-review pass changed what a plate LOOKS like again
+# (supersampling on, role opacities recalibrated for coverage), and the guard in deploy.ps1
+# caught it on its first real use rather than letting p4-keyed pictures be served for a
+# different-looking build.
+SITE_BUILD = "p4a"
