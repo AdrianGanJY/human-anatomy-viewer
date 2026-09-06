@@ -16,7 +16,11 @@ pages_build_output_dir = "dist"
 # and confirmed the dedicated aud rejects it. Emptying this value is the kill switch:
 # functions/_access.js then 401s every request to /mcp.
 #
-# OWNER_EMAILS mirrors the `adr-adrian` reusable Access policy's include list.
+# OWNER_EMAILS mirrors the include lists of the reusable Access policies attached to that
+# app — `adr-adrian` (adrianganjy@ / adrey.journey@ / mipos.agent@) plus `adr-ashley`
+# (lohjiafui93@), added 2026-09-06 in L30 P2b on Adrian's ruling. The edge decides WHO may
+# reach /mcp; this list is the function's own second gate, so the two must agree or an
+# identity Access lets through is 401'd by the function for no visible reason.
 # OWNER_TOKEN_IDS is the adr agent service token's Client ID, which is what a
 # service-token JWT carries as `common_name` (it has no `email` claim at all).
 # The live snapshot renderer (workers/snap). It is a WORKER, not a Function, because
@@ -28,6 +32,6 @@ service = "human-anatomy-snap"
 
 [vars]
 ACCESS_TEAM_DOMAIN = "adrey.cloudflareaccess.com"
-ACCESS_AUD         = "49062b6890f5ac56aa3fae146328acaa5bc9472c189120efe7d731463b9679d2"
-OWNER_EMAILS       = "adrianganjy@gmail.com,adrey.journey@gmail.com,mipos.agent@gmail.com"
+ACCESS_AUD         = "b603427ba3f271ab9a5f6255ade26e29efe6c5213cd9de0b8c93d51036bc0da5"
+OWNER_EMAILS       = "adrianganjy@gmail.com,adrey.journey@gmail.com,mipos.agent@gmail.com,lohjiafui93@gmail.com"
 OWNER_TOKEN_IDS    = "cf98efdf672cbd866da74d5b1d2078fd.access"
