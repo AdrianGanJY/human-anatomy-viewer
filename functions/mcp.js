@@ -74,6 +74,14 @@ const MAX_BATCH = 16;
  *  will carry. 400 KB is the ceiling; a larger render is reported, never truncated. */
 const MAX_PNG_DATA_URL_BYTES = 400 * 1024;
 
+/**
+ * How long `compose_view({snapshot:true})` will wait for a picture before answering
+ * with the link alone. Measured on this account: cache hit < 1 s, warm tab ~21 s,
+ * cold ~60 s. 20 s catches every cache hit and most warm renders, and never holds a
+ * chat client open for a cold one.
+ */
+const SNAPSHOT_BUDGET_MS = 20000;
+
 const WIDGET_URI = 'ui://widget/anatomy-view.html';
 
 const READ_ONLY = {
@@ -451,11 +459,27 @@ async function renderSnapshot(ctx, view) {
   const { env } = ctx;
   if (!env.SNAP) return { error: 'no snapshot renderer is bound to this deployment' };
   const target = buildUrl({ ...view, snap: true, size: '960x720' });
+  const query = new URL(target).searchParams.toString();
+  const request = () => new Request(`${SITE_ORIGIN}/api/snap?${query}`, {
+    method: 'GET',
+    headers: { 'X-Snap-Secret': env.SNAP_SHARED_SECRET || '' },
+  });
   try {
-    const res = await env.SNAP.fetch(new Request(`${SITE_ORIGIN}/api/snap?${new URL(target).searchParams.toString()}`, {
-      method: 'GET',
-      headers: { 'X-Snap-Internal': '1' },
-    }));
+    // A BUDGET, not a wait. Measured on this account 2026-09-06: a cold render is
+    // ~60 s (a new browser plus 33 MB of geometry), a warm tab ~21 s, an R2 cache hit
+    // under 1 s. A chat client will abandon the tool call long before 60 s, so the
+    // rule is: answer with the link now, and let the render finish in the background
+    // so the SAME request a moment later is a cache hit.
+    const res = await Promise.race([
+      env.SNAP.fetch(request()),
+      new Promise((resolve) => setTimeout(() => resolve(null), SNAPSHOT_BUDGET_MS)),
+    ]);
+    if (res === null) {
+      // Keep the render alive past this response: that is what turns a retry into an
+      // instant hit instead of a second 60-second wait.
+      if (ctx.waitUntil) ctx.waitUntil(env.SNAP.fetch(request()).catch(() => {}));
+      return { error: `not rendered within ${SNAPSHOT_BUDGET_MS} ms — a first render of a new view costs about a minute on this account. It is still rendering; ask again in a minute and it will be instant. The link works now.` };
+    }
     const ct = res.headers.get('content-type') || '';
     if (!res.ok || !/image\/png/i.test(ct)) {
       const detail = /json|text/i.test(ct) ? (await res.text()).slice(0, 200) : '';
@@ -790,7 +814,7 @@ export async function readBounded(request, max) {
   return new TextDecoder().decode(buf);
 }
 
-export async function onRequest({ request, env }) {
+export async function onRequest({ request, env, waitUntil }) {
   const cors = corsHeaders(request);
 
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -841,7 +865,7 @@ export async function onRequest({ request, env }) {
     }
   }
 
-  const ctx = { env, origin: new URL(request.url).origin };
+  const ctx = { env, origin: new URL(request.url).origin, waitUntil };
 
   if (Array.isArray(body)) {
     if (body.length === 0) {

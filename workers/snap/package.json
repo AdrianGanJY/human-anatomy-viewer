@@ -1,0 +1,12 @@
+{
+  "name": "human-anatomy-snap",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "devDependencies": {
+    "wrangler": "^4.92.0"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^1.0.4"
+  }
+}

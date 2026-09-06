@@ -19,6 +19,13 @@ pages_build_output_dir = "dist"
 # OWNER_EMAILS mirrors the `adr-adrian` reusable Access policy's include list.
 # OWNER_TOKEN_IDS is the adr agent service token's Client ID, which is what a
 # service-token JWT carries as `common_name` (it has no `email` claim at all).
+# The live snapshot renderer (workers/snap). It is a WORKER, not a Function, because
+# the Browser Rendering binding is a Workers binding; this is how /api/snap and the
+# /mcp `compose_view` tool reach it without a public hop.
+[[services]]
+binding = "SNAP"
+service = "human-anatomy-snap"
+
 [vars]
 ACCESS_TEAM_DOMAIN = "adrey.cloudflareaccess.com"
 ACCESS_AUD         = "49062b6890f5ac56aa3fae146328acaa5bc9472c189120efe7d731463b9679d2"

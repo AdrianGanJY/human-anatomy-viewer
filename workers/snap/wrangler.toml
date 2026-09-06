@@ -1,0 +1,27 @@
+name = "human-anatomy-snap"
+main = "src/index.mjs"
+# No public route. The ONLY caller is the Pages project through the `SNAP` service
+# binding; a public renderer would let anyone burn this account's metered browser
+# minutes. Flip to true (and rely on SNAP_SHARED_SECRET) only to debug it directly.
+workers_dev = false
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "a135de78aaa95d36ee634b81267625c6"   # Adrey — pinned so a multi-account box cannot deploy this elsewhere
+
+# Cloudflare Browser Rendering. This is the binding that makes the Worker shape
+# necessary: Pages Functions do not take it, so the Pages project calls this Worker
+# through a service binding instead.
+browser = { binding = "BROWSER" }
+
+# Rendered PNGs, keyed by sha256(build id | size | canonical params). A repeated view
+# costs one R2 GET instead of a browser session.
+[[r2_buckets]]
+binding = "SNAPS"
+bucket_name = "human-anatomy-snaps"
+
+# SITE_BUILD is part of the cache key, so a redeploy of the site can never be served a
+# picture rendered by the previous build. NOT a secret.
+# The CF Access service token (SNAP_CF_ID / SNAP_CF_SECRET) and SNAP_SHARED_SECRET are
+# Worker SECRETS set with `wrangler secret put` — never here, never committed.
+[vars]
+SITE_BUILD = "p2"
