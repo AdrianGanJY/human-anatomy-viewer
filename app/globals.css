@@ -86,3 +86,17 @@ h1 .edition{font-family:inherit;font-weight:500;font-size:10px;letter-spacing:.0
 @media(max-width:767px){body:has(.detail-sheet) .view-controls{visibility:hidden}}
 
 @media(max-height:600px) and (orientation:landscape){body:has(.detail-sheet) .bottom-dock{left:12px;right:324px;width:auto;transform:none;max-width:none;margin:0}}
+
+/* Snapshot mode (?snap=1 / #snap=1) -- a chrome-less canvas for batch rendering.
+   Fork-local (L30); one block, so an upstream rebase stays trivial. */
+body.snap-mode .identity,
+body.snap-mode .top-actions,
+body.snap-mode .layers-panel,
+body.snap-mode .search-panel,
+body.snap-mode .view-controls,
+body.snap-mode .scene-caption,
+body.snap-mode .bottom-dock,
+body.snap-mode .studio-footer,
+body.snap-mode .loading,
+body.snap-mode [data-slot=sheet-content],
+body.snap-mode [data-slot=sheet-overlay]{display:none!important}

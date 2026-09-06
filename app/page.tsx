@@ -1,5 +1,6 @@
 import {flushSync} from 'react-dom';
 import {registerAtlasTools} from './agent-tools';
+import {markReady,markSelected,readUrlState,setSnapMode,writeUrlState,type UrlState} from './url-state';
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Activity,ArrowUpRight,ChevronRight,Focus,Info,Layers3,Pause,RotateCcw,RotateCw,Search,X} from 'lucide-react';
 import {Button} from '@/components/ui/button';
@@ -25,11 +26,17 @@ export default function Home(){
  const choose=(c:Concept)=>{setChosen(c);setState(s=>({...s,selected:c.elements,isolate:false,rotate:false}));setDetails(true);setPanel(null);};
  useEffect(()=>{if(!atlas)return;return registerAtlasTools(atlas,c=>flushSync(()=>choose(c)));},[atlas]);
  const choosePart=(id:string)=>{const p=parts.get(id);if(!p)return;setChosen({id:p.conceptId,name:p.name,elements:[id]});setState(s=>({...s,selected:[id],isolate:false,rotate:false}));setDetails(true);setPanel(null);};
+ const applyUrl=(u:UrlState)=>{setSnapMode(!!u.snap);if(u.select&&atlas){const c=atlas.concepts.find(x=>x.id===u.select);if(c)choose(c);else if(parts.has(u.select))choosePart(u.select);}setState(s=>({...s,...(u.visible?{visible:u.visible}:{}),...(u.view?{view:u.view}:{}),...(u.explode!==undefined?{explode:u.explode}:{}),...(u.isolate!==undefined?{isolate:u.isolate}:{}),reset:s.reset+1}));};
+ const urlApplied=useRef(false);
+ useEffect(()=>{if(!atlas||urlApplied.current)return;urlApplied.current=true;applyUrl(readUrlState());},[atlas]);
+ useEffect(()=>{if(!atlas)return;const reapply=()=>applyUrl(readUrlState());window.addEventListener('hashchange',reapply);return()=>window.removeEventListener('hashchange',reapply);},[atlas]);
+ useEffect(()=>{markSelected(chosen?.id??null);},[chosen]);
+ useEffect(()=>{if(!atlas)return;const t=setTimeout(()=>writeUrlState(state,chosen?.id??null),150);return()=>clearTimeout(t);},[atlas,state,chosen]);
  const toggle=(id:SystemId)=>{setDetails(false);setState(s=>({...s,selected:[],isolate:false,visible:s.visible.includes(id)?s.visible.filter(x=>x!==id):[...s.visible,id]}));};
  const reset=()=>{setState(s=>({...initial,visible:DEFAULT_VISIBLE,reset:s.reset+1}));setChosen(null);setDetails(false);setPanel(null);};
  const openPanel=(next:'layers'|'search')=>{setDetails(false);setPanel(p=>p===next?null:next);};
  return <main className="studio">
-  {atlas&&<AnatomyScene atlas={atlas} state={{...state,inspectorOpen:details&&selectedParts.length>0}} onSelect={choosePart} onProgress={n=>{setProgress(n);if(n===100)setError('');}} onError={setError}/>}
+  {atlas&&<AnatomyScene atlas={atlas} state={{...state,inspectorOpen:details&&selectedParts.length>0}} onSelect={choosePart} onProgress={n=>{setProgress(n);if(n===100){setError('');markReady();}}} onError={setError}/>}
   <div className="vignette"/>
   <header className="identity"><div className="eyebrow"><span className="status-dot"/> INTERACTIVE ANATOMY</div><h1>Human Atlas<Badge variant="outline" className="edition">3D</Badge></h1><div className="identity-meta">{atlas?atlas.parts.length.toLocaleString():'2,234'} modeled pieces <span>·</span> BodyParts3D</div></header>
   <nav className="top-actions" aria-label="Explorer panels"><Button variant="ghost" className={panel==='search'?'active':''} onClick={()=>openPanel('search')} aria-label="Search anatomy"><Search size={18}/><span>Find a structure</span><kbd>/</kbd></Button><Button variant="ghost" className="icon-button" aria-label="About this atlas" onClick={()=>{setDetails(false);setPanel(null);setAbout(true);}}><Info size={18}/></Button></nav>
