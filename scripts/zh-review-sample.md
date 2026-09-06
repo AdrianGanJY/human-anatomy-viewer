@@ -1,0 +1,211 @@
+# 60 terms to eyeball — L30 P3 Chinese names
+
+Generated 2026-09-06T15:44:10.483Z by `scripts/build-zh.mjs`. 30 random muscles + 30 random bones, drawn with a
+fixed seed so this page does not reshuffle between builds.
+
+**What to look for**: a term that is not what a Chinese anatomy textbook would call it, a
+left/right that flipped, or a number that drifted. `source` says where the Chinese came from —
+`wikidata` is an anchored label, `llm` is machine translation.
+
+| # | system | English | 简体 | 繁體 | source |
+|---|---|---|---|---|---|
+| 1 | muscular | oblique head of adductor pollicis | 拇收肌斜头 | 拇收肌斜頭 | llm |
+| 2 | muscular | region of papillary muscle | 乳头肌区域 | 乳頭肌區域 | llm |
+| 3 | muscular | set of lumbricals of right hand | 右手蚓状肌群 | 右手蚓狀肌群 | llm |
+| 4 | muscular | longissimus capitis | 头最长肌 | 頭最長肌 | llm |
+| 5 | muscular | left superior oblique | 左上斜肌 | 左上斜肌 | llm |
+| 6 | muscular | long head of right triceps brachii | 右肱三头肌长头 | 右肱三頭肌長頭 | llm |
+| 7 | muscular | gluteus medius | 臀中肌 | 臀中肌 | llm |
+| 8 | muscular | third lumbrical of foot | 足第3蚓状肌 | 足第3蚓狀肌 | llm |
+| 9 | muscular | musculature of subdivision of trunk | 躯干分部肌群 | 軀幹分部肌群 | llm |
+| 10 | muscular | medial head of right flexor hallucis brevis | 右踇短屈肌内侧头 | 右踇短屈肌內側頭 | llm |
+| 11 | muscular | right lateral rectus | 右外直肌 | 右外直肌 | llm |
+| 12 | muscular | head of gastrocnemius | 腓肠肌头 | 腓腸肌頭 | llm |
+| 13 | muscular | left iliocostalis lumborum | 左腰髂肋肌 | 左腰髂肋肌 | llm |
+| 14 | muscular | omohyoid | 肩胛舌骨肌 | 肩胛舌骨肌 | llm |
+| 15 | muscular | long head of left biceps brachii | 左肱二头肌长头 | 左肱二頭肌長頭 | llm |
+| 16 | muscular | head of biceps femoris | 股二头肌头 | 股二頭肌頭 | llm |
+| 17 | muscular | left extensor indicis | 左示指伸肌 | 左示指伸肌 | llm |
+| 18 | muscular | abdominal part of pectoralis major | 胸大肌腹部 | 胸大肌腹部 | llm |
+| 19 | muscular | right soleus | 右比目鱼肌 | 右比目魚肌 | llm |
+| 20 | muscular | zone of trapezius | 斜方肌分区 | 斜方肌分區 | llm |
+| 21 | muscular | right pectoral girdle | 右上肢带 | 右上肢帶 | llm |
+| 22 | muscular | lateral crico-arytenoid | 环杓侧肌 | 環杓側肌 | llm |
+| 23 | muscular | right anconeus | 右肘肌 | 右肘肌 | llm |
+| 24 | muscular | lateral head of gastrocnemius | 腓肠肌外侧头 | 腓腸肌外側頭 | llm |
+| 25 | muscular | longissimus | 最长肌 | 最長肌 | llm |
+| 26 | muscular | supraspinatus | 冈上肌 | 岡上肌 | llm |
+| 27 | muscular | right longissimus capitis | 右头最长肌 | 右頭最長肌 | llm |
+| 28 | muscular | muscle of anterior compartment of arm | 臂前群肌 | 臂前群肌 | llm |
+| 29 | muscular | right puborectalis | 右耻骨直肠肌 | 右恥骨直腸肌 | llm |
+| 30 | muscular | left serratus anterior | 左前锯肌 | 左前鋸肌 | llm |
+| 31 | skeletal | right second costal cartilage | 右第2肋软骨 | 右第2肋軟骨 | llm |
+| 32 | skeletal | lower secondary canine tooth | 下颌恒尖牙 | 下頜恆尖牙 | llm |
+| 33 | skeletal | middle phalanx of index finger | 示指中节指骨 | 示指中節指骨 | llm |
+| 34 | skeletal | second lumbar vertebra | 第2腰椎 | 第2腰椎 | llm |
+| 35 | skeletal | intervertebral disk | 椎间盘 | 椎間盤 | llm |
+| 36 | skeletal | intervertebral disk of sixth thoracic vertebra | 第6胸椎椎间盘 | 第6胸椎椎間盤 | llm |
+| 37 | skeletal | ninth thoracic intervertebral symphysis | 第9胸椎椎间联合 | 第9胸椎椎間聯合 | llm |
+| 38 | skeletal | lower second secondary premolar tooth | 下颌第2恒前磨牙 | 下頜第2恆前磨牙 | llm |
+| 39 | skeletal | humerus | 肱骨 | 肱骨 | llm |
+| 40 | skeletal | left lower secondary canine tooth | 左下颌恒尖牙 | 左下頜恆尖牙 | llm |
+| 41 | skeletal | distal phalanx of third toe | 第3趾远节趾骨 | 第3趾遠節趾骨 | llm |
+| 42 | skeletal | right third toe | 右第3趾 | 右第3趾 | llm |
+| 43 | skeletal | middle phalanx of left little toe | 左小趾中节趾骨 | 左小趾中節趾骨 | llm |
+| 44 | skeletal | distal phalanx of second toe | 第2趾远节趾骨 | 第2趾遠節趾骨 | llm |
+| 45 | skeletal | gingiva | 牙龈 | 牙齦 | llm |
+| 46 | skeletal | intervertebral disk of first thoracic vertebra | 第1胸椎椎间盘 | 第1胸椎椎間盤 | llm |
+| 47 | skeletal | long bone | 长骨 | 長骨 | llm |
+| 48 | skeletal | right sixth rib | 右第6肋 | 右第6肋 | llm |
+| 49 | skeletal | left patella | 左髌骨 | 左髕骨 | llm |
+| 50 | skeletal | proximal phalanx of left ring finger | 左环指近节指骨 | 左環指近節指骨 | llm |
+| 51 | skeletal | third thoracic vertebra | 第3胸椎 | 第3胸椎 | llm |
+| 52 | skeletal | upper secondary premolar tooth | 上颌恒前磨牙 | 上頜恆前磨牙 | llm |
+| 53 | skeletal | first metacarpal bone | 第1掌骨 | 第1掌骨 | llm |
+| 54 | skeletal | fourth costal cartilage | 第4肋软骨 | 第4肋軟骨 | llm |
+| 55 | skeletal | lumbar vertebra | 腰椎 | 腰椎 | llm |
+| 56 | skeletal | right side of rib cage | 右侧胸廓 | 右側胸廓 | llm |
+| 57 | skeletal | left index finger | 左示指 | 左示指 | llm |
+| 58 | skeletal | proximal phalanx of middle finger | 中指近节指骨 | 中指近節指骨 | llm |
+| 59 | skeletal | left lunate | 左月骨 | 左月骨 | llm |
+| 60 | skeletal | left zygomatic bone | 左颧骨 | 左顴骨 | llm |
+
+## Where Wikidata disagreed
+
+Of the 656 concepts that Wikidata also has a Chinese label for, 395
+(60.2%) came out identical — those are confirmed by two independent sources.
+The other 261 are below. **The shipped name is the "简体" column**; Wikidata is shown so
+you can overrule. Reading the first 40 is what set that precedence: Wikidata is Wikipedia
+article titles and often Taiwan usage, the model was asked for the mainland standard, and
+Wikidata carries some outright wrong concepts (`vertebra` → 椎骨切迹, `nasolacrimal duct` → 泪器).
+
+| English | 简体 (shipped) | Wikidata says |
+|---|---|---|
+| marginal branch of right coronary artery | 右冠状动脉缘支 | 冠状动脉右边缘支 |
+| posterior interventricular branch of right coronary artery | 右冠状动脉后室间支 | 后室间动脉 |
+| circumflex branch of left coronary artery | 左冠状动脉旋支 | 左回旋支动脉 |
+| brachiocephalic artery | 头臂干 | 头臂动脉干 |
+| common carotid artery | 颈总动脉 | 总颈动脉 |
+| internal carotid artery | 颈内动脉 | 内颈动脉 |
+| internal thoracic artery | 胸廓内动脉 | 乳内动脉 |
+| thyrocervical trunk | 甲状颈干 | 甲状腺颈动脉干 |
+| great cardiac vein | 心大静脉 | 心脏大静脉 |
+| middle cardiac vein | 心中静脉 | 心脏中静脉 |
+| small cardiac vein | 心小静脉 | 心脏小静脉 |
+| right marginal vein | 右缘静脉 | 右边缘静脉 |
+| internal jugular vein | 颈内静脉 | 内颈静脉 |
+| bone organ | 骨器官 | 骨组织 |
+| muscle organ | 肌器官 | 肌肉 |
+| autonomic ganglion | 自主神经节 | 自律神经节 |
+| parasympathetic ganglion | 副交感神经节 | 副交感神经节（parasympathetic ganglion） |
+| esophagus | 食管 | 食道 |
+| skin | 皮肤 | 人类皮肤 |
+| spleen | 脾 | 脾脏 |
+| pancreas | 胰 | 胰脏 |
+| rib | 肋 | 肋骨 |
+| salivary gland | 唾液腺 | 唾腺 |
+| muscle of upper limb | 上肢肌 | 上肢肌肉 |
+| muscle of lower limb | 下肢肌 | 下肢肌肉 |
+| supraspinatus | 冈上肌 | 棘上肌 |
+| portion of tissue | 组织部分 | 生物组织 |
+| nasolacrimal duct | 鼻泪管 | 泪器 |
+| vertebra | 椎骨 | 椎骨切迹 |
+| costocervical trunk | 肋颈干 | 肋颈动脉干 |
+| superior epigastric artery | 腹壁上动脉 | 上腹壁动脉 |
+| deep cervical artery | 颈深动脉 | 深颈动脉 |
+| inferior thyroid artery | 甲状腺下动脉 | 下甲状腺动脉 |
+| linea alba | 白线 | 腹部白线 |
+| tooth | 牙 | 牙齿 |
+| incisor tooth | 切牙 | 门齿 |
+| diaphragm | 膈 | 横膈膜 |
+| external oblique | 腹外斜肌 | 外斜肌 |
+| rhomboid major | 大菱形肌 | 大菱肌 |
+| rhomboid minor | 小菱形肌 | 小菱肌 |
+| pituitary gland | 垂体 | 脑下垂体 |
+| common iliac vein | 髂总静脉 | 肠骨的静脉 |
+| testicular vein | 睾丸静脉 | 精索静脉 |
+| suprarenal vein | 肾上腺静脉 | 右肾上腺静脉 |
+| inferior phrenic artery | 膈下动脉 | 横膈下动脉 |
+| inferior mesenteric artery | 肠系膜下动脉 | 下肠系膜动脉 |
+| middle suprarenal artery | 肾上腺中动脉 | 中肾上腺动脉 |
+| hepatic artery proper | 肝固有动脉 | 固有肝动脉 |
+| right gastro-epiploic artery | 右胃网膜动脉 | 胃网膜右动脉 |
+| dorsal pancreatic artery | 胰背动脉 | 背侧胰动脉 |
+| great pancreatic artery | 胰大动脉 | 大胰动脉 |
+| middle colic artery | 结肠中动脉 | 中结肠动脉 |
+| anterior cecal artery | 盲肠前动脉 | 前盲肠动脉 |
+| posterior cecal artery | 盲肠后动脉 | 后盲肠动脉 |
+| marginal colic artery | 结肠边缘动脉 | 边缘动脉 |
+| superior rectal artery | 直肠上动脉 | 上直肠动脉 |
+| inferior mesenteric vein | 肠系膜下静脉 | 下肠系膜静脉 |
+| left colic vein | 左结肠静脉 | 结肠左静脉 |
+| left gastric vein | 左胃静脉 | 胃左静脉 |
+| external iliac artery | 髂外动脉 | 外髂动脉 |
+| inferior epigastric artery | 腹壁下动脉 | 下腹壁动脉 |
+| superficial epigastric artery | 腹壁浅动脉 | 浅腹壁动脉 |
+| lateral circumflex femoral artery | 旋股外侧动脉 | 外侧旋股动脉 |
+| inferior epigastric vein | 腹壁下静脉 | 下腹壁静脉 |
+| external anal sphincter | 肛门外括约肌 | 外肛门括约肌 |
+| obturator externus | 闭孔外肌 | 外闭孔肌 |
+| vastus lateralis | 股外侧肌 | 外侧广肌 |
+| adductor longus | 长收肌 | 内收长肌 |
+| adductor brevis | 短收肌 | 内收短肌 |
+| adductor magnus | 大收肌 | 内收大肌 |
+| muscle of posterior compartment of leg | 小腿后群肌 | 小腿肚 |
+| tibialis anterior | 胫骨前肌 | 胫前肌 |
+| extensor hallucis longus | 𧿹长伸肌 | 伸足拇长肌 |
+| extensor digitorum longus | 趾长伸肌 | 伸足趾长肌 |
+| fibularis tertius | 第3腓骨肌 | 第三腓骨肌 |
+| fibularis longus | 腓骨长肌 | 腓长肌 |
+| flexor hallucis longus | 𧿹长屈肌 | 足部屈肌 |
+| lateral thoracic artery | 胸外侧动脉 | 外胸动脉 |
+| subscapular artery | 肩胛下动脉 | 下肩胛动脉 |
+| deep brachial artery | 肱深动脉 | 臂深动脉 |
+| arteria radialis indicis | 示指桡侧动脉 | 食指桡侧动脉 |
+| anterior ulnar recurrent artery | 尺侧返动脉前支 | 尺侧前返动脉 |
+| posterior ulnar recurrent artery | 尺侧返动脉后支 | 尺侧后返动脉 |
+| anterior interosseous artery | 骨间前动脉 | 前骨间动脉 |
+| semispinalis thoracis | 胸半棘肌 | 背半棘肌 |
+| superficial palmar arterial arch | 掌浅弓 | 浅掌枝 |
+| deep palmar arterial arch | 掌深弓 | 深掌弓 |
+| superficial palmar venous arch | 掌浅静脉弓 | 浅掌静脉弓 |
+| medial collateral artery | 内侧副动脉 | 中副动脉 |
+| first metacarpal bone | 第1掌骨 | 第一掌骨 |
+| second metacarpal bone | 第2掌骨 | 第二掌骨 |
+| third metacarpal bone | 第3掌骨 | 第三掌骨 |
+| fourth metacarpal bone | 第4掌骨 | 第四掌骨 |
+| fifth metacarpal bone | 第5掌骨 | 第五掌骨 |
+| first metatarsal bone | 第1跖骨 | 第一跖骨 |
+| second metatarsal bone | 第2跖骨 | 第二跖骨 |
+| third metatarsal bone | 第3跖骨 | 第三跖骨 |
+| fourth metatarsal bone | 第4跖骨 | 第四跖骨 |
+| fifth metatarsal bone | 第5跖骨 | 第五跖骨 |
+| levator scapulae | 肩胛提肌 | 提肩胛肌 |
+| rectus capitis posterior minor | 头后小直肌 | 小后头直筋 |
+| infraspinatus | 冈下肌 | 棘下肌 |
+| opponens pollicis | 拇对掌肌 | 对掌拇肌 |
+| abductor digiti minimi of hand | 小指展肌 | 外展小指肌 |
+| flexor digiti minimi brevis of hand | 小指短屈肌 | 屈小指短肌 |
+| abductor hallucis | 𧿹展肌 | 𧿹外展肌 |
+| flexor digitorum brevis | 趾短屈肌 | 伸趾短肌 |
+| flexor accessorius | 足底方肌 | 跖方肌 |
+| lumbrical of foot | 足蚓状肌 | 蚓状肌 |
+| flexor digiti minimi brevis of foot | 小趾短屈肌 | 屈小趾短肌 |
+| plantar interosseous of foot | 骨间足底肌 | 骨间跖侧肌 |
+| coracobrachialis | 喙肱肌 | 喙突肱肌 |
+| flexor carpi radialis | 桡侧腕屈肌 | 桡侧屈腕肌 |
+| extensor carpi radialis longus | 桡侧腕长伸肌 | 桡侧伸腕长肌 |
+| extensor carpi radialis brevis | 桡侧腕短伸肌 | 桡侧伸腕短肌 |
+| extensor digitorum | 指伸肌 | 伸指肌 |
+| extensor digiti minimi | 小指伸肌 | 伸小指肌 |
+| extensor carpi ulnaris | 尺侧腕伸肌 | 尺侧伸腕肌 |
+| abductor pollicis longus | 拇长展肌 | 外展拇长肌 |
+| extensor pollicis brevis | 拇短伸肌 | 伸拇短肌 |
+
+_…and 141 more, all in `scripts/zh-build-report.json`._
+
+## If something is wrong
+
+Tell any agent the English term and the Chinese it should be. The fix is one line in
+`scripts/zh-llm-cache.json` (`terms["<lowercase english>"] = {"zh":"…","lane":"manual"}`),
+then `node scripts/build-zh.mjs` and a redeploy. A manual entry beats everything.
