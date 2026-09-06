@@ -100,3 +100,27 @@ body.snap-mode .studio-footer,
 body.snap-mode .loading,
 body.snap-mode [data-slot=sheet-content],
 body.snap-mode [data-slot=sheet-overlay]{display:none!important}
+
+
+/* L30 P2 -- the caption card: the assistant's own `title`/`note` from the URL, drawn
+   over the scene. It is part of the PICTURE, so unlike every rule above it survives
+   `body.snap-mode`. Three placements, because the free space differs:
+     desktop  -- bottom-left, inside the band the layers panel already reserves,
+                 in the gap between that panel (bottom:175px) and the footer;
+     mobile   -- under the header, where the only free space is (the detail sheet
+                 owns the bottom 58%); scene.tsx frames an isolated structure below it;
+     snap=1   -- bottom-left and roomy, since every other panel is hidden. */
+.atlas-caption{position:absolute;z-index:4;border-radius:6px;padding:13px 15px;
+ left:30px;bottom:46px;width:min(300px,calc(50vw - 250px));max-height:130px;overflow:auto;
+ overscroll-behavior:contain;pointer-events:auto}
+.atlas-caption h2{margin:0 0 6px;font-size:13px;font-weight:600;line-height:1.35;letter-spacing:-.1px;color:#20303f}
+.atlas-caption p{margin:0;font-size:12.5px;line-height:1.55;color:#4a555f;overflow-wrap:anywhere}
+.atlas-caption h2+p{margin-top:2px}
+@media(max-width:767px){
+ .atlas-caption{left:15px;right:15px;width:auto;top:calc(96px + env(safe-area-inset-top));bottom:auto;
+  max-height:22dvh;padding:11px 13px}
+}
+body.snap-mode .atlas-caption{left:5%;right:auto;top:auto;bottom:6%;width:min(46ch,88vw);
+ max-height:38dvh;padding:16px 18px}
+body.snap-mode .atlas-caption h2{font-size:16px;margin-bottom:8px}
+body.snap-mode .atlas-caption p{font-size:14px;line-height:1.6}
