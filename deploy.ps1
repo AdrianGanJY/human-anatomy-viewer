@@ -27,6 +27,30 @@ foreach ($line in Get-Content $envFile) {
 }
 
 try {
+  # L30 P4 -- THE STALE-CACHE GUARD.
+  #
+  # The renderer keys every cached PNG on sha256(SITE_BUILD | size | canonical params), and
+  # SITE_BUILD is a static literal in workers/snap/wrangler.toml. The comment beside it used
+  # to claim it was "set at deploy time"; it never was, because THIS script does not deploy
+  # the Worker at all. So it sat at "p2" while the site shipped P3 and then P3r, and every
+  # cache hit served a pre-P3 picture for a post-P3r view, at HTTP 200, for 24 hours.
+  #
+  # Nothing about that failure is visible: the picture is plausible, just old. This is the
+  # tripwire. If any file that changes what a plate LOOKS like is newer than the last commit
+  # that touched SITE_BUILD, the deploy stops.
+  $renderPaths = @(
+    'app/scene.tsx', 'app/page.tsx', 'app/globals.css', 'app/url-state.ts',
+    'app/scene-codec.js', 'app/anatomy.ts',
+    'workers/snap/src/index.mjs', 'workers/snap/src/helpers.mjs'
+  )
+  $lastRender = (git log -1 --format=%ct -- $renderPaths) 2>$null
+  $lastBuildId = (git log -1 --format=%ct -- 'workers/snap/wrangler.toml') 2>$null
+  if ($lastRender -and $lastBuildId -and ([int]$lastRender -gt [int]$lastBuildId)) {
+    throw ("the render path changed after SITE_BUILD was last bumped. Bump SITE_BUILD in " +
+           "workers/snap/wrangler.toml and redeploy the Worker (cd workers/snap; npx wrangler deploy), " +
+           "or every cached PNG will be served for the new build at HTTP 200.")
+  }
+
   node scripts/build-zh.mjs
   if ($LASTEXITCODE -ne 0) { throw 'build-zh failed' }
 
@@ -47,6 +71,9 @@ try {
   Write-Host ''
   Write-Host 'Deployed. Verify on the real host (behind CF Access):' -ForegroundColor Green
   Write-Host '  https://anatomy.adrian.my/?select=FMA22315,FMA22314,FMA18060&isolate=1&view=back' -ForegroundColor Green
+  Write-Host ''
+  Write-Host 'THIS SCRIPT DOES NOT DEPLOY THE RENDERER. If SITE_BUILD or workers/snap changed:' -ForegroundColor Yellow
+  Write-Host '  cd workers/snap; npx wrangler deploy' -ForegroundColor Yellow
 } finally {
   $env:CLOUDFLARE_API_TOKEN = $null
   $env:CLOUDFLARE_ACCOUNT_ID = $null
