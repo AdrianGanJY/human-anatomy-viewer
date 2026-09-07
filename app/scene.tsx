@@ -176,6 +176,15 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   // SAME table `fit` does. It used to be inlined here and hard-coded there, which is why
   // `view` was silently ignored whenever isolate was on.
   const dirFor=(view:string)=>view==='front'?new T.Vector3(0,.02,1):view==='back'?new T.Vector3(0,.02,-1):view==='side'?new T.Vector3(1,.02,0):new T.Vector3(.35,.06,1).normalize();
+  // L31 D04: how far the camera target leans from the CONTAINED set's centre toward the
+  // FOCUSED set's centre. It is not free -- the extent is measured symmetrically about the
+  // leaned centre, so every centimetre of lean is two centimetres of extra frame height and
+  // the subject shrinks. MEASURED on the forward-bend scene (frame box .295 x .675 x .146,
+  // centres .0966 m apart in y): bias .2 costs +5.7% height, .35 costs +10.0%, 1.0 costs
+  // +28.6% -- i.e. a full lean would throw away a third of the subject's area to move it
+  // 9.7 cm. .2 keeps the orbit pivot and the composition near the taught structure at a cost
+  // small enough to be worth it. Set it to 0 for the tightest possible fit.
+  const FOCUS_CENTER_BIAS=.2;
   const fit=(view:string,extent=0)=>{
    const aspect=camera.aspect,mobile=el.clientWidth<768,normalDistance=mobile?Math.max(4.5,1.8*el.clientHeight/Math.max(160,el.clientHeight-350)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))):4;
    const reservedHeight=mobile?350:270;const availableAspect=Math.max(.35,(el.clientWidth-(mobile?40:340))/Math.max(160,el.clientHeight-reservedHeight));const atlasDistance=Math.max(packingHeight,packingWidth/availableAspect)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*(el.clientHeight/Math.max(160,el.clientHeight-reservedHeight))*1.08;
@@ -245,6 +254,10 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    }
    // L30 P4: a focus fit owns the camera, so the view/reset refit must not fight it.
    const focusIds=s.focus?.length?s.focus:s.selected;
+   // L31 D04: the set the frustum must CONTAIN. Absent means "the focus set", which is
+   // exactly the old behaviour, so Explorer isolate and every legacy `select=` link are
+   // untouched -- only a teaching scene that names supporting structure sends a frame set.
+   const frameIds=s.frame?.length?s.frame:focusIds;
    const focusActive=s.isolate||!!s.focus?.length;
    if(s.view!==lastView||s.reset!==lastReset){if(!focusActive)fit(s.view,amount);lastView=s.view;lastReset=s.reset;}
    if(moving&&!focusActive)fit(amount>.5?'front':s.view,Math.max(0,(amount-.3)/.7));
@@ -259,10 +272,22 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    // (3) IS A PRE-EXISTING DEFECT, NOT A NEW FEATURE: `view` has been ignored whenever
    // isolate is true -- which is what the MCP server defaults to -- because the direction
    // was hard-coded here and `s.view` was absent from the key below. Recorded as such.
-   const isolateKey=focusActive?focusIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':''):'';
+   const isolateKey=focusActive?focusIds.join(',')+'|'+frameIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':''):'';
    if(isolateKey!==lastIsolate||(focusActive&&moving)){
-    if(focusActive){const box=new T.Box3(),want=new Set(focusIds);atlas.parts.forEach((p,i)=>{if(want.has(p.id))box.union(bounds[i].clone().translate(new T.Vector3(data[i*4],data[i*4+1],data[i*4+2])));});
-     if(!box.isEmpty()){const center=box.getCenter(new T.Vector3()),size=box.getSize(new T.Vector3());const w=el.clientWidth,h=el.clientHeight,mobile=w<768,landscape=w>h&&h<=600;let left=20,right=w-20,top=mobile?175:110,bottom=h-170;
+    if(focusActive){const box=new T.Box3(),focusBox=new T.Box3(),want=new Set(frameIds),wantFocus=new Set(focusIds);
+     atlas.parts.forEach((p,i)=>{const inFrame=want.has(p.id),inFocus=wantFocus.has(p.id);if(!inFrame&&!inFocus)return;
+      const b=bounds[i].clone().translate(new T.Vector3(data[i*4],data[i*4+1],data[i*4+2]));if(inFrame)box.union(b);if(inFocus)focusBox.union(b);});
+     if(box.isEmpty())box.copy(focusBox);
+     // L31 D04: TWO boxes, two jobs. `focusBox` says where to LOOK; `box` says what must
+     // stay inside the frame. The target is nudged toward the focus centre so the taught
+     // structure still sits where the eye lands, and then the extent is measured
+     // SYMMETRICALLY about that nudged centre against the whole frame box -- which is what
+     // makes containment survive the nudge. Taking box.getSize() after moving the centre is
+     // the bug that would look right and clip anyway.
+     if(!box.isEmpty()){const frameCenter=box.getCenter(new T.Vector3()),focusCenter=focusBox.isEmpty()?frameCenter:focusBox.getCenter(new T.Vector3());
+      const center=frameCenter.clone().lerp(focusCenter,FOCUS_CENTER_BIAS);
+      const size=new T.Vector3(Math.max(center.x-box.min.x,box.max.x-center.x),Math.max(center.y-box.min.y,box.max.y-center.y),Math.max(center.z-box.min.z,box.max.z-center.z)).multiplyScalar(2);
+      const w=el.clientWidth,h=el.clientHeight,mobile=w<768,landscape=w>h&&h<=600;let left=20,right=w-20,top=mobile?175:110,bottom=h-170;
       // L30 P4: on a teaching plate there is NO chrome to measure, so the reservation is
       // a uniform pad. Reserving 280+ px of a 720-tall plate for panels that are
       // display:none is most of why the PRD complains the subject sits at ~20% of frame.

@@ -28,6 +28,10 @@ export interface SceneState {inspectorOpen?:boolean;explode:number;visible:Syste
  render?:boolean;
  /** Frame the camera on THESE parts rather than on the whole selection. */
  focus?:string[];
+ /** L31 D04 -- parts the frustum must CONTAIN (primary + context), as distinct from `focus`,
+  *  which only weights where the camera looks. Fitting `focus` alone drew the supporting
+  *  structure and then guillotined it at the top edge. Absent means "same as focus". */
+ frame?:string[];
  /** Camera DISTANCE multiplier for the focus fit -- larger is further away, not a percentage. */
  focusPadding?:number;
  /** Per-part alpha 0..1. A fresh object identity on every change: the animate loop's

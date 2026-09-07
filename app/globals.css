@@ -14,6 +14,28 @@
 @media(max-height:600px) and (orientation:landscape){.anatomy-choice{margin-top:7px}.anatomy-choice [data-slot=select-trigger]{min-height:36px}.layers-panel.mobile-open{top:132px}.search-panel{top:70px}.anatomy-search-results{max-height:160px!important}}
 .part-hover{position:absolute;pointer-events:none;z-index:45;max-width:250px;background:#202e3bf5;color:#ffffff;padding:9px 12px;border-radius:5px;box-shadow:0 5px 18px #18253620;font-size:13px;line-height:1.45;text-transform:capitalize}.part-hover[hidden]{display:none}.structure-meta strong{overflow-wrap:anywhere;max-width:150px}.view-controls button:disabled{opacity:.22;background:none}.scene canvas{cursor:grab}.scene canvas:active{cursor:grabbing}
 @media(min-width:768px) and (max-width:1100px){body:has(.detail-sheet) .layers-panel{display:none}}
+/* L31 D05 -- THE TABLET DEAD END. The rule above hides the systems panel whenever a detail
+   sheet is open, and every chat link opens one. The only other way into that panel is the
+   dock button in app/page.tsx, which carries `.mobile-only` and is therefore display:none
+   above 767px. Between 768 and 1100 there was consequently NO route to the systems panel at
+   all -- measured on both iPad orientations. So: show the dock button in exactly that band,
+   at the phone block's 44px touch-target floor.
+
+   TWO THINGS THAT LOOK OPTIONAL AND ARE NOT, both measured rather than reasoned:
+
+   `order:3`. `.atlas-caption` is `left:30px` and `width:min(300px,calc(50vw - 250px))` at
+   z-index 4 with pointer-events:auto (it scrolls), so it reaches x=292 on a 1024-wide tablet
+   and x=164 on a 768-wide one -- straight over the LEFT end of the centred dock, which is
+   where the phone puts this button. elementFromPoint at the button's own centre returned
+   ASIDE.atlas-caption, and the tap was swallowed silently: the button was visible, sized and
+   dead. Moving it to the far end of the dock puts it in clear space. (Also why the dock is
+   NOT widened here: a wider dock reaches further left, under the caption.)
+
+   `.mobile-open`. Pressing the button runs openPanel, which clears `details` -- but the sheet
+   does NOT leave the DOM promptly at this width (measured: still present 3.3 s later, while
+   the phone drops it), so `body:has(.detail-sheet)` keeps matching and the rule above keeps
+   the panel hidden. The explicit override is what actually opens it. */
+@media(min-width:768px) and (max-width:1100px){.dock-layers{display:flex;order:3;flex-direction:column;align-items:center;justify-content:center;gap:7px;font-size:11px;min-width:64px;min-height:44px;padding:9px 0 9px 16px;border-left:1px solid #18253618}body:has(.detail-sheet) .layers-panel.mobile-open{display:flex}}
 @media(max-width:767px){.detail-sheet.is-isolated{max-height:34dvh}}
 .detail-sheet [data-slot=sheet-close],.about-sheet [data-slot=sheet-close]{top:10px;right:10px;min-width:36px;min-height:36px;transform:none}.detail-sheet .eyebrow{padding-right:28px}
 @media(max-width:767px){.detail-sheet [data-slot=sheet-close],.about-sheet [data-slot=sheet-close]{min-width:44px;min-height:44px;top:3px;right:3px}}

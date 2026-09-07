@@ -451,4 +451,59 @@ export function sceneSelectIds(scene) {
   return scene.structures.map((s) => s.id);
 }
 
+/**
+ * WHICH structure the scene OPENS ON — the one whose name the detail sheet shows.
+ *
+ * L31 D01. `sceneSelectIds` above returns CANONICAL order, which is sorted by id, and the
+ * page opened the sheet on the first pick in that order. Sorted-by-id is an arbitrary
+ * accident of the cache key: in the forward-bend scene the alphabetically-first id is
+ * FMA16203, the lumbar spine, which the scene declares as the GHOST. So every teaching
+ * link the assistant handed Adrian opened on the one structure it was explicitly telling
+ * him not to look at — measured at all four viewports, and invisible to the existing
+ * verification because the selection SET was correct and only the FOCUS was wrong.
+ *
+ * The fix is here rather than in the sort, deliberately. Preserving caller order in
+ * `structures` would change the canonical blob, and the blob IS the render cache key;
+ * "the same ids in any order share one picture" is the property that makes a metered
+ * per-request plate affordable, and it would have been traded away for a field the page
+ * can derive. So the ORDER stays sorted and the CHOICE is made from role instead:
+ *
+ *   1. a structure that is BOTH primary and named in `camera.focus` — the scene's own
+ *      strongest statement about what it is teaching,
+ *   2. else any primary,
+ *   3. else the first structure, so a context-only or ghost-only scene still opens on
+ *      something rather than on nothing.
+ *
+ * Order-independent by construction: it reads only roles and the (already deduped and
+ * sorted) focus set, so it cannot reintroduce the caller-order sensitivity the sort exists
+ * to remove. Returns null for a scene with no structures, which decodeScene never produces.
+ */
+export function sceneFocusId(scene) {
+  const structures = (scene && Array.isArray(scene.structures)) ? scene.structures : [];
+  if (!structures.length) return null;
+  const focus = new Set((scene.camera && Array.isArray(scene.camera.focus)) ? scene.camera.focus : []);
+  const chosen = structures.find((s) => s.role === 'primary' && focus.has(s.id))
+    || structures.find((s) => s.role === 'primary')
+    || structures[0];
+  return chosen.id;
+}
+
+/**
+ * THE PARTS THE CAMERA MUST CONTAIN. L31 D04.
+ *
+ * The focus fit used to frame `camera.focus` alone, so a scene that names supporting
+ * structure — the pelvis and femur a hamstring hangs off — drew that context and then
+ * cut it off at the top edge of the frame. Measured: touchesTopEdge was TRUE on three of
+ * four viewports for the chat link and on every render plate.
+ *
+ * GHOSTS ARE EXCLUDED ON PURPOSE. `rest`/ghost anatomy is a whole-body silhouette; framing
+ * it would zoom the camera out to the entire skeleton and delete the teaching close-up. A
+ * ghost that IS named in `camera.focus` is kept, because that is the caller saying so.
+ */
+export function sceneFrameIds(scene) {
+  const structures = (scene && Array.isArray(scene.structures)) ? scene.structures : [];
+  const focus = new Set((scene.camera && Array.isArray(scene.camera.focus)) ? scene.camera.focus : []);
+  return structures.filter((s) => s.role !== 'ghost' || focus.has(s.id)).map((s) => s.id);
+}
+
 export const sceneFits = (blob) => blob.length <= LIMITS.SCENE_MAX_B64;

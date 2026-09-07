@@ -1,7 +1,7 @@
 import {flushSync} from 'react-dom';
 import {registerAtlasTools} from './agent-tools';
 import {markError,markReady,markScene,markSelected,markSettled,readUrlState,setModes,writeUrlState,type UrlState} from './url-state';
-import {encodeScene,sceneOpacities,sceneSelectIds,type Scene} from './scene-model';
+import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Scene} from './scene-model';
 import {releaseCaptureOverlay} from './capture';
 const NO_IDS:string[]=[];
 import {useEffect,useMemo,useRef,useState} from 'react';
@@ -70,7 +70,16 @@ export default function Home(){
  /** What the detail sheet renders. Derived, never stored: a `chosen` that could disagree
   * with `picks` was the one desync worth designing out of this file. */
  const chosen=useMemo<Concept|null>(()=>focused?{id:focused.conceptId,name:focused.name,elements:focused.elements}:null,[focused]);
- const selectedParts=state.selected.map(id=>parts.get(id)).filter(p=>!!p),selected=selectedParts[0],system=SYSTEMS.find(s=>s.id===selected?.system);
+ const selectedParts=state.selected.map(id=>parts.get(id)).filter(p=>!!p);
+ /** L31 D01, second half. The sheet's eyebrow, its description and its "included structures"
+  * list used to read `state.selected` — the union of the WHOLE basket, in pick order — which
+  * agreed with the title only because `focused` was always basket[0]. Seeding focusId from the
+  * scene's roles breaks that coincidence, and the audit's own link then rendered 左半腱肌 (a
+  * muscle) under the eyebrow 骨骼 with the skeleton's description and the five lumbar vertebrae
+  * listed as its parts. The sheet describes the FOCUSED pick; the union stays what the 3D view
+  * highlights and what the piece count reports. */
+ const focusedParts=focused?focused.elements.map(id=>parts.get(id)).filter(p=>!!p):[];
+ const selected=focusedParts[0]??selectedParts[0],systemId=(focused?.system??selected?.system)??undefined,system=SYSTEMS.find(s=>s.id===systemId);
  const visibleCount=atlas?.parts.filter(p=>state.isolate?state.selected.includes(p.id):state.visible.includes(p.system)||state.selected.includes(p.id)).length??0;
  /** Search matches the English name, the atlas id, AND every loaded Chinese script — so
   * 臀中肌 finds gluteus medius whether the interface is in Chinese or not. */
@@ -126,7 +135,14 @@ export default function Home(){
    setModes(sc.mode==='render'||!!u.snap,sc.mode==='render');
    applyLang(sc.lang);
    setCaption({title:sc.caption.place==='in'&&sc.caption.title?sc.caption.title:undefined,note:sc.caption.place==='in'&&sc.caption.note?sc.caption.note:undefined});
-   if(atlas)replacePicks(sceneSelectIds(sc));
+   // L31 D01: replacePicks clears the focus, and `focused` then falls back to basket[0] --
+   // which is the ALPHABETICALLY-first structure, because the basket is in canonical order.
+   // For the forward-bend scene that is FMA16203, the lumbar spine the scene declares as its
+   // GHOST, so every teaching link opened the sheet, the caption and the basket highlight on
+   // the one structure it was telling him NOT to look at. Seed it from the scene's own roles
+   // instead. This runs AFTER replacePicks on purpose: both are setState calls in one batch,
+   // so the later write wins, and the ORDER of the two lines is load-bearing.
+   if(atlas){replacePicks(sceneSelectIds(sc));setFocusId(sceneFocusId(sc));}
    setState(s=>({...s,
     view:sc.camera.view,explode:sc.camera.explode,rotate:sc.camera.rotate,
     // `rest:none` is today's isolate exactly, so every P1-P3 deep link keeps working.
@@ -154,10 +170,18 @@ export default function Home(){
   const {render,structures:alpha,rest}=sceneOpacities(scene) as {render:boolean;structures:Record<string,number>;rest:number};
   const roleOf=new Map(scene.structures.map(s=>[s.id,s.role]));
   const wantFocus=new Set(scene.camera.focus);
-  const opacity:Record<string,number>={},focus:string[]=[],primary:string[]=[];
+  // L31 D04: what the camera must CONTAIN, as opposed to what it centres on. The fit framed
+  // `focus` alone, so the pelvis and femur a hamstring hangs off were drawn and then cut off
+  // at the top edge of the frame -- measured true on three of four viewports and on every
+  // render plate. Primary + context (+ any explicitly focused ghost); the whole-body ghost
+  // is excluded or the camera would pull back to the entire skeleton. Scene ids only: a
+  // structure the human adds afterwards must not silently re-frame his link.
+  const wantFrame=new Set(sceneFrameIds(scene));
+  const opacity:Record<string,number>={},focus:string[]=[],frame:string[]=[],primary:string[]=[];
   for(const p of basket){
    const a=alpha[p.id];
    for(const el of p.elements){
+    if(wantFrame.has(p.id))frame.push(el);
     // A mesh shared by two named structures takes the MOST opaque of them: primary wins.
     if(a!==undefined)opacity[el]=Math.max(opacity[el]??0,a);
     // The highlight tint follows the scene's primaries. In EXPLORE mode a structure the
@@ -168,7 +192,7 @@ export default function Home(){
     if(wantFocus.has(p.id))focus.push(el);
    }
   }
-  return {opacity,focus,primary,
+  return {opacity,focus,frame,primary,
    focusPadding:scene.camera.padding,
    // `rest:skeletal` is a VISIBILITY switch in explore mode -- applyUrl turns the skeletal
    // system on -- and a ghost only on a plate.
@@ -234,7 +258,7 @@ export default function Home(){
   <footer className="studio-footer"><span>{t.ui(state.explode>.8?'foot.pan':'foot.orbit')} <b>·</b> {t.ui('foot.zoom')} <b>·</b> {t.ui('foot.tap')}</span><Button variant="ghost" onClick={()=>{setDetails(false);setPanel(null);setAbout(true);}}>{t.ui('foot.credits')} <ArrowUpRight size={12}/></Button></footer>
   {progress<100&&!error&&<div className="loading glass" role="status"><Activity size={18}/><div><strong>{t.ui('load.preparing')}</strong><span>{t.ui('load.progress',{p:progress,n:(atlas?atlas.parts.length:2234).toLocaleString()})}</span><div className="loading-track"><i style={{width:`${progress}%`}}/></div></div></div>}
   {error&&<div className="loading glass error" role="alert"><p>{error}</p><Button variant="ghost" onClick={()=>location.reload()}>{t.ui('load.reload')}</Button></div>}
-  <Sheet open={details&&selectedParts.length>0} modal={false} disablePointerDismissal onOpenChange={setDetails}><SheetContent initialFocus={detailTitle} className={`detail-sheet glass ${state.isolate?'is-isolated':''}`} showCloseButton={true}><div className="detail-header"><div className="detail-accent" style={{background:system?.color}}/><div className="eyebrow">{system?t.system(system.id,system.name):t.ui('detail.anatomy')}</div><SheetTitle ref={detailTitle} tabIndex={-1} className="structure-title">{focused?t.name(focused.id,focused.name):''}</SheetTitle>{focused&&t.secondary(focused.id,focused.name)&&<div className="structure-en">{t.secondary(focused.id,focused.name)}</div>}</div><div className="detail-scroll" key={`${chosen?.id}-${state.isolate}`}><SheetDescription className="structure-description">{describe(chosen?.name,selected?.system)}</SheetDescription>{chosen&&!EXPLANATIONS[chosen.name.toLowerCase()]&&<span className="context-note">{t.ui('detail.contextNote')}</span>}<div className="structure-meta"><span>{t.ui('detail.reference')}<strong>{chosen?.id}</strong></span><span>{t.ui('detail.selectedPieces')}<strong>{state.selected.length.toLocaleString()}</strong></span></div>{selectedParts.length>1&&<div className="member-list"><h3>{t.ui('detail.included')}</h3>{selectedParts.slice(0,50).map(p=><div className="member-row" key={p.id}><Button variant="ghost" className="member-open" onClick={()=>choosePart(p.id)}><span>{t.name(p.id,p.name)}</span><ChevronRight size={14}/></Button><Button variant="ghost" className={`member-add ${picks.includes(p.id)?'is-picked':''}`} onClick={()=>addToPicks(p.id)} aria-label={t.ui('search.add',{name:t.name(p.id,p.name)})}><Plus size={14}/></Button></div>)}{selectedParts.length>50&&<p>{t.ui('detail.andMore',{n:selectedParts.length-50})}</p>}</div>}<a className="source-link" href="https://lifesciencedb.jp/bp3d/" target="_blank" rel="noreferrer">{t.ui('detail.source')} <ArrowUpRight size={14}/></a></div><div className="detail-actions"><Button className={`primary-action ${state.isolate?'active':''}`} onClick={()=>setState(s=>({...s,isolate:!s.isolate,explode:0}))}><Focus size={18}/>{t.ui(state.isolate?'detail.unisolate':'detail.isolate')}<ChevronRight size={16}/></Button>{focused?.kind==='part'&&!picks.includes(focused.conceptId)&&conceptsById.has(focused.conceptId)&&<Button variant="ghost" className="secondary-action add-action" onClick={()=>addToPicks(focused.conceptId)}><Plus size={14}/>{t.ui('detail.add')}</Button>}<Button variant="ghost" className="secondary-action" onClick={clearPicks}>{t.ui('detail.clear')}</Button></div></SheetContent></Sheet>
+  <Sheet open={details&&selectedParts.length>0} modal={false} disablePointerDismissal onOpenChange={setDetails}><SheetContent initialFocus={detailTitle} className={`detail-sheet glass ${state.isolate?'is-isolated':''}`} showCloseButton={true}><div className="detail-header"><div className="detail-accent" style={{background:system?.color}}/><div className="eyebrow">{system?t.system(system.id,system.name):t.ui('detail.anatomy')}</div><SheetTitle ref={detailTitle} tabIndex={-1} className="structure-title">{focused?t.name(focused.id,focused.name):''}</SheetTitle>{focused&&t.secondary(focused.id,focused.name)&&<div className="structure-en">{t.secondary(focused.id,focused.name)}</div>}</div><div className="detail-scroll" key={`${chosen?.id}-${state.isolate}`}><SheetDescription className="structure-description">{describe(chosen?.name,systemId)}</SheetDescription>{chosen&&!EXPLANATIONS[chosen.name.toLowerCase()]&&<span className="context-note">{t.ui('detail.contextNote')}</span>}<div className="structure-meta"><span>{t.ui('detail.reference')}<strong>{chosen?.id}</strong></span><span>{t.ui('detail.selectedPieces')}<strong>{state.selected.length.toLocaleString()}</strong></span></div>{focusedParts.length>1&&<div className="member-list"><h3>{t.ui('detail.included')}</h3>{focusedParts.slice(0,50).map(p=><div className="member-row" key={p.id}><Button variant="ghost" className="member-open" onClick={()=>choosePart(p.id)}><span>{t.name(p.id,p.name)}</span><ChevronRight size={14}/></Button><Button variant="ghost" className={`member-add ${picks.includes(p.id)?'is-picked':''}`} onClick={()=>addToPicks(p.id)} aria-label={t.ui('search.add',{name:t.name(p.id,p.name)})}><Plus size={14}/></Button></div>)}{focusedParts.length>50&&<p>{t.ui('detail.andMore',{n:focusedParts.length-50})}</p>}</div>}<a className="source-link" href="https://lifesciencedb.jp/bp3d/" target="_blank" rel="noreferrer">{t.ui('detail.source')} <ArrowUpRight size={14}/></a></div><div className="detail-actions"><Button className={`primary-action ${state.isolate?'active':''}`} onClick={()=>setState(s=>({...s,isolate:!s.isolate,explode:0}))}><Focus size={18}/>{t.ui(state.isolate?'detail.unisolate':'detail.isolate')}<ChevronRight size={16}/></Button>{focused?.kind==='part'&&!picks.includes(focused.conceptId)&&conceptsById.has(focused.conceptId)&&<Button variant="ghost" className="secondary-action add-action" onClick={()=>addToPicks(focused.conceptId)}><Plus size={14}/>{t.ui('detail.add')}</Button>}<Button variant="ghost" className="secondary-action" onClick={clearPicks}>{t.ui('detail.clear')}</Button></div></SheetContent></Sheet>
   <Sheet open={about} onOpenChange={setAbout}><SheetContent className="about-sheet glass"><div className="eyebrow">{t.ui('about.eyebrow')}</div><SheetTitle className="structure-title">{t.ui('about.title')}</SheetTitle><SheetDescription>{t.ui('about.lead')}</SheetDescription><div className="about-copy"><p><strong>{t.ui('about.p1strong')}</strong><br/>{t.ui('about.p1')}</p><p>{t.ui('about.p2')}</p><p>{t.ui('about.p3')}</p><h3>{t.ui('about.sourceHeading')}</h3><p>{t.ui('about.sourceBody')}</p><a href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/lic.html" target="_blank" rel="noreferrer">{t.ui('about.licence')} <ArrowUpRight size={14}/></a><a href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html" target="_blank" rel="noreferrer">{t.ui('about.geometry')} <ArrowUpRight size={14}/></a><a href="https://academic.oup.com/nar/article/37/suppl_1/D782/1000752" target="_blank" rel="noreferrer">{t.ui('about.paper')} <ArrowUpRight size={14}/></a></div></SheetContent></Sheet>
  </main>;
 }

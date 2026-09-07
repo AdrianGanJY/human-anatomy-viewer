@@ -39,4 +39,12 @@ bucket_name = "human-anatomy-snaps"
 # and every plate is now captured through a 3x supersampled frame instead of the
 # compositor's 2x downscale -- both change what a picture LOOKS like, so every p4a-keyed
 # PNG in R2 is wrong for this build and must not be served for it.
-SITE_BUILD = "p4a1"
+#
+# p4a1 -> l31h: the L31 hotfix reframes every plate. The focus fit now contains the union of
+# the primary AND context structures instead of the focus set alone, so the pelvis and femur
+# a hamstring hangs off are inside the frame rather than guillotined at the top edge -- the
+# camera therefore sits further back and the subject is smaller in EVERY cached picture.
+# Measured on the forward-bend plate: touchesTopEdge true -> false at all four viewports,
+# subject coverage 5.49% -> 3.48% at 1024x768. Every p4a1-keyed PNG shows the old, clipped
+# framing and must not be served for this build.
+SITE_BUILD = "l31h"

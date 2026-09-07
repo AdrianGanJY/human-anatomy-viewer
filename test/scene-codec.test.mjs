@@ -20,6 +20,7 @@ const codec = await import(url('app', 'scene-codec.js'));
 const {
   SCENE_V, LIMITS, DEFAULTS, normalizeScene, validateScene, canonicalScene,
   encodeScene, decodeScene, structureOpacity, sceneOpacities, sceneSelectIds,
+  sceneFocusId, sceneFrameIds,
 } = codec;
 const helpers = await import(url('workers', 'snap', 'src', 'helpers.mjs'));
 const { canonical, reDriveHash, parseSize, LEGACY_KEYS, SCENE_KEYS } = helpers;
@@ -207,6 +208,107 @@ test('sceneSelectIds is canonical order — the exact string the page will repor
   // Every named structure travels, ghosts included: the page sets ALL of them as picks,
   // and the renderer waits on that exact string.
   assert.equal(sceneSelectIds(s).length, 6);
+});
+
+// ── L31 D01 / D04: WHICH structure a scene opens on, and what the camera contains ──────
+// The scene the audit measured, verbatim from
+// E:/Agentic/.artifacts/L31/ux-audit-current/scene-blobs.txt. Its alphabetically-first id
+// is FMA16203 — the lumbar spine, declared GHOST — and the page opened the detail sheet,
+// the scene caption and the basket highlight on it at all four viewports, because
+// canonical order is sorted by id and `focused` fell back to basket[0].
+const AUDIT_BLOB = 'eyJ2IjoxLCJtb2RlIjoiZXhwbG9yZSIsImxhbmciOiJ6aC1IYW5zIiwicyI6W1siRk1BMTYyMDMiLCJnaG9zdCJdLFsiRk1BMTY1ODAiLCJjb250ZXh0Il0sIkZNQTIyMzU5IiwiRk1BMjI0NDkiLFsiRk1BMjQ0NzUiLCJjb250ZXh0Il0sIkZNQTQ1ODg5Il0sImNhbWVyYSI6eyJ2aWV3Ijoic2lkZSIsImZvY3VzIjpbIkZNQTIyMzU5IiwiRk1BMjI0NDkiLCJGTUE0NTg4OSJdfSwiY2FwdGlvbiI6eyJ0aXRsZSI6IuiFmOe7s-iCjOS4jumqqOebhiIsIm5vdGUiOiLliY3lsYjml7bvvIzohZjnu7PogozmiorlnZDpqqjnu5PoioLlkJHkuIvmi4nvvJvpqqjnm4bnmoTliY3lgL7lm6DmraTlj5fpmZDjgIIifX0';
+
+test('D01: the audit blob opens on a PRIMARY, never on the alphabetically-first GHOST', () => {
+  const s = decodeScene(AUDIT_BLOB);
+  assert.ok(s, 'the measured blob must still decode');
+  assert.equal(sceneSelectIds(s)[0], 'FMA16203', 'the defect precondition: the ghost really is first');
+  assert.equal(s.structures.find((x) => x.id === 'FMA16203').role, 'ghost');
+  assert.equal(sceneFocusId(s), 'FMA22359', 'the sheet must open on a focused primary hamstring');
+  assert.notEqual(sceneFocusId(s), sceneSelectIds(s)[0], 'and NOT on basket[0], which is the whole bug');
+});
+
+test('D01: focus preference is focused-primary > any primary > first structure', () => {
+  const roles = (structures, focus) => normalizeScene({ structures, camera: { focus } });
+  // A focused primary wins over a primary the scene did not put the camera on...
+  assert.equal(sceneFocusId(roles(
+    [{ id: 'A', role: 'primary' }, { id: 'B', role: 'primary' }], ['B'],
+  )), 'B');
+  // ...but role still filters: a focused CONTEXT does not steal the sheet from a primary.
+  assert.equal(sceneFocusId(roles(
+    [{ id: 'A', role: 'context' }, { id: 'B', role: 'primary' }], ['A'],
+  )), 'B');
+  // No primary at all — a context-only or ghost-only scene still opens on something.
+  assert.equal(sceneFocusId(roles([{ id: 'A', role: 'ghost' }, { id: 'B', role: 'context' }], [])), 'A');
+  assert.equal(sceneFocusId({ structures: [] }), null);
+  assert.equal(sceneFocusId(normalizeScene({ structures: ['FMA1'] })), 'FMA1');
+});
+
+test('D01: the fix is ORDER-INDEPENDENT, so the canonical cache key is untouched', () => {
+  // This is why the fix reads roles instead of preserving caller order: the blob IS the
+  // render cache key, and "the same ids in any order share one picture" is what makes a
+  // metered per-request plate affordable. Shuffling the caller's list must change nothing.
+  const build = (structures) => normalizeScene({
+    ...forwardBend(), structures, camera: { view: 'side', focus: ['FMA22357'] },
+  });
+  const declared = [
+    { id: 'FMA16203', role: 'ghost' }, { id: 'FMA16580', role: 'context' },
+    { id: 'FMA22357', role: 'primary' }, { id: 'FMA22438', role: 'primary' },
+  ];
+  const shuffled = [declared[2], declared[0], declared[3], declared[1]];
+  assert.equal(encodeScene(build(declared)), encodeScene(build(shuffled)), 'the cache key must not move');
+  assert.equal(sceneFocusId(build(declared)), 'FMA22357');
+  assert.equal(sceneFocusId(build(shuffled)), 'FMA22357', 'and neither must the focus');
+  // It also survives the wire, which is the only form the page ever sees.
+  assert.equal(sceneFocusId(decodeScene(encodeScene(build(shuffled)))), 'FMA22357');
+});
+
+test('D04: the frame set is primary + context, and the whole-body GHOST is excluded', () => {
+  const s = decodeScene(AUDIT_BLOB);
+  assert.deepEqual(sceneFrameIds(s), ['FMA16580', 'FMA22359', 'FMA22449', 'FMA24475', 'FMA45889'],
+    'the pelvis and femur must be INSIDE the frame; they were being cut off at the top edge');
+  assert.ok(!sceneFrameIds(s).includes('FMA16203'),
+    'framing the ghost would zoom the camera out to the entire skeleton and delete the close-up');
+  // Every focus id must be containable, or the camera would centre on something off-frame.
+  for (const id of s.camera.focus) assert.ok(sceneFrameIds(s).includes(id), id);
+});
+
+test('D04: a ghost the caller explicitly FOCUSES is kept in the frame set', () => {
+  const s = normalizeScene({
+    structures: [{ id: 'A', role: 'primary' }, { id: 'G', role: 'ghost' }, { id: 'H', role: 'ghost' }],
+    camera: { focus: ['G'] },
+  });
+  assert.deepEqual(sceneFrameIds(s), ['A', 'G'], 'an unfocused ghost stays out, a focused one comes in');
+  // Order-independent, like everything else the page derives from a decoded scene.
+  assert.deepEqual(sceneFrameIds(decodeScene(encodeScene(s))), ['A', 'G']);
+});
+
+test('D01: plain select= links keep URL order and are NOT re-sorted', () => {
+  // url-state.ts:49 dedupes in order and slices; it must never gain a .sort(), or a
+  // non-scene deep link would inherit exactly the defect the scene path just lost.
+  const src = readFileSync(join(ROOT, 'app', 'url-state.ts'), 'utf8');
+  const m = /const idList\s*=\s*\(v[^\n]*\n?/.exec(src);
+  assert.ok(m, 'idList must still be declared in app/url-state.ts');
+  assert.ok(!/\.sort\(/.test(m[0]), `idList must preserve URL order: ${m[0].trim()}`);
+});
+
+test('D01/D04: the page really wires the codec in — the seed and the frame set', () => {
+  // The codec cannot enforce its own use. These two lines are the whole fix at the page
+  // level, and both failed silently before: the sheet showed the wrong name, the camera
+  // clipped the context, and every existing assertion still passed.
+  const page = readFileSync(join(ROOT, 'app', 'page.tsx'), 'utf8');
+  assert.match(page, /replacePicks\(sceneSelectIds\(sc\)\);setFocusId\(sceneFocusId\(sc\)\);/,
+    'focusId must be seeded from the scene AFTER replacePicks, which clears it');
+  assert.match(page, /sceneFrameIds\(scene\)/, 'the plate must publish a frame set');
+  // The other half of D01: the sheet BODY must follow the focused pick too. Reading the
+  // whole union here is what rendered a hamstring under the eyebrow "skeletal", with the
+  // skeleton's description and five lumbar vertebrae listed as its parts.
+  assert.match(page, /const focusedParts=focused\?focused\.elements\.map/, 'the sheet must resolve the FOCUSED pick');
+  assert.ok(!/selectedParts\.slice\(0,50\)/.test(page), 'the included-structures list must not read the union');
+  assert.ok(!/describe\(chosen\?\.name,selected\?\.system\)/.test(page), 'the description must not read the union\'s first mesh');
+  assert.match(page, /return\s*\{opacity,focus,frame,primary,/, 'and pass it to the scene effect');
+  const sceneSrc = readFileSync(join(ROOT, 'app', 'scene.tsx'), 'utf8');
+  assert.match(sceneSrc, /const frameIds=s\.frame\?\.length\?s\.frame:focusIds;/,
+    'the camera fit must contain the frame set, falling back to focus when absent');
 });
 
 test('MAX_STRUCTURES is pinned to the page SELECT_MAX that silently truncates', () => {

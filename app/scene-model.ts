@@ -11,7 +11,7 @@ export {
   ANNOTATION_TYPES, ANNOTATION_ALIAS, DIRECTIONS, LIMITS, DEFAULTS,
   isId, b64urlEncode, b64urlDecode,
   normalizeScene, validateScene, canonicalScene, encodeScene, decodeScene,
-  structureOpacity, sceneOpacities, sceneSelectIds, sceneFits,
+  structureOpacity, sceneOpacities, sceneSelectIds, sceneFocusId, sceneFrameIds, sceneFits,
 } from './scene-codec.js';
 
 export type SceneMode = 'explore' | 'render';
