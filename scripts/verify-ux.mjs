@@ -242,6 +242,24 @@ for (const vp of VIEWPORTS) {
     check(vp.name, 'no top-edge clipping', !framing.error && framing.touchesTop === false,
       framing.error || `touchesTop=${framing.touchesTop} touchesBottom=${framing.touchesBottom}`, 'touchesTop=false');
 
+    // ── 2b THE ANGLE THE LINK ASKED FOR ────────────────────────────────────────────────────
+    // ADDED AFTER LOOKING AT A SCREENSHOT THAT PASSED EVERY OTHER ORACLE. The scene declares
+    // `camera.view:'side'`; v2's first build applied the scene's camera only on a hashchange, so
+    // a cold chat link opened on a THREE-QUARTER view of the whole body — correctly framed,
+    // correctly titled, correct bytes, and the wrong picture. Framing is not angle. This is the
+    // "correctly sized but wrong" case the P0 gate asked the reviewer to invent, and it was real.
+    const angle = await page.evaluate(() => {
+      const g = window.__atlasTargets([]);
+      const dx = g.camera.x - g.camera.tx, dy = g.camera.y - g.camera.ty, dz = g.camera.z - g.camera.tz;
+      const n = Math.hypot(dx, dy, dz) || 1;
+      return {x: dx / n, y: dy / n, z: dz / n};
+    });
+    // side ⇒ the camera sits on +X looking down the body's left-right axis; anything else means
+    // the view was dropped. Tolerance is generous — this separates AXES, not degrees.
+    check(vp.name, 'camera is on the axis the scene asked for (view: side)',
+      angle.x > 0.9 && Math.abs(angle.z) < 0.3,
+      `direction (${angle.x.toFixed(2)}, ${angle.y.toFixed(2)}, ${angle.z.toFixed(2)})`, 'x > 0.9, |z| < 0.3');
+
     // ── 4 CLS ──────────────────────────────────────────────────────────────────────────────
     const cls = await page.evaluate(() => ({v: window.__cls ?? null, src: window.__clsSrc ?? []}));
     check(vp.name, 'CLS through entry', cls.v !== null && cls.v < 0.001,

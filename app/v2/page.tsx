@@ -182,10 +182,14 @@ export default function V2() {
 
  // ─── loading: BYTES, read from the platform, not inferred from a chunk count ──────────────
  const totalBytes = useMemo(() => (atlas ? atlas.chunks.reduce((n, c) => n + (c.gzipBytes ?? c.bytes), 0) : 0), [atlas]);
- const modelBytes = () => {
+ /** Model bytes that had FINISHED by `cutoff` (default: now). The cut-off is what makes the
+  *  barrier number deterministic — see the `armedAt` note on AnatomyScene's onSceneReady. */
+ const modelBytes = (cutoff = Infinity) => {
   let done = 0, requests = 0;
   for (const e of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
-   if (e.name.includes('/models/body-')) { done += e.encodedBodySize || e.transferSize || 0; requests += 1; }
+   if (!e.name.includes('/models/body-')) continue;
+   if (e.responseEnd > cutoff) continue;
+   done += e.encodedBodySize || e.transferSize || 0; requests += 1;
   }
   return {done, requests};
  };
@@ -203,7 +207,7 @@ export default function V2() {
   }
  }, [sampleBytes]);
 
- const onSceneReady = useCallback(() => {
+ const onSceneReady = useCallback((armedAt: number) => {
   mark('sceneReady');
   // FREEZE THE BYTE COUNT AT THE BARRIER, in the DOM, before anything can await.
   // The first oracle run read the byte total AFTER waiting for the marker and got 15.7 MB / 7
@@ -211,7 +215,7 @@ export default function V2() {
   // was the instrument, not the app: background chunks keep arriving during the wait and the
   // evaluate. The number that means anything is the one at the barrier; a reader that has to
   // race for it will quietly report a different figure on a faster machine.
-  const b = modelBytes();
+  const b = modelBytes(armedAt);
   document.documentElement.dataset.atlasSceneBytes = String(b.done);
   document.documentElement.dataset.atlasSceneRequests = String(b.requests);
   markSceneReady(true);
@@ -295,31 +299,62 @@ export default function V2() {
   },
  }), [focusPick]);
 
- // ─── re-drive on hashchange (the renderer's door, and applyScene's) ───────────────────────
+ /**
+  * THE SCENE'S CAMERA, applied ONCE the atlas exists — and this was a real defect, caught by
+  * LOOKING at the 390x844 screenshot rather than by any oracle.
+  *
+  * The blob carries `camera.view:'side'` and `rest.include:'none'` (⇒ isolate). The first
+  * version of this file applied them only on a hashchange re-drive, so a cold chat link — the
+  * one loop this whole slice exists for — opened on a THREE-QUARTER view of the whole body
+  * instead of a side view of the isolated hamstrings. Every oracle passed: the title named the
+  * primary, the framing filled 70% of the field, the bytes were right. Framing is not the same
+  * question as ANGLE, and "the subject is big" is not the same claim as "this is the picture the
+  * link asked for". Recorded because it is exactly the false green the P0 gate asked about.
+  */
+ const applySceneState = useCallback((sc: Scene, blob: string, redrive: boolean) => {
+  setScene(sc); setSceneBlob(blob);
+  setCaption({title: sc.caption.place === 'in' ? sc.caption.title : undefined, note: sc.caption.place === 'in' ? sc.caption.note : undefined});
+  if (sc.lang) applyLang(sc.lang);
+  const ids = sceneSelectIds(sc), focus = sceneFocusId(sc);
+  if (redrive) replacePicks(ids, focus); else { setPicks(ids.filter(known)); setFocusId(focus); }
+  setState((s) => ({...s,
+   view: sc.camera.view, explode: sc.camera.explode, rotate: sc.camera.rotate,
+   // `rest:'none'` is today's isolate exactly — the same mapping v1 makes at page.tsx:149 — so
+   // every P1-P3 deep link keeps meaning what it meant.
+   isolate: sc.rest.include === 'none',
+   visible: sc.rest.include === 'skeletal' ? ['skeletal'] : s.visible,
+   reset: s.reset + 1}));
+  emitAtlas({type: 'scene', blob, ids, focus});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [known]);
+
+ const sceneApplied = useRef(false);
+ useEffect(() => {
+  if (!atlas || sceneApplied.current) return;
+  sceneApplied.current = true;
+  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene), false);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [atlas]);
+
+ // ─── re-drive on hashchange (the renderer's door, and window.atlas.applyScene's) ───────────
  useEffect(() => {
   if (!atlas) return;
   const reapply = () => {
    const u = readUrlState();
    markSettled(false); markSceneReady(false);
-   if (u.scene) {
-    setScene(u.scene); setSceneBlob(u.sceneBlob ?? encodeScene(u.scene));
-    setCaption({title: u.scene.caption.place === 'in' ? u.scene.caption.title : undefined, note: u.scene.caption.place === 'in' ? u.scene.caption.note : undefined});
-    if (u.scene.lang) applyLang(u.scene.lang);
-    replacePicks(sceneSelectIds(u.scene), sceneFocusId(u.scene));
-    setState((s) => ({...s, view: u.scene!.camera.view, explode: u.scene!.camera.explode, rotate: u.scene!.camera.rotate, isolate: u.scene!.rest.include === 'none', reset: s.reset + 1}));
-    emitAtlas({type: 'scene', blob: u.sceneBlob ?? '', ids: sceneSelectIds(u.scene), focus: sceneFocusId(u.scene)});
-    // A RE-DRIVE MAY NAME CHUNKS THAT ARE STILL IN THE BACKGROUND QUEUE. The priority set is
-    // frozen at mount, so a second scene gets no barrier of its own — and re-publishing
-    // readiness at phase 'scene' would assert that meshes still downloading are on screen
-    // (adversarial review item 1, the only High). Only the ATLAS phase can honestly claim it,
-    // because then every chunk is in by definition.
-    markSceneReady(phase === 'atlas');
-   }
+   if (!u.scene) return;
+   applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), true);
+   // A RE-DRIVE MAY NAME CHUNKS THAT ARE STILL IN THE BACKGROUND QUEUE. The priority set is
+   // frozen at mount, so a second scene gets no barrier of its own — and re-publishing
+   // readiness at phase 'scene' would assert that meshes still downloading are on screen
+   // (adversarial review item 1, the only High). Only the ATLAS phase can honestly claim it,
+   // because then every chunk is in by definition.
+   markSceneReady(phase === 'atlas');
   };
   window.addEventListener('hashchange', reapply);
   return () => window.removeEventListener('hashchange', reapply);
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [atlas, phase]);
+ }, [atlas, phase, applySceneState]);
 
  // ─── the probe ────────────────────────────────────────────────────────────────────────────
  useEffect(() => {

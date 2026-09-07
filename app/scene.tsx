@@ -23,15 +23,22 @@ interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=
   *  before applyUrl has run, so the selection is still empty and the queue would prioritise
   *  nothing (astra-ux-astra.md:206). v2 reads them straight out of the URL blob instead. */
  priority?:readonly string[];
- /** Fires once every chunk the priority set needs is merged and drawn — the PHASE BARRIER.
-  *  Never fires before the barrier and never replaces `onProgress(100)`. */
- onSceneReady?:()=>void}
+ /** Fires once every chunk the priority set needs is merged AND DRAWN — the PHASE BARRIER.
+  *  Never fires before the barrier and never replaces `onProgress(100)`.
+  *  @param armedAt `performance.now()` at the moment the last priority chunk was merged, i.e.
+  *   BEFORE the frame that draws it. The callback itself is deferred to that frame, so a
+  *   consumer measuring "what had loaded at the barrier" must use this cut-off rather than
+  *   sampling when it is called: background chunks keep arriving in between, and on a fast run
+  *   the whole atlas can land first, which reported 33 MB / 15 chunks for a 9 MB / 4 chunk
+  *   barrier at one viewport out of four (measured 2026-09-07 — a flake, and therefore the
+  *   worst kind of number to publish). */
+ onSceneReady?:(armedAt:number)=>void}
 export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady}:Props){
  const host=useRef<HTMLDivElement>(null),latest=useRef(state),select=useRef(onSelect);
  const priorityRef=useRef(priority),sceneReadyCb=useRef(onSceneReady);
  latest.current=state;select.current=onSelect;priorityRef.current=priority;sceneReadyCb.current=onSceneReady;
  useEffect(()=>{
-  const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,sceneReady=false,sceneReadyPending=false,sceneReadyFired=false,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
+  const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,sceneReady=false,sceneReadyPending=false,sceneReadyFired=false,sceneReadyAt=0,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
   let lastState:SceneState|null=null;
   // L30 P4: teaching-plate bookkeeping. `still` counts consecutive frames with nothing
   // left to draw, which is what `data-atlas-settled` means; `settled` stops us writing
@@ -248,9 +255,9 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // "drawn" while firing synchronously after the merge, which also meant the byte count the
    // page freezes at the barrier was read before the last chunk's PerformanceResourceTiming
    // entry was guaranteed complete.
-   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyPending=true;}
+   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
    await run(rest);
-   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyPending=true;}}
+   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyPending=true;sceneReadyAt=performance.now();}}
   }catch(e){if(!disposed)onError(e instanceof Error?e.message:'Could not load the anatomy.');}})();
   // L30 P4: the camera direction per named view, extracted so the focus fit below uses the
   // SAME table `fit` does. It used to be inlined here and hard-coded there, which is why
@@ -434,7 +441,7 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    if(dirty){renderer.render(scene,camera);targets=(amount>.45||s.render)?computeTargets():[];
     dirty=false;still=0;if(settled){settled=false;markSettled(false);}
     // THE PHASE BARRIER, published only now that the priority set has been DRAWN.
-    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyCb.current?.();}
+    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyCb.current?.(sceneReadyAt);}
    }
    // L30 P4: SETTLED. Three consecutive frames with nothing left to draw means the camera
    // fit has finished flying (OrbitControls damping keeps `dirty` true while it moves) and
