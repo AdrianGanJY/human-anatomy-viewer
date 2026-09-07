@@ -134,8 +134,18 @@ try {
   check('the union of all three is selected (6 pieces)', pieces === '6', `got ${pieces}`);
 
   const memberNames = await page.evaluate(() => [...document.querySelectorAll('.member-list button .search-result-name, .member-list button span')].map(s => (s.textContent || '').trim()).filter(Boolean));
-  const covers = [A_NAME, C_NAME, B_NAME].every(n => memberNames.some(m => m.toLowerCase().includes(n.split(' ').pop())));
-  check('the included-structures list covers all three concepts', covers, JSON.stringify(memberNames.slice(0, 8)));
+  // L31 D01 CHANGED THIS CONTRACT, deliberately. This used to assert that the list covered
+  // ALL THREE concepts — the union of the whole basket — under a heading that reads "Included
+  // structures" beneath the title of ONE of them. That only looked right because `focused` was
+  // always basket[0]; seeding focusId from a scene's roles broke the coincidence and the audit's
+  // own link rendered a hamstring with five lumbar vertebrae listed as its parts. The list is
+  // the drill-down from the FOCUSED concept to its own meshes (see app/selection.ts:11-13), so
+  // it must carry that concept's parts and NOT its neighbours'. The basket panel is what lists
+  // the other two, and tapping a basket row re-points this list.
+  const own = memberNames.filter((m) => m.toLowerCase().includes(A_NAME.split(' ').pop()));
+  const foreign = memberNames.filter((m) => [C_NAME, B_NAME].some((n) => m.toLowerCase().includes(n.split(' ').pop())));
+  check('the included-structures list is the FOCUSED concept\'s own meshes, not the basket union',
+    own.length === 2 && foreign.length === 0, JSON.stringify(memberNames.slice(0, 8)));
 
   const sheetTitle = await page.textContent('.detail-sheet .structure-title');
   check('the sheet names the FIRST requested concept', (sheetTitle || '').trim() === A_NAME, `got "${sheetTitle}"`);
