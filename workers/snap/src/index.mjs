@@ -44,6 +44,14 @@ const KEEP_ALIVE_MS = 2 * 60 * 1000;
 const MAX_W = 1600;
 const MAX_H = 1200;
 const CACHE_TTL_S = 86400;
+/**
+ * Supersample factor for the capture hook (L30 P4a.1). 3, not 2 and not 4, MEASURED:
+ * interior holes in the ghosted femur run 6.97% at 1x, 0.66% at 2x, 0.05% at 3x and 0.04%
+ * at 4x, while one frame costs 1.8 / 3.2 / 5.5 / 8.0 s on a software rasteriser. 3 is the
+ * knee: 4 buys 0.01 points of hole and a further 2.5 s of metered browser time.
+ * CHANGING THIS CHANGES WHAT A PLATE LOOKS LIKE — bump SITE_BUILD with it.
+ */
+const CAPTURE_SCALE = 3;
 
 const png = (body, extra) => new Response(body, {
   headers: {
@@ -269,7 +277,30 @@ export default {
         return fail(424, `the page reported an error while rendering: ${String(pageError).slice(0, 120)}`, { target });
       }
 
+      // L30 P4a.1: THE SUPERSAMPLED CAPTURE. The page renders one frame with the backing
+      // store at CAPTURE_SCALE x and area-averages it back down through a 2D canvas, then
+      // paints the result over the live canvas — so the screenshot below carries the smooth
+      // 3D layer AND everything else the plate is made of. It is deliberately NOT used as
+      // the image itself: the hook returns only the WebGL canvas, and `burn_caption`
+      // defaults to TRUE, so a plate built from the hook's own PNG would silently lose the
+      // caption card that the tool reports as burned in.
+      //
+      // MEASURED (swiftshader, 960x720, the PRD's forward-bend scene at context 0.40):
+      // interior holes in the femur 0.45% -> 0.05%, adjacent-pixel speckle 17.4 -> 8.3.
+      // The compositor's own downscale cannot do this: at 4:1 it is still a bilinear tap
+      // and throws the extra samples away. Absent (an older bundle) -> plain screenshot.
+      let capture = 'screenshot';
+      try {
+        const ok = await page.evaluate((s) => (typeof window.__atlasCapture === 'function' ? !!window.__atlasCapture({ scale: s }) : false), CAPTURE_SCALE);
+        capture = ok ? `hook${CAPTURE_SCALE}` : 'absent';
+      } catch (e) {
+        capture = 'failed';
+      }
       const shot = await page.screenshot({ type: 'png' });
+      // The overlay is a PICTURE OF ONE SCENE pinned over a tab that will be re-driven with
+      // another. The page drops it on every re-drive too; this is the belt to that braces,
+      // because a screenshot taken over a stale overlay is a plausible wrong plate at 200.
+      await page.evaluate(() => { if (typeof window.__atlasCaptureRelease === 'function') window.__atlasCaptureRelease(); }).catch(() => {});
       // The tab is the cache. Closing it here is what made the "warm" path cost 51 s.
       if (!reused) { /* keep the freshly-loaded tab for the next request */ }
 
@@ -287,6 +318,7 @@ export default {
         'X-Snap-Ms': String(Date.now() - started),
         'X-Snap-Settle': settle,
         'X-Snap-Scene': sceneAck,
+        'X-Snap-Capture': capture,
         'X-Snap-Session': sessionId || '',
       });
     } catch (err) {

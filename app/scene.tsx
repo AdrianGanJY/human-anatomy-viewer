@@ -8,6 +8,9 @@ import {decodeModelResponse} from './model-download';
 import {PointerTap} from './pointer-tap';
 import {SYSTEMS,type Atlas,type SceneState} from './anatomy';
 import {markSettled} from './url-state';
+// L30 P4a.1: the supersampled capture hook. Fork-local, and deliberately its own module --
+// nothing in it belongs to the scene's frame loop.
+import {installCapture} from './capture';
 // L30: `add` carries the modifier key so a Shift-click can ADD to the selection basket
 // instead of replacing it. The scene itself stays stateless about the basket.
 interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=>void;onProgress:(n:number)=>void;onError:(s:string)=>void}
@@ -64,24 +67,58 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   // from how wide something looks, which is the difference between proving the camera moved
   // and guessing from a 3% change.
   (window as unknown as {__atlasTargets?:(ids?:string[])=>unknown}).__atlasTargets=(ids?:string[])=>{
-   const drawn=new Map(targets.map(t=>[atlas.parts[t.index].id,t]));
-   const groups:Record<string,{left:number;right:number;top:number;bottom:number;n:number}>={};
+   // L30 P4a.1: the frame loop only projects when the body is exploded or a plate is being
+   // drawn (hover is the only consumer otherwise, and projecting 2,234 parts every frame in
+   // the assembled explorer would be pure cost). The EXPLORER is now under test too, so the
+   // getter projects on demand when the loop has not -- read-only, and the frame loop is
+   // untouched.
+   const drawn=new Map((targets.length?targets:computeTargets()).map(t=>[atlas.parts[t.index].id,t]));
+   const groups:Record<string,{left:number;right:number;top:number;bottom:number;n:number;a:number}>={};
    for(const id of ids??[]){
     const members=atlas.concepts.find(c=>c.id===id)?.elements??(drawn.has(id)?[id]:[]);
     const hit=members.map(m=>drawn.get(m)).filter(Boolean) as typeof targets;
     if(!hit.length)continue;
     groups[id]={left:Math.min(...hit.map(t=>t.left)),right:Math.max(...hit.map(t=>t.right)),
-     top:Math.min(...hit.map(t=>t.top)),bottom:Math.max(...hit.map(t=>t.bottom)),n:hit.length};
+     top:Math.min(...hit.map(t=>t.top)),bottom:Math.max(...hit.map(t=>t.bottom)),n:hit.length,
+     // L30 P4a.1: the ALPHA LANE, read back from the byte actually uploaded to the GPU --
+     // not from React state, which is the thing under test. A group takes its FAINTEST
+     // member, so "every named structure is opaque in explore mode" is one assertion.
+     a:Math.min(...hit.map(t=>selectedData[t.index*4+1]/255))};
    }
    return {
     w:el.clientWidth,h:el.clientHeight,
     camera:{x:camera.position.x,y:camera.position.y,z:camera.position.z,
      tx:controls.target.x,ty:controls.target.y,tz:controls.target.z},
     groups,
-    parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom})),
+    parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom,a:selectedData[t.index*4+1]/255})),
    };
   };
+  // L30 P4a.1: `window.__atlasCapture({scale})` — one supersampled frame, area-averaged
+  // down, painted over the live canvas so the renderer's screenshot (which is what carries
+  // the caption card) shows the smooth version. See app/capture.ts for why four samples
+  // per pixel was not enough and why the compositor cannot supply more.
+  const uninstallCapture=installCapture({renderer,scene,camera,host:el});
   const projected=new T.Vector3();
+  // L30 P4a.1: the projection, extracted verbatim from the frame loop so the read-only
+  // getter above can run it on demand in modes the loop does not. ONE implementation --
+  // a second copy would make the verification measure a projection the page never draws.
+  const computeTargets=()=>{
+   const out:Target[]=[];
+   const hasSolid=atlas.parts.some((p,i)=>p.system!=='integumentary'&&data[i*4+3]>.5);
+   atlas.parts.forEach((p,i)=>{
+    if(data[i*4+3]<.5||(hasSolid&&p.system==='integumentary'))return;
+    let left=Infinity,right=-Infinity,top=Infinity,bottom=-Infinity;
+    for(let corner=0;corner<8;corner++){
+     projected.set(p.bounds[(corner&1)?1:0][0]+data[i*4],p.bounds[(corner&2)?1:0][1]+data[i*4+1],p.bounds[(corner&4)?1:0][2]+data[i*4+2]).project(camera);
+     const x=(projected.x+1)*el.clientWidth/2,y=(1-projected.y)*el.clientHeight/2;
+     left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);
+    }
+    projected.copy(centers[i]).add(new T.Vector3(data[i*4],data[i*4+1],data[i*4+2])).project(camera);
+    if(projected.z< -1||projected.z>1)return;
+    out.push({index:i,x:(projected.x+1)*el.clientWidth/2,y:(1-projected.y)*el.clientHeight/2,left,right,top,bottom});
+   });
+   return out;
+  };
   const findTarget=(x:number,y:number,radius:number)=>{
    let best=-1,score=Infinity;
    for(const t of targets){const dx=Math.max(t.left-x,0,x-t.right),dy=Math.max(t.top-y,0,y-t.bottom),distance=Math.hypot(dx,dy);if(distance>radius)continue;const candidate=distance+Math.hypot(t.x-x,t.y-y)*.025;if(candidate<score){score=candidate;best=t.index;}}
@@ -107,6 +144,13 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
     // so real blended transparency has no correct draw order available to it. Coverage
     // needs none. `transparent` therefore stays false and is never toggled at runtime
     // (a toggle would recompile all 15 shared programs mid-session).
+    // L30 P4a.1: `alphaToCoverage` was TRIED here as the smooth alternative and MEASURED to
+    // be wrong on this stack: with no usable multisample buffer on the default framebuffer,
+    // alpha-to-coverage resolves every fragment to FULL coverage, so the ghost and the
+    // context render SOLID -- a beautiful, plausible picture with the teaching signal
+    // deleted. Caught by the oracle, not by eye: the ghost region's mean luminance fell
+    // BELOW the primary's (197 vs 202) where a translucent ghost must stay above it.
+    // Route B (a real second translucent pass) remains the only true cure; it is P4b.
     shader.fragmentShader=shader.fragmentShader.replace('#include <alphahash_fragment>','diffuseColor.a *= partAlpha;\n#include <alphahash_fragment>');
    };materials.push(m);return m;
   };
@@ -244,7 +288,7 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    // matters once the body is exploded. A teaching plate never explodes, so without this
    // there is nothing to measure the framing against and nothing for annotations to anchor
    // to later.
-   if(dirty){renderer.render(scene,camera);targets=[];if(amount>.45||s.render){const hasSolid=atlas.parts.some((p,i)=>p.system!=='integumentary'&&data[i*4+3]>.5);atlas.parts.forEach((p,i)=>{if(data[i*4+3]<.5||(hasSolid&&p.system==='integumentary'))return;let left=Infinity,right=-Infinity,top=Infinity,bottom=-Infinity;for(let corner=0;corner<8;corner++){projected.set(p.bounds[(corner&1)?1:0][0]+data[i*4],p.bounds[(corner&2)?1:0][1]+data[i*4+1],p.bounds[(corner&4)?1:0][2]+data[i*4+2]).project(camera);const x=(projected.x+1)*el.clientWidth/2,y=(1-projected.y)*el.clientHeight/2;left=Math.min(left,x);right=Math.max(right,x);top=Math.min(top,y);bottom=Math.max(bottom,y);}projected.copy(centers[i]).add(new T.Vector3(data[i*4],data[i*4+1],data[i*4+2])).project(camera);if(projected.z< -1||projected.z>1)return;targets.push({index:i,x:(projected.x+1)*el.clientWidth/2,y:(1-projected.y)*el.clientHeight/2,left,right,top,bottom});});}
+   if(dirty){renderer.render(scene,camera);targets=(amount>.45||s.render)?computeTargets():[];
     dirty=false;still=0;if(settled){settled=false;markSettled(false);}
    }
    // L30 P4: SETTLED. Three consecutive frames with nothing left to draw means the camera
@@ -256,7 +300,7 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
 
   };animate();
   const contextLost=(e:Event)=>{e.preventDefault();onError('The 3D session was paused by your device. Reload to continue.');};renderer.domElement.addEventListener('webglcontextlost',contextLost);
-  return()=>{disposed=true;abort.abort();cancelAnimationFrame(frame);observer.disconnect();delete (window as unknown as {__atlasTargets?:()=>unknown}).__atlasTargets;controls.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());scene.traverse(o=>{if(o instanceof T.Mesh&&!geometries.includes(o.geometry)){o.geometry.dispose();const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>m.dispose());}});env.dispose();partTexture.dispose();selectionTexture.dispose();markerGeometry.dispose();markerMaterial.dispose();hover.remove();renderer.dispose();renderer.domElement.remove();};
+  return()=>{disposed=true;abort.abort();cancelAnimationFrame(frame);observer.disconnect();uninstallCapture();delete (window as unknown as {__atlasTargets?:()=>unknown}).__atlasTargets;controls.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());scene.traverse(o=>{if(o instanceof T.Mesh&&!geometries.includes(o.geometry)){o.geometry.dispose();const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>m.dispose());}});env.dispose();partTexture.dispose();selectionTexture.dispose();markerGeometry.dispose();markerMaterial.dispose();hover.remove();renderer.dispose();renderer.domElement.remove();};
  },[atlas]);
  return <div className="scene" ref={host}/>;
 }

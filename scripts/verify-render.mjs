@@ -153,6 +153,58 @@ async function regionLuminance(analyser, buf, rect) {
   }, { b64: buf.toString('base64'), r: rect });
 }
 
+/**
+ * THE DITHER ORACLE (L30 P4a.1) — can this picture be seen as speckle?
+ *
+ * "Background pixels inside the bounding box" CANNOT answer that: a fully opaque hamstring
+ * already leaves ~16% of its own AABB as background, because a bone is not a rectangle. So
+ * the wrong instrument reports the solid structure as noisier than the ghosted one.
+ *
+ * What alphaHash coverage actually does is punch HOLES INSIDE the silhouette. So:
+ *   holeFrac = background pixels with >= 6 of their 8 neighbours NOT background
+ *   speckle  = mean |luminance difference| between horizontally adjacent non-background px
+ * Both go to a solid surface's own floor when the translucency is smooth, and both rise
+ * with the dither. Measured on the shipped p4a plate: femur holes 0.45%, speckle 17.4.
+ */
+async function dither(analyser, buf, rect) {
+  return analyser.evaluate(async ({ b64, r }) => {
+    const bin = atob(b64); const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const bmp = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    const c = new OffscreenCanvas(bmp.width, bmp.height); const cx = c.getContext('2d');
+    cx.drawImage(bmp, 0, 0);
+    const x = Math.max(0, Math.round(r.left)); const y = Math.max(0, Math.round(r.top));
+    const w = Math.min(bmp.width - x, Math.round(r.right - r.left));
+    const h = Math.min(bmp.height - y, Math.round(r.bottom - r.top));
+    if (w <= 2 || h <= 2) return null;
+    const d = cx.getImageData(x, y, w, h).data;
+    const isBg = (i) => Math.abs(d[i] - 242) <= 6 && Math.abs(d[i + 1] - 243) <= 6 && Math.abs(d[i + 2] - 243) <= 6;
+    const lum = (i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+    let bg = 0; let ink = 0; let inkSum = 0; let holes = 0; let pairs = 0; let diff = 0;
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const i = (py * w + px) * 4;
+        if (isBg(i)) {
+          bg++;
+          if (px > 0 && py > 0 && px < w - 1 && py < h - 1) {
+            let n = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (!dx && !dy) continue;
+                if (!isBg(((py + dy) * w + (px + dx)) * 4)) n++;
+              }
+            }
+            if (n >= 6) holes++;
+          }
+        } else { ink++; inkSum += lum(i); }
+        if (px < w - 1 && !isBg(i) && !isBg(i + 4)) { pairs++; diff += Math.abs(lum(i) - lum(i + 4)); }
+      }
+    }
+    const n = w * h;
+    return { px: n, bgFrac: bg / n, holeFrac: holes / n, speckle: pairs ? diff / pairs : null, inkMeanLum: ink ? inkSum / ink : null };
+  }, { b64: buf.toString('base64'), r: rect });
+}
+
 // A NAMED concept resolves through the page, not through part.conceptId: FMA16203 "lumbar
 // vertebral column" is a grouping of ten meshes whose own concepts are the five vertebrae
 // and the five discs, so matching on conceptId finds nothing and the check degrades to
@@ -353,6 +405,73 @@ try {
     new Set(digests).size === 1, digests.join(' | '));
 
   check('E2 no console errors while rendering plates', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || 'clean');
+
+  // ── H. SMOOTH TRANSLUCENCY (P4a.1) ─────────────────────────────────────────
+  // The page is on the forward-bend plate, settled. `__atlasCapture` draws ONE frame with
+  // the backing store supersampled and area-averages it back down; the renderer calls it
+  // before every screenshot. These checks are the reason it exists.
+  await drive(page, forwardBend(), { viaHash: true });
+  const tH = await targetsFor(page);
+  const femurRect = unionRect(tH, [L.femur]);
+  const ghostRect = unionRect(tH, [L.lumbar]);
+  const primaryRect = unionRect(tH, [L.semitendinosus]);
+
+  const capture = async (scale) => {
+    const t0 = Date.now();
+    const dataUrl = await page.evaluate((s) => (window.__atlasCapture ? window.__atlasCapture({ scale: s }) : ''), scale);
+    const ms = Date.now() - t0;
+    const b64 = String(dataUrl).split(',')[1] ?? '';
+    return { ms, buf: Buffer.from(b64, 'base64'), isPng: String(dataUrl).startsWith('data:image/png;base64,') };
+  };
+
+  const hi = await capture(3);
+  writeFileSync(join(outDir, 'capture-supersampled.png'), hi.buf);
+  check('H0 the page exposes __atlasCapture and it returns a PNG data URL', hi.isPng && hi.buf.length > 10000,
+    `${hi.buf.length} bytes in ${hi.ms} ms`);
+
+  const smooth = await dither(analyser, hi.buf, femurRect);
+  const smoothGhost = await dither(analyser, hi.buf, ghostRect);
+  const smoothPrimary = await dither(analyser, hi.buf, primaryRect);
+  check('H1 the ghosted CONTEXT is a translucent surface, not a dot cloud',
+    smooth && smooth.holeFrac < 0.005 && smooth.speckle < 12,
+    smooth ? `femur interior holes ${(smooth.holeFrac * 100).toFixed(2)}% · speckle ${smooth.speckle.toFixed(1)} (p4a shipped 0.45% / 17.4)` : 'no region');
+
+  // A CONTROL ARM. The oracle above passes trivially if it cannot see a dither at all, so
+  // the SAME measurement is taken on a deliberately un-supersampled capture of the SAME
+  // frame: it must be far worse, or H1 is not evidence of anything.
+  const raw = await capture(1);
+  writeFileSync(join(outDir, 'capture-1x-control.png'), raw.buf);
+  const rough = await dither(analyser, raw.buf, femurRect);
+  check('H2 RED-PROOF: the same oracle DOES go red on a 1x capture of the same frame',
+    rough && rough.holeFrac > smooth.holeFrac * 5 && rough.speckle > smooth.speckle,
+    rough ? `1x holes ${(rough.holeFrac * 100).toFixed(2)}% speckle ${rough.speckle.toFixed(1)}  vs  3x holes ${(smooth.holeFrac * 100).toFixed(2)}% speckle ${smooth.speckle.toFixed(1)}` : 'no region');
+
+  // THE OPACITY TRAP. `alphaToCoverage` was tried as the smooth alternative and resolves to
+  // FULL coverage on this stack — a beautiful picture with the ghost silently solid. The
+  // only thing that catches it is that a translucent structure must stay LIGHTER than an
+  // opaque one over the same background.
+  check('H3 the ghost is still TRANSLUCENT, not silently opaque',
+    smoothGhost && smoothPrimary && smoothGhost.inkMeanLum > smoothPrimary.inkMeanLum,
+    smoothGhost && smoothPrimary ? `ghost lum ${smoothGhost.inkMeanLum.toFixed(0)} > primary lum ${smoothPrimary.inkMeanLum.toFixed(0)}` : 'no region');
+
+  // And the plate the renderer actually returns is the screenshot TAKEN OVER the painted
+  // capture — it must carry the same smooth pixels AND still have the caption card, which
+  // is exactly why the hook's own PNG is not used as the picture. (Re-captured at 3: the
+  // control arm above deliberately left a 1x overlay painted, and the renderer always
+  // screenshots immediately after its own capture.)
+  await capture(3);
+  const overShot = await page.screenshot({ type: 'png' });
+  writeFileSync(join(outDir, 'plate-supersampled-960x720.png'), overShot);
+  const overSmooth = await dither(analyser, overShot, femurRect);
+  check('H4 the SCREENSHOT carries the supersampled pixels (the overlay is what is captured)',
+    overSmooth && Math.abs(overSmooth.holeFrac - smooth.holeFrac) < 0.001 && Math.abs(overSmooth.speckle - smooth.speckle) < 0.5,
+    overSmooth ? `screenshot holes ${(overSmooth.holeFrac * 100).toFixed(2)}% speckle ${overSmooth.speckle.toFixed(1)}` : 'no region');
+
+  // The overlay is a picture of ONE scene pinned over a tab that gets re-driven. If it
+  // survived a re-drive the renderer would screenshot the PREVIOUS plate at HTTP 200.
+  await drive(page, forwardBend({ camera: { ...scene.camera, view: 'front' } }), { viaHash: true });
+  const stale = await page.evaluate(() => document.querySelectorAll('canvas.atlas-shot').length);
+  check('H5 a re-drive DROPS the painted capture (no stale plate can be screenshotted)', stale === 0, `${stale} overlay canvases after re-drive`);
   await ctx960.close();
 
   // ── F. the PHONE viewport, where the caption reservation guard lives ────────
@@ -403,6 +522,80 @@ try {
     !!zhVar && zhVar.mean > 0.02 && zhVar.variance > 0.004,
     zhVar ? `column-ink mean ${zhVar.mean.toFixed(3)} variance ${zhVar.variance.toFixed(4)} over ${zhVar.width}px` : 'no caption');
   await ctxZh.close();
+
+  // ── I. EXPLORE MODE NEVER GHOSTS (P4a.1) ───────────────────────────────────
+  // Adrian's own link, verbatim: the "Interactive 3D" URL render_anatomy hands back, which
+  // carries the SAME scene with mode:'explore'. Before P4a.1 it applied the plate's role
+  // opacities, so the pelvis and femur he was trying to orbit were a coverage dither —
+  // "为什么蒙蒙?". The alpha lane is read back from the byte uploaded to the GPU.
+  const exploreScene = normalizeScene({
+    ...forwardBend(),
+    mode: 'explore',
+    lang: 'zh-Hans',
+    structures: [
+      { id: L.semitendinosus, role: 'primary' }, { id: L.semimembranosus, role: 'primary' },
+      { id: L.bicepsFemoris, role: 'primary' },
+      { id: 'FMA16580', role: 'context' }, { id: L.femur, role: 'context' },
+      { id: L.lumbar, role: 'ghost' },
+    ],
+    camera: { view: 'side', focus: ['FMA16580', L.semitendinosus], padding: 1.35 },
+  });
+  const exploreIds = sceneSelectIds(exploreScene);
+  const exploreUrl = `${base}/?select=${exploreIds.join(',')}&lang=zh-Hans&isolate=1&view=side&scene=${encodeScene(exploreScene)}`;
+  for (const [w, h] of [[1280, 900], [390, 844]]) {
+    const ctxE = await makeContext(w, h);
+    const ex = await ctxE.newPage();
+    await ex.goto(exploreUrl, { waitUntil: 'domcontentloaded', timeout: 180000 });
+    await ex.waitForSelector('html[data-atlas-ready="1"]', { timeout: 180000 });
+    await ex.waitForFunction((want) => document.documentElement.dataset.atlasSelected === want, exploreIds.join(','), { timeout: 60000 });
+    await ex.waitForFunction(() => document.documentElement.dataset.atlasSettled === '1', null, { timeout: 60000 });
+    const te = await ex.evaluate((ids) => window.__atlasTargets(ids), exploreIds);
+    const alphas = Object.fromEntries(exploreIds.map((id) => [id, te.groups[id] ? te.groups[id].a : null]));
+    const allSolid = exploreIds.every((id) => alphas[id] === 1);
+    check(`I1 (${w}x${h}) every named structure is drawn at alpha 1.0 in EXPLORE mode`, allSolid,
+      Object.entries(alphas).map(([k, v]) => `${k}:${v}`).join(' '));
+
+    const shotE = await ex.screenshot({ type: 'png' });
+    writeFileSync(join(outDir, `explore-${w}x${h}.png`), shotE);
+    // The DITHER oracle is desktop-only, deliberately and not for convenience: on a 390-wide
+    // phone the explorer stacks the caption card and the detail sheet over the model, so the
+    // pelvis's projected rect contains PARAGRAPH TEXT — whose glyph counters are interior
+    // holes and whose edges are speckle. Measured 0.58% / 16.1 there against 0.04% / 6.1 on
+    // the desktop, with an identical alpha lane. That is the instrument reading chrome, and
+    // reporting it as a product defect would be the instrument's fault. The phone's evidence
+    // is I1 (the lane the GPU actually got) plus the screenshot, which is looked at.
+    if (w === 1280) {
+      const pelvis = te.groups['FMA16580'] ?? te.groups[L.femur];
+      const dE = pelvis ? await dither(analyser, shotE, pelvis) : null;
+      check(`I2 (${w}x${h}) and it is drawn SOLID — no coverage holes in the context bone`,
+        dE && dE.holeFrac < 0.005, dE ? `interior holes ${(dE.holeFrac * 100).toFixed(2)}% · speckle ${dE.speckle.toFixed(1)}` : 'no region');
+    }
+
+    // The chrome must still be there: this is the link a human opens, not a plate.
+    const chromeE = await ex.evaluate(() => ({
+      snap: document.body.classList.contains('snap-mode'),
+      render: document.body.classList.contains('render-mode'),
+      dock: !!document.querySelector('.bottom-dock')?.getBoundingClientRect().width,
+    }));
+    check(`I3 (${w}x${h}) the explorer keeps its chrome (it is a link you orbit, not a plate)`,
+      !chromeE.snap && !chromeE.render && chromeE.dock, JSON.stringify(chromeE));
+
+    if (w === 1280) {
+      // THE OTHER HALF: the roles are still in the blob. Flip the one field in the SAME
+      // warm tab and the plate's opacities come back — if they did not, this fix would
+      // have deleted ghost anatomy rather than scoped it.
+      const q = new URL(`${base}/?select=${exploreIds.join(',')}&scene=${encodeScene({ ...exploreScene, mode: 'render' })}&snap=1`).searchParams.toString();
+      await ex.evaluate((hash) => { window.location.hash = hash; }, `#${q}`);
+      await ex.waitForFunction(() => document.documentElement.dataset.atlasSettled === '1', null, { timeout: 60000 });
+      const tr = await ex.evaluate((ids) => window.__atlasTargets(ids), exploreIds);
+      const ghostA = tr.groups[L.lumbar] ? tr.groups[L.lumbar].a : null;
+      const ctxA = tr.groups[L.femur] ? tr.groups[L.femur].a : null;
+      check('I4 the SAME link with mode=render still ghosts — the blob was never touched',
+        Math.abs((ghostA ?? 1) - 0.08) < 0.01 && Math.abs((ctxA ?? 1) - 0.4) < 0.01,
+        `ghost ${ghostA} · context ${ctxA} (explore had both at 1)`);
+    }
+    await ctxE.close();
+  }
 } catch (err) {
   check('FATAL', false, String(err && err.message ? err.message : err).slice(0, 300));
 } finally {

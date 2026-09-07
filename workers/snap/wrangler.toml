@@ -34,4 +34,9 @@ bucket_name = "human-anatomy-snaps"
 # (supersampling on, role opacities recalibrated for coverage), and the guard in deploy.ps1
 # caught it on its first real use rather than letting p4-keyed pictures be served for a
 # different-looking build.
-SITE_BUILD = "p4a"
+#
+# p4a -> p4a1: the ghost-polish pass. Explore mode no longer applies role opacities at all,
+# and every plate is now captured through a 3x supersampled frame instead of the
+# compositor's 2x downscale -- both change what a picture LOOKS like, so every p4a-keyed
+# PNG in R2 is wrong for this build and must not be served for it.
+SITE_BUILD = "p4a1"

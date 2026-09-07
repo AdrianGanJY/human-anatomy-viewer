@@ -406,6 +406,36 @@ export function structureOpacity(scene) {
 }
 
 /**
+ * WHAT THE PAGE ACTUALLY DRAWS, per MODE. L30 P4a.1.
+ *
+ * `structureOpacity` above answers "what does this scene SAY", which is a property of the
+ * scene alone. This answers "what does the viewer DO with it", which depends on the mode,
+ * and the two are not the same thing:
+ *
+ *   render  — the teaching plate. Roles become opacity, exactly as the scene declares.
+ *   explore — the interactive viewer. EVERY named structure is drawn solid, and
+ *             `rest:'skeletal'` is a VISIBILITY switch (the page turns the skeletal system
+ *             on) rather than a ghost.
+ *
+ * WHY. Opacity here is resolved by alphaHash COVERAGE, not by blending, so a structure at
+ * 0.4 is drawn as a stochastic 40% of its own fragments. On a still plate that reads as
+ * translucency; in a viewport you orbit, search and tap, it reads as haze over the model —
+ * which is what Adrian asked about ("为什么蒙蒙?") after opening a render_anatomy link.
+ * The roles stay in the blob untouched, so the SAME link with `mode=render` still ghosts.
+ */
+export function sceneOpacities(scene) {
+  const render = scene.mode === 'render';
+  const structures = render
+    ? structureOpacity(scene)
+    : Object.fromEntries(scene.structures.map((s) => [s.id, 1]));
+  // 1, not undefined: the page passes this straight through as `restOpacity`, and the
+  // scene effect reads it as `restOpacity ?? 1`. Saying 1 out loud is the same picture and
+  // one less absent-means-default rule to get wrong.
+  const rest = render && scene.rest.include === 'skeletal' ? scene.rest.opacity : 1;
+  return { render, structures, rest };
+}
+
+/**
  * THE `select=` CONTRACT, and it is load-bearing in a way that is easy to miss.
  *
  * The renderer waits for `document.documentElement.dataset.atlasSelected` to equal the

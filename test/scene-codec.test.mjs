@@ -19,7 +19,7 @@ const url = (...p) => `file://${join(ROOT, ...p).replace(/\\/g, '/')}`;
 const codec = await import(url('app', 'scene-codec.js'));
 const {
   SCENE_V, LIMITS, DEFAULTS, normalizeScene, validateScene, canonicalScene,
-  encodeScene, decodeScene, structureOpacity, sceneSelectIds,
+  encodeScene, decodeScene, structureOpacity, sceneOpacities, sceneSelectIds,
 } = codec;
 const helpers = await import(url('workers', 'snap', 'src', 'helpers.mjs'));
 const { canonical, reDriveHash, parseSize, LEGACY_KEYS, SCENE_KEYS } = helpers;
@@ -148,6 +148,56 @@ test('contextOpacity 0 reproduces isolate exactly — nothing is drawn but the p
     roleOpacity: { primary: 1, context: 0, ghost: 0 },
   });
   assert.equal(structureOpacity(s).B, 0);
+});
+
+// ── L30 P4a.1: the MODE GATE ────────────────────────────────────────────────
+// Adrian opened a render_anatomy link in the explorer and asked "为什么蒙蒙?" — the plate's
+// coverage dither had followed the scene into a view you orbit. These are the tests for
+// "the same scene, two modes", and the last one is the one that matters: the blob must be
+// UNCHANGED, or `mode=render` on the same link would stop ghosting too.
+
+test('explore draws every named structure SOLID; render applies the roles', () => {
+  const s = normalizeScene(forwardBend());
+  const render = sceneOpacities(s);
+  assert.equal(render.render, true);
+  assert.deepEqual(render.structures, structureOpacity(s));
+  assert.equal(render.structures.FMA16580, 0.4, 'context keeps the scene\'s own number in render mode');
+  assert.equal(render.structures.FMA16203, 0.08, 'and so does the ghost');
+
+  const explore = sceneOpacities(normalizeScene({ ...forwardBend(), mode: 'explore' }));
+  assert.equal(explore.render, false);
+  assert.deepEqual(
+    explore.structures,
+    Object.fromEntries(sceneSelectIds(s).map((id) => [id, 1])),
+    'every structure the scene names — context and ghost included — is drawn at alpha 1',
+  );
+  assert.equal(Object.keys(explore.structures).length, 6, 'and none of them is dropped');
+});
+
+test('an explicit per-structure style does NOT ghost the explorer either', () => {
+  // styles[].opacity beats the role in render mode, so it is the other way this could leak.
+  const raw = { ...forwardBend(), styles: [{ id: 'FMA16203', opacity: 0.05 }] };
+  assert.equal(sceneOpacities(normalizeScene(raw)).structures.FMA16203, 0.05);
+  assert.equal(sceneOpacities(normalizeScene({ ...raw, mode: 'explore' })).structures.FMA16203, 1);
+});
+
+test('rest:skeletal is a GHOST on a plate and a VISIBILITY switch in the explorer', () => {
+  const raw = { ...forwardBend(), rest: { include: 'skeletal', opacity: 0.08 } };
+  assert.equal(sceneOpacities(normalizeScene(raw)).rest, 0.08);
+  assert.equal(sceneOpacities(normalizeScene({ ...raw, mode: 'explore' })).rest, 1);
+  // rest:none is isolate, and its opacity is meaningless in both modes.
+  assert.equal(sceneOpacities(normalizeScene(forwardBend())).rest, 1);
+});
+
+test('the mode gate does NOT touch the blob — the same link with mode=render still ghosts', () => {
+  const raw = forwardBend();
+  const explore = normalizeScene({ ...raw, mode: 'explore' });
+  // Roles and opacities survive the explore round trip verbatim...
+  const back = decodeScene(encodeScene(explore));
+  assert.deepEqual(back.structures, normalizeScene(raw).structures);
+  assert.deepEqual(back.roleOpacity, normalizeScene(raw).roleOpacity);
+  // ...so flipping the one field reproduces the plate's opacities exactly.
+  assert.deepEqual(sceneOpacities({ ...back, mode: 'render' }).structures, structureOpacity(normalizeScene(raw)));
 });
 
 test('sceneSelectIds is canonical order — the exact string the page will report back', () => {

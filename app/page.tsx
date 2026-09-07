@@ -1,7 +1,8 @@
 import {flushSync} from 'react-dom';
 import {registerAtlasTools} from './agent-tools';
 import {markError,markReady,markScene,markSelected,markSettled,readUrlState,setModes,writeUrlState,type UrlState} from './url-state';
-import {encodeScene,sceneSelectIds,structureOpacity,type Scene} from './scene-model';
+import {encodeScene,sceneOpacities,sceneSelectIds,type Scene} from './scene-model';
+import {releaseCaptureOverlay} from './capture';
 const NO_IDS:string[]=[];
 import {useEffect,useMemo,useRef,useState} from 'react';
 import {Activity,ArrowUpRight,ChevronRight,Focus,Info,Layers3,ListChecks,Pause,Plus,RotateCcw,RotateCw,Search,X} from 'lucide-react';
@@ -109,6 +110,10 @@ export default function Home(){
   // renderer's waits instantly, which is exactly the bug the exact-selection wait exists to
   // prevent, one level up.
   markSettled(false);markError('');
+  // L30 P4a.1: and the painted capture overlay goes with them. A warm tab that kept the
+  // PREVIOUS request's plate painted over its canvas would be screenshotted as a perfectly
+  // plausible picture of the wrong scene, at HTTP 200, and cached for 24 hours.
+  releaseCaptureOverlay();
   if(u.scene){
    // AUTHORITATIVE. Every field the scene owns is set from the scene, legacy keys ignored,
    // so a warm tab that previously served a plain `select=` render is fully overwritten.
@@ -137,7 +142,16 @@ export default function Home(){
   *  identity every time, because the animate loop's change guard is reference equality. */
  const plate=useMemo(()=>{
   if(!scene)return null;
-  const alpha=structureOpacity(scene) as Record<string,number>;
+  // L30 P4a.1: OPACITY IS A RENDER-MODE PROPERTY, and only render mode applies it.
+  // The roles stay in the blob untouched, so the SAME link switched to mode=render still
+  // ghosts; what changes is that the interactive explorer draws every named structure
+  // solid. Adrian opened a render_anatomy link in the explorer and asked "为什么蒙蒙?" --
+  // the plate's alphaHash COVERAGE dither had followed the scene into a view you orbit,
+  // where it is not a teaching device, just haze over the model.
+  // The mode gate itself lives in the codec — the ONE module the page and the Pages
+  // Function both import — so "explore never ghosts" is a unit test, not a claim about a
+  // React memo. `alpha` is every named structure at 1 in explore, the roles in render.
+  const {render,structures:alpha,rest}=sceneOpacities(scene) as {render:boolean;structures:Record<string,number>;rest:number};
   const roleOf=new Map(scene.structures.map(s=>[s.id,s.role]));
   const wantFocus=new Set(scene.camera.focus);
   const opacity:Record<string,number>={},focus:string[]=[],primary:string[]=[];
@@ -146,14 +160,20 @@ export default function Home(){
    for(const el of p.elements){
     // A mesh shared by two named structures takes the MOST opaque of them: primary wins.
     if(a!==undefined)opacity[el]=Math.max(opacity[el]??0,a);
-    if(roleOf.get(p.id)==='primary')primary.push(el);
+    // The highlight tint follows the scene's primaries. In EXPLORE mode a structure the
+    // scene never named can only have reached the basket by the human picking it, and the
+    // explorer highlights what you pick -- without this, a click would select something
+    // and visibly do nothing.
+    if(roleOf.get(p.id)==='primary'||(!render&&!roleOf.has(p.id)))primary.push(el);
     if(wantFocus.has(p.id))focus.push(el);
    }
   }
   return {opacity,focus,primary,
    focusPadding:scene.camera.padding,
-   restOpacity:scene.rest.include==='skeletal'?scene.rest.opacity:undefined,
-   render:scene.mode==='render',background:scene.background,ss:scene.ss};
+   // `rest:skeletal` is a VISIBILITY switch in explore mode -- applyUrl turns the skeletal
+   // system on -- and a ghost only on a plate.
+   restOpacity:rest,
+   render,background:scene.background,ss:scene.ss};
  },[scene,basket]);
  const urlApplied=useRef(false);
  useEffect(()=>{if(!atlas||urlApplied.current)return;urlApplied.current=true;applyUrl(readUrlState());},[atlas]);
