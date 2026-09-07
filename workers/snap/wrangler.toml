@@ -69,4 +69,17 @@ bucket_name = "human-anatomy-snaps"
 # Rendering minutes are EXHAUSTED on the Adrey account. Bumping SITE_BUILD retires every cached
 # PNG, and the account cannot currently re-render a single one — so an unnecessary bump would
 # take ChatGPT from "a slightly older picture" to "no picture at all".
+# Still l31h through the v2 follow-up (the scene camera applied on a cold link, and the
+# barrier's `armedAt` cut-off). Both are v2-path: `applySceneState` lives in app/v2/page.tsx,
+# and the loader's new arming lines are no-ops on `/`, where `onSceneReady` is undefined and
+# the callback is never invoked. Re-measured against the six control plates after this deploy
+# too — same harness, same comparison (PNG sha256 + projected rect + camera).
+#
+# ONE HONEST CAVEAT ON THE HARNESS: the forward-bend plate's PNG hash is NOT stable run to run
+# on an unchanged build (measured: before f6d8f9e6, after 1b7a09da, then f6d8f9e6 again on the
+# SAME deployment). It is the only control scene carrying a `ghost`, and alphaHash resolves
+# transparency by a stochastic COVERAGE dither. So for that scene the camera and the projected
+# subject rect are the evidence, and the hash is noise — recorded here so the next reader does
+# not mistake the oscillation for a regression, or trust the hash for a scene where it means
+# nothing.
 SITE_BUILD = "l31h"
