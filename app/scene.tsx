@@ -5,6 +5,7 @@ import {RoomEnvironment} from 'three/examples/jsm/environments/RoomEnvironment.j
 import {mergeGeometries} from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {createExplosionLayout} from './explosion-layout';
 import {decodeModelResponse} from './model-download';
+import {orderChunks} from './scene-chunks';
 import {PointerTap} from './pointer-tap';
 import {SYSTEMS,type Atlas,type SceneState} from './anatomy';
 import {markSettled} from './url-state';
@@ -13,12 +14,24 @@ import {markSettled} from './url-state';
 import {installCapture} from './capture';
 // L30: `add` carries the modifier key so a Shift-click can ADD to the selection basket
 // instead of replacing it. The scene itself stays stateless about the basket.
-interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=>void;onProgress:(n:number)=>void;onError:(s:string)=>void}
-export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:Props){
+// L31 v2: `priority` and `onSceneReady` are ADDITIVE and both absent in v1, where the loader
+// keeps its 0..14 cursor byte-for-byte. See the loader below for why the ORDER is the whole
+// change and why `data-atlas-ready` must not move.
+interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=>void;onProgress:(n:number)=>void;onError:(s:string)=>void;
+ /** Concept or part ids whose chunks load FIRST, resolved by the CALLER before mount.
+  *  Passing React selection state here would be a race — the atlas mounts this component
+  *  before applyUrl has run, so the selection is still empty and the queue would prioritise
+  *  nothing (astra-ux-astra.md:206). v2 reads them straight out of the URL blob instead. */
+ priority?:readonly string[];
+ /** Fires once every chunk the priority set needs is merged and drawn — the PHASE BARRIER.
+  *  Never fires before the barrier and never replaces `onProgress(100)`. */
+ onSceneReady?:()=>void}
+export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady}:Props){
  const host=useRef<HTMLDivElement>(null),latest=useRef(state),select=useRef(onSelect);
- latest.current=state;select.current=onSelect;
+ const priorityRef=useRef(priority),sceneReadyCb=useRef(onSceneReady);
+ latest.current=state;select.current=onSelect;priorityRef.current=priority;sceneReadyCb.current=onSceneReady;
  useEffect(()=>{
-  const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
+  const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,sceneReady=false,sceneReadyPending=false,sceneReadyFired=false,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
   let lastState:SceneState|null=null;
   // L30 P4: teaching-plate bookkeeping. `still` counts consecutive frames with nothing
   // left to draw, which is what `data-atlas-settled` means; `settled` stops us writing
@@ -117,6 +130,11 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
     w:el.clientWidth,h:el.clientHeight,
     camera:{x:camera.position.x,y:camera.position.y,z:camera.position.z,
      tx:controls.target.x,ty:controls.target.y,tz:controls.target.z},
+    // L31: WHICH FIT OWNS THE CAMERA. A framing oracle that only sees the result cannot tell
+    // "the focus fit computed a bad frame" from "the focus fit never ran and the default fit is
+    // what you are looking at" — and those need opposite repairs. `fitKey` is the focus fit's
+    // own change key: empty means it is not active.
+    fit:{key:lastIsolate,focus:(latest.current.focus??[]).length,frame:(latest.current.frame??[]).length,isolate:!!latest.current.isolate},
     groups,
     parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom,a:selectedData[t.index*4+1]/255})),
    };
@@ -199,7 +217,41 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    groups.forEach((gs,system)=>{const geometry=mergeGeometries(gs,false);if(!geometry)throw new Error('Could not assemble anatomy geometry.');geometries.push(geometry);const mesh=new T.Mesh(geometry,mats.get(system as never));mesh.frustumCulled=false;scene.add(mesh);});
    lastState=null;loaded++;onProgress(Math.round(loaded/atlas.chunks.length*100));dirty=true;
   };
-  (async()=>{try{let cursor=0;await Promise.all(Array.from({length:3},async()=>{while(cursor<atlas.chunks.length){const i=cursor++;await loadChunk(i);}}));if(!disposed){ready=true;dirty=true;}}catch(e){if(!disposed)onError(e instanceof Error?e.message:'Could not load the anatomy.');}})();
+  /**
+   * L31 v2 — SCENE-FIRST CHUNK ORDER WITH A PHASE BARRIER. Not streaming: `model-download.ts:6`
+   * buffers each whole chunk, so progressive drawing is chunk-atomic at 1.3–4.0 MB and ALREADY
+   * ships (:199 adds each merged group the moment its chunk decodes). The only thing that
+   * changes is the ORDER of the cursor below, and there is NO re-batching: merging is per
+   * chunk, and the selection texture, the explosion layout and the focus fit are all driven by
+   * atlas.json metadata, which is chunk-order-independent.
+   *
+   * Measured (audit-current.md:26-32): the six benchmark scenes each need 3 or 4 of the 15
+   * chunks — 20.4%–27.5% of 32,956,129 B — but the shared 0..14 cursor fetches the scene's own
+   * chunks LAST, because every scene needs chunk 12 or 13. Ordering them first cuts
+   * bytes-to-scene-complete 3.6x–4.9x. It does NOT cut bytes-to-first-visible-model (already
+   * one chunk) and it does NOT cut the steady-state memory floor: all 15 buffers still land.
+   *
+   * `data-atlas-ready` MUST KEEP MEANING "ALL 15 CHUNKS". Nine wait sites depend on it
+   * (verify-live 67,123,238,348,421,428; verify-render 98,384,549) and the Pages screenshotter
+   * is one of them: re-pointing it captures a half-loaded scene at HTTP 200 and R2 caches that
+   * PNG for 24 hours. So `onProgress` still counts loaded/15 and the barrier gets its OWN
+   * signal. The temptation to reuse the old flag is the dangerous shortcut; it is not taken.
+   */
+  (async()=>{try{
+   const {first,rest}=orderChunks(atlas,priorityRef.current);
+   const run=async(list:number[])=>{let cursor=0;await Promise.all(Array.from({length:3},async()=>{while(cursor<list.length){const i=list[cursor++];await loadChunk(i);}}));};
+   await run(first);
+   // THE BARRIER. Everything the scene named is merged and in the graph; one more frame draws
+   // it. Picking unlocks here so the user is not shown structures he cannot tap.
+   // MERGED IS NOT DRAWN. The callback is ARMED here and fired by the frame loop after the next
+   // renderer.render() — one frame later. Adversarial review caught the first version claiming
+   // "drawn" while firing synchronously after the merge, which also meant the byte count the
+   // page freezes at the barrier was read before the last chunk's PerformanceResourceTiming
+   // entry was guaranteed complete.
+   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyPending=true;}
+   await run(rest);
+   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyPending=true;}}
+  }catch(e){if(!disposed)onError(e instanceof Error?e.message:'Could not load the anatomy.');}})();
   // L30 P4: the camera direction per named view, extracted so the focus fit below uses the
   // SAME table `fit` does. It used to be inlined here and hard-coded there, which is why
   // `view` was silently ignored whenever isolate was on.
@@ -214,8 +266,12 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   // small enough to be worth it. Set it to 0 for the tightest possible fit.
   const FOCUS_CENTER_BIAS=.2;
   const fit=(view:string,extent=0)=>{
-   const aspect=camera.aspect,mobile=el.clientWidth<768,normalDistance=mobile?Math.max(4.5,1.8*el.clientHeight/Math.max(160,el.clientHeight-350)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))):4;
-   const reservedHeight=mobile?350:270;const availableAspect=Math.max(.35,(el.clientWidth-(mobile?40:340))/Math.max(160,el.clientHeight-reservedHeight));const atlasDistance=Math.max(packingHeight,packingWidth/availableAspect)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*(el.clientHeight/Math.max(160,el.clientHeight-reservedHeight))*1.08;
+   const insets=latest.current.insets;
+   const reserve=insets?insets.top+insets.bottom:(el.clientWidth<768?350:270);
+   const aspect=camera.aspect,mobile=el.clientWidth<768,normalDistance=mobile?Math.max(4.5,1.8*el.clientHeight/Math.max(160,el.clientHeight-reserve)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))):4;
+   // L31 v2: with a static inset the field IS the free space, so the reservation is the
+   // inset — not the 350/270 px of chrome v1 has to assume is sitting on top of the canvas.
+   const reservedHeight=reserve;const availableAspect=Math.max(.35,(el.clientWidth-(insets?insets.left+insets.right:(mobile?40:340)))/Math.max(160,el.clientHeight-reservedHeight));const atlasDistance=Math.max(packingHeight,packingWidth/availableAspect)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*(el.clientHeight/Math.max(160,el.clientHeight-reservedHeight))*1.08;
    const distance=T.MathUtils.lerp(normalDistance,Math.max(.2,atlasDistance),extent);if(extent>.8)view='front';
    const direction=dirFor(view);
    controls.target.set(extent>.1&&el.clientWidth>767?-packingWidth*.12:0,extent>.1||mobile?.85:.68,0);camera.position.copy(controls.target).addScaledVector(direction,distance);controls.update();dirty=true;
@@ -225,13 +281,38 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   // four samples averaged per output pixel turn speckle into a wash, at zero extra draw
   // calls and zero extra vertices. It is off by default and lives inside the scene blob,
   // so it is part of the render cache key.
-  const resize=()=>{layoutKey='';lastState=null;const s=latest.current;renderer.setPixelRatio(s.render&&s.ss?2:Math.min(devicePixelRatio,el.clientWidth<768||el.clientHeight<600?1.5:2));camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();renderer.setSize(el.clientWidth,el.clientHeight);fit(s.view,amount);};const observer=new ResizeObserver(resize);observer.observe(el);
+  /**
+   * L31 v2: `resize()` ends with an UNCONDITIONAL `fit()`, which overwrites the camera even when
+   * a focus fit owns it — and because the focus fit is guarded by a change key that resize does
+   * not touch, it never runs again. The camera is then left on the default framing forever.
+   *
+   * MEASURED, and it is why v2's first framing run came back WORSE than v1's: at t=466 ms the
+   * focus-fit key was already set (so it had run) while the camera read target (0, .85, 0) and
+   * distance exactly 4.500 — `fit()`'s mobile default, not the box centre (0.010, 0.679) the
+   * focus fit computes. One trace of the camera against the fit key settled it; three rounds of
+   * reasoning about the arithmetic had not.
+   *
+   * Clearing the key here is the whole fix: the next frame recomputes the focus fit against the
+   * NEW aspect and wins. It is also a real repair for v1, where rotating a phone or opening the
+   * keyboard on a `focus=` link silently dropped the scene's framing — the reason it was never
+   * noticed is that v1's layout never resizes the canvas, so nothing after mount triggered it.
+   */
+  const resize=()=>{layoutKey='';lastState=null;
+   // SCOPED TO v2. Adversarial review (claude-opus-4-6-thinking, 2026-09-07) refuted the first
+   // version of this line: it cleared the key unconditionally, and v1 DOES resize on a desktop
+   // window drag, so "v1 is unchanged in behaviour" would have been false. The clear is the fix
+   // for v2's grid (where the field really does change size), and v1 keeps its existing
+   // behaviour — a window resize there still leaves the focus framing alone.
+   if(latest.current.insets)lastIsolate='';
+   const s=latest.current;renderer.setPixelRatio(s.render&&s.ss?2:Math.min(devicePixelRatio,el.clientWidth<768||el.clientHeight<600?1.5:2));camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();renderer.setSize(el.clientWidth,el.clientHeight);fit(s.view,amount);};const observer=new ResizeObserver(resize);observer.observe(el);
   const raycaster=new T.Raycaster(),pointer=new T.Vector2(),tap=new PointerTap(),worldBox=new T.Box3(),hitPoint=new T.Vector3();
   const down=(e:PointerEvent)=>{hover.hidden=true;tap.down(e.pointerId,e.clientX,e.clientY,e.pointerType==='touch'?12:5);};
   const move=(e:PointerEvent)=>{tap.move(e.pointerId,e.clientX,e.clientY);if(e.buttons||amount<.5||e.pointerType==='touch'){hover.hidden=true;return;}const rect=el.getBoundingClientRect(),x=e.clientX-rect.left,y=e.clientY-rect.top,index=findTarget(x,y,12);hover.hidden=index<0;renderer.domElement.style.cursor=index<0?'grab':'pointer';if(index>=0){hover.textContent=atlas.parts[index].name;hover.style.left=`${Math.max(8,Math.min(x+14,el.clientWidth-260))}px`;hover.style.top=`${Math.max(8,Math.min(y+18,el.clientHeight-55))}px`;}};
   const cancel=(e:PointerEvent)=>tap.cancel(e.pointerId);
   const up=(e:PointerEvent)=>{
-   const validTap=tap.up(e.pointerId,e.clientX,e.clientY);if(!validTap||!ready)return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);
+   // L31 v2: `sceneReady` unlocks picking at the phase barrier. In v1 it is set at the same
+   // instant as `ready` (no priority set ⇒ one phase), so this reads exactly as `!ready` did.
+   const validTap=tap.up(e.pointerId,e.clientX,e.clientY);if(!validTap||!(ready||sceneReady))return;const rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);
    let nearest=Infinity,found=-1;const hasSolid=atlas.parts.some((p,i)=>p.system!=='integumentary'&&data[i*4+3]>.5);
    pickers.forEach((mesh,i)=>{if(!mesh||data[i*4+3]<.5||(hasSolid&&atlas.parts[i].system==='integumentary'))return;worldBox.copy(bounds[i]).translate(mesh.position);if(!raycaster.ray.intersectBox(worldBox,hitPoint))return;const hits=raycaster.intersectObject(mesh,false);if(hits[0]&&hits[0].distance<nearest){nearest=hits[0].distance;found=i;}});
    if(found<0&&amount>.45)found=findTarget(e.clientX-rect.left,e.clientY-rect.top,e.pointerType==='touch'?24:16);if(found>=0){hover.hidden=true;select.current(atlas.parts[found].id,e.shiftKey);}
@@ -300,7 +381,10 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    // (3) IS A PRE-EXISTING DEFECT, NOT A NEW FEATURE: `view` has been ignored whenever
    // isolate is true -- which is what the MCP server defaults to -- because the direction
    // was hard-coded here and `s.view` was absent from the key below. Recorded as such.
-   const isolateKey=focusActive?focusIds.join(',')+'|'+frameIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':''):'';
+   const isolateKey=focusActive?focusIds.join(',')+'|'+frameIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':'')
+    // L31 v2: the detent moves the band, so the band must be part of the key or the camera
+    // keeps the framing it computed for the previous one.
+    +':'+(s.insets?`${s.insets.top},${s.insets.right},${s.insets.bottom},${s.insets.left}`:''):'';
    if(isolateKey!==lastIsolate||(focusActive&&moving)){
     if(focusActive){const box=new T.Box3(),focusBox=new T.Box3(),want=new Set(frameIds),wantFocus=new Set(focusIds);
      atlas.parts.forEach((p,i)=>{const inFrame=want.has(p.id),inFocus=wantFocus.has(p.id);if(!inFrame&&!inFocus)return;
@@ -320,6 +404,12 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
       // a uniform pad. Reserving 280+ px of a 720-tall plate for panels that are
       // display:none is most of why the PRD complains the subject sits at ~20% of frame.
       if(s.render){const band=Math.round(.04*Math.min(w,h));left=band;right=w-band;top=band;bottom=h-band;}
+      // L31 v2: THE FIELD IS A GRID CELL. The canvas host owns exactly the free space, so the
+      // band is a declared constant and NOTHING here reads the DOM. That deletes the whole
+      // arithmetic that put the phone camera 2.6x further from the subject than the desktop
+      // one purely because a detail sheet was open (audit-current.md:67-68). Checked BEFORE
+      // `inspectorOpen`, which v2 never sets.
+      else if(s.insets){left=s.insets.left;right=w-s.insets.right;top=s.insets.top;bottom=h-s.insets.bottom;}
       else if(s.inspectorOpen){if(landscape){right=w-335;top=100;bottom=h-125;}else if(mobile){const sheet=document.querySelector('.detail-sheet')?.getBoundingClientRect(),header=document.querySelector('.identity')?.getBoundingClientRect(),cap=document.querySelector('.atlas-caption')?.getBoundingClientRect();
      // L30: the caption sits under the header on a phone, so it is part of the top
      // reservation. Measured, not assumed to exist -- and only counted when it really
@@ -343,6 +433,8 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
    // to later.
    if(dirty){renderer.render(scene,camera);targets=(amount>.45||s.render)?computeTargets():[];
     dirty=false;still=0;if(settled){settled=false;markSettled(false);}
+    // THE PHASE BARRIER, published only now that the priority set has been DRAWN.
+    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyCb.current?.();}
    }
    // L30 P4: SETTLED. Three consecutive frames with nothing left to draw means the camera
    // fit has finished flying (OrbitControls damping keeps `dirty` true while it moves) and

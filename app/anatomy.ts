@@ -46,7 +46,14 @@ export interface SceneState {inspectorOpen?:boolean;explode:number;visible:Syste
  primary?:string[];
  background?:'light'|'dark';
  /** 1 = draw the backing store at 2x and let the composite downsample it. */
- ss?:number}
+ ss?:number;
+ /** L31 v2 -- THE FIELD IS A LAYOUT CELL, so the camera fit stops probing the DOM.
+  *  v1 measures `.detail-sheet` / `.identity` / `.atlas-caption` with getBoundingClientRect
+  *  and subtracts them from the viewport, which is why a phone chat link framed the subject
+  *  into 224 px of 844 (audit-current.md:67). v2 gives the scene its own grid cell and
+  *  passes a STATIC inset in CSS pixels instead — a constant, never a measurement, per the
+  *  critic's ruling in build-plan.md:127. ABSENT means "probe the DOM", i.e. exactly v1. */
+ insets?:{top:number;right:number;bottom:number;left:number}}
 export const DEFAULT_VISIBLE:SystemId[] = ['cardiac','sensory','skeletal','muscular','arterial','venous','nervous','respiratory','digestive','urinary','lymphatic','endocrine','reproductive','connective'];
 export const EXPLANATIONS:Record<string,string> = {
  'heart':'A muscular pump in the chest. Its right side sends blood to the lungs; its left side sends blood through the systemic circulation.',

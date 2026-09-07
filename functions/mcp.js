@@ -300,7 +300,16 @@ const noIndex = () => toolError(
  * Build the deep link. Every value is percent-encoded by URLSearchParams; ids were
  * already checked against ID_RE, so nothing here can add a parameter.
  */
-function buildUrl({ ids, view, isolate, explode, snap, title, note, size, lang }) {
+/**
+ * L31 v2: `v` selects WHICH ENTRY the human-facing link opens — 1 (default, `/`) or 2 (`/v2/`).
+ *
+ * It is a LINK flag and nothing more. The scene blob, the canonical id order, the R2 cache key
+ * and every rendered plate are untouched: `/v2/` reads the same `scene=` contract with the same
+ * codec, and the RENDER path (line ~695, the snapshot the plate is made from) never passes `v`,
+ * so a plate is byte-identical whichever entry the reader is sent to. The default stays 1 until
+ * Adrian has opened a real link on his own phone and said so.
+ */
+function buildUrl({ ids, view, isolate, explode, snap, title, note, size, lang, v }) {
   const p = new URLSearchParams();
   if (ids?.length) p.set('select', ids.join(','));
   if (lang && lang !== 'en') p.set('lang', lang);
@@ -312,8 +321,13 @@ function buildUrl({ ids, view, isolate, explode, snap, title, note, size, lang }
   if (note) p.set('note', note);
   if (size) p.set('size', size);
   const q = p.toString();
-  return `${SITE_ORIGIN}/${q ? `?${q}` : ''}`;
+  // `/v2/` with the trailing slash: Cloudflare Pages resolves that to `dist/v2/index.html`.
+  const entry = Number(v) === 2 ? '/v2/' : '/';
+  return `${SITE_ORIGIN}${entry}${q ? `?${q}` : ''}`;
 }
+/** The `v` a tool call asked for, or undefined. Anything but the literal 2 means v1 — an
+ *  unrecognised value must not silently route a human to an entry nobody has verified. */
+const entryVersion = (a) => (a && (a.v === 2 || a.v === '2') ? 2 : undefined);
 
 /**
  * Shared argument parsing for compose_view and the snapshot path, so the link and the
@@ -445,6 +459,7 @@ Pass snapshot:true to also get a rendered PNG of that exact view inline; if the 
       type: 'object',
       properties: {
         select: { type: 'array', items: { type: 'string' }, description: 'Atlas ids, e.g. ["FMA22315","FMA22314","FMA18060"].' },
+        v: { type: 'integer', enum: [1, 2], description: 'Which viewer entry the human-facing LINK opens: 1 = the current viewer (default), 2 = the /v2/ redesign (faster first paint on a phone). Does not change the picture, the scene contract or the rendered plate. Leave unset unless Adrian asks for v2.' },
         lang: { type: 'string', enum: URL_CONTRACT.LANGS, description: 'Interface language of the page the link opens: en, zh-Hans (简体) or zh-Hant (繁體). Default en.' },
         view: { type: 'string', enum: URL_CONTRACT.VIEWS, description: 'Camera angle. Default three-quarter.' },
         isolate: { type: 'boolean', description: 'Show ONLY the selected structures. Default true.' },
@@ -522,6 +537,7 @@ There are no joints in this atlas — BodyParts3D ships meshes, so there is no h
         note: { type: 'string', description: `Printed on the plate under the title, <= ${SCENE_LIMITS.NOTE_MAX} chars. Write it as the sentence you would say to him.` },
         burn_caption: { type: 'boolean', description: 'Put title and note IN the picture. Default true. false keeps the plate wordless, and makes the same view a cache hit whatever you write.' },
         lang: { type: 'string', enum: SCENE_LANGS, description: 'Language of the interactive link and of any burned-in structure names. Default en.' },
+        v: { type: 'integer', enum: [1, 2], description: 'Which viewer entry the INTERACTIVE LINK opens: 1 = the current viewer (default), 2 = the /v2/ redesign. The rendered PNG is identical either way — this only changes where "Open in 3D" goes. Leave unset unless Adrian asks for v2.' },
         width: { type: 'number', description: `Plate width, ${SCENE_LIMITS.W_MIN}-${SCENE_LIMITS.W_MAX}. Default 960. Below ${SCENE_LIMITS.W_MIN} the viewer switches to its phone layout.` },
         height: { type: 'number', description: `Plate height, ${SCENE_LIMITS.H_MIN}-${SCENE_LIMITS.H_MAX}. Default 720.` },
         background: { type: 'string', enum: BACKGROUNDS, description: 'Default light.' },
@@ -871,7 +887,7 @@ async function tComposeView(ctx, index, a) {
   const v = parseViewArgs(index, a);
   if (v.error) return toolError(v.error);
 
-  const url = buildUrl(v);
+  const url = buildUrl({ ...v, v: entryVersion(a) });
   if (url.length > URL_CONTRACT.URL_MAX) {
     return toolError(`the composed URL would be ${url.length} characters, over the ${URL_CONTRACT.URL_MAX} limit — shorten the note or select fewer structures`);
   }
@@ -1078,7 +1094,7 @@ async function tRenderAnatomy(ctx, index, a) {
   // the PRD's success test ends on. The link therefore carries an EXPLORE variant of the
   // same scene: same structures, same roles and opacities, same camera, chrome restored.
   const exploreBlob = encodeScene({ ...scene, mode: 'explore' });
-  const url = buildUrl({ ids, lang: scene.lang }) + `&scene=${exploreBlob}`;
+  const url = buildUrl({ ids, lang: scene.lang, v: entryVersion(a) }) + `&scene=${exploreBlob}`;
   if (url.length > URL_CONTRACT.URL_MAX) {
     return toolError(`the composed URL would be ${url.length} characters, over the ${URL_CONTRACT.URL_MAX} limit — shorten the note or select fewer structures`);
   }

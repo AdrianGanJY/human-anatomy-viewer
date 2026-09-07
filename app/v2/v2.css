@@ -1,0 +1,241 @@
+/*
+ * /v2/ — self-contained stylesheet.
+ *
+ * It does NOT import or extend `app/globals.css`. v1 must be unchanged in behaviour, and the
+ * cheapest possible proof of that is that v2 never touches its file. The consequence is that
+ * the handful of rules the shared ENGINE needs (`.scene`, `.scene canvas`, `.part-hover`) are
+ * restated here rather than inherited — a deliberate duplication of 4 declarations, in exchange
+ * for a hard boundary between the two entries.
+ *
+ * ADRIAN'S RULING 4 (README.md:44) drives the palette: LIGHT ground first, a bit livelier, CJK
+ * SANS everywhere, and "generally the UI is okay" ⇒ refinement of the existing vocabulary
+ * (panels, sheet, set, switch), not replacement. The ink ground the synthesis proposed survives
+ * only as the optional `background:'dark'` a scene can ask for.
+ *
+ * NO WEBFONT IS LOADED — not for Latin and not for CJK. The Latin display face is allowed by
+ * the plan only if a self-hosted subset comes in under a MEASURED budget, and that budget has
+ * not been measured for v2, so it is not shipped rather than shipped on an estimate. CJK
+ * webfont bytes stay at zero by design; the whole CJK question here is which INSTALLED face
+ * gets asked for, which is free.
+ */
+
+/* ── tokens ─────────────────────────────────────────────────────────────────────────────── */
+:root{
+ --v2-paper:#f4f5f4;          /* the app ground; the renderer clears to #f2f3f3 beneath it */
+ --v2-surface:#ffffff;
+ --v2-surface-2:#eef0ef;
+ --v2-ink:#1b2a33;            /* 13.1:1 on paper */
+ --v2-ink-2:#55636c;          /*  5.4:1 on paper — the floor for secondary text */
+ --v2-ink-3:#7d8992;          /*  3.2:1 — meta only, never a sentence */
+ --v2-line:#1b2a331f;
+ --v2-line-2:#1b2a3312;
+ --v2-accent:#0f766e;         /*  4.8:1 on white. Livelier than v1's #458a85 and it is already
+                                 the widget's action colour (functions/mcp.js:621) and the hue
+                                 of the selection tint in the shader (scene.tsx). */
+ --v2-accent-soft:#0f766e14;
+ --v2-notch-idle:#1b2a3326;
+ --v2-shadow:0 10px 40px #1b2a330f;
+ --v2-radius:12px;
+ --v2-head:56px;
+ /* 45, not 44: the rail carries a 1 px border-left, so a 44 px COLUMN leaves a 43 px content
+    box and every notch measures 43 wide. Caught by the oracle, which measures the rendered rect
+    rather than reading the token. */
+ --v2-rail:45px;
+ /* 112 px of margin at PEEK: the handle (44, a real target rather than a 22 px hairline), the
+    term pair, and nothing else. The figure keeps the rest of the screen. */
+ --v2-peek:124px;
+ /* Latin. Installed faces only; `Inter` is named first for the desktops that have it and
+    resolves silently to the platform sans everywhere else — which is what v1 already does. */
+ --v2-font:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+ /* CJK, SANS in every script (ruling 4; the refuters had already killed the serif fork for
+    zh-Hant, where bare serif and bare sans measured pixel-identical). Overridden per script
+    below — this is the SC default. */
+ --v2-font-cjk:"PingFang SC","Noto Sans CJK SC","Noto Sans SC","Source Han Sans SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+/* THE zh-Hant FIX, and it is a correctness bug rather than polish: v1 serves ONE stack to both
+   scripts and every family in it is a SIMPLIFIED face (globals.css:212), so 繁體 renders in
+   PingFang SC's Simplified glyph variants on iOS — wrong characters in a vocabulary-teaching
+   tool. Each stack carries the Apple face, the .ttc superfamily name Android/Linux/the CF
+   container expose, the per-language Google name, and a Windows face. */
+html:lang(zh-Hans){--v2-font-cjk:"PingFang SC","Noto Sans CJK SC","Noto Sans SC","Source Han Sans SC","Microsoft YaHei",sans-serif}
+html:lang(zh-Hant){--v2-font-cjk:"PingFang TC","Noto Sans CJK TC","Noto Sans TC","Source Han Sans TC","Microsoft JhengHei",sans-serif}
+
+/* ── reset + the engine's own rules ─────────────────────────────────────────────────────── */
+*{box-sizing:border-box}
+html,body,#root{margin:0;width:100%;height:100%;overflow:hidden}
+body{background:var(--v2-paper);color:var(--v2-ink);font-family:var(--v2-font),var(--v2-font-cjk);-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
+body[data-ground=dark]{--v2-paper:#101418;--v2-surface:#182027;--v2-surface-2:#1e272f;--v2-ink:#eef1f2;--v2-ink-2:#a6b1b8;--v2-ink-3:#7e8a92;--v2-line:#eef1f224;--v2-line-2:#eef1f214;--v2-accent:#4ecdc0;--v2-accent-soft:#4ecdc01f;--v2-notch-idle:#eef1f22e}
+button,input{font:inherit;color:inherit}
+button{border:0;background:none;cursor:pointer;touch-action:manipulation}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--v2-accent);outline-offset:3px}
+a{color:inherit}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.scene{position:absolute;inset:0}
+.scene canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+.scene canvas:active{cursor:grabbing}
+.part-hover{position:absolute;pointer-events:none;z-index:45;max-width:250px;background:#202e3bf5;color:#fff;padding:9px 12px;border-radius:8px;font-size:12px;line-height:1.45}
+.part-hover[hidden]{display:none}
+
+/* ── the frame: head / field+rail / margin, as GRID CELLS ───────────────────────────────────
+   This is the structural fix behind the measured 1.6%-of-frame subject. In v1 every one of
+   these is absolutely positioned OVER the canvas, so the camera fit has to measure them back
+   out of the viewport with getBoundingClientRect. Here they are siblings in a grid: the field
+   owns exactly the space nothing else claims, and `FIELD_INSET` in page.tsx is a constant.
+   The row heights are FIXED (head) or content-driven from content that is present in the first
+   frame (margin peek), which is what keeps CLS at 0 through the entry. */
+.v2{
+ height:100dvh;min-height:340px;width:100%;
+ display:grid;
+ grid-template-columns:1fr var(--v2-rail);
+ grid-template-rows:var(--v2-head) 1fr auto;
+ grid-template-areas:"head head" "field rail" "margin margin";
+ overflow:hidden;
+}
+
+.v2-head{grid-area:head;display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;border-bottom:1px solid var(--v2-line-2);background:var(--v2-surface);min-width:0}
+.v2-head-text{flex:1;min-width:0}
+.v2-head h1{margin:0;font-size:17px;font-weight:600;line-height:1.25;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+html:lang(zh-Hans) .v2-head h1,html:lang(zh-Hant) .v2-head h1{letter-spacing:0}
+.v2-note{margin:1px 0 0;font-size:12px;line-height:1.35;color:var(--v2-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-lang{display:flex;gap:2px;flex-shrink:0}
+.v2-lang button{min-width:44px;min-height:44px;padding:0 6px;font-size:12px;color:var(--v2-ink-2);border-radius:8px}
+.v2-lang .is-on{color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
+
+.v2-field{grid-area:field;position:relative;overflow:hidden;isolation:isolate}
+
+/* THE ONE ORCHESTRATED MOMENT. A soft wash over the paper while the scene's own chunks land,
+   cross-dissolving out at the phase barrier. 400 ms, opacity only — no transform, so it cannot
+   move anything and cannot cost a layout. Under reduced motion it is a hard swap. */
+.v2-wash{position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 45%,#ffffff00 30%,var(--v2-paper) 100%),linear-gradient(180deg,var(--v2-surface) 0%,var(--v2-paper) 100%);opacity:0;transition:opacity .4s ease}
+.v2-wash[data-on="1"]{opacity:1}
+
+.v2-progress{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);display:flex;gap:10px;align-items:baseline;max-width:calc(100% - 24px);background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow);border-radius:999px;padding:9px 16px;font-size:12px;color:var(--v2-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-progress b{font-weight:600;color:var(--v2-ink);font-variant-numeric:tabular-nums}
+.v2-recover{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);min-height:44px;padding:12px 18px;border-radius:var(--v2-radius);background:var(--v2-surface);border:1px solid var(--v2-line);box-shadow:var(--v2-shadow);font-size:14px;color:var(--v2-ink);display:flex;gap:10px;align-items:center;text-align:center;max-width:calc(100% - 32px)}
+.v2-recover button{min-height:44px;padding:0 14px;color:var(--v2-accent);font-weight:600}
+
+/* ── the rail: set + focus + contents + loading skeleton, one 44 px column ───────────────── */
+.v2-rail{grid-area:rail;display:flex;flex-direction:column;gap:4px;padding:8px 0;border-left:1px solid var(--v2-line-2);background:var(--v2-surface);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:none}
+.v2-rail::-webkit-scrollbar{display:none}
+/* Each notch keeps a >=44 px TOUCH slice even as the visual mark compresses — the overflow rule
+   the critic asked for (build-plan.md:134). Beyond RAIL_MAX the tail becomes one '+n'. */
+.v2-notch{flex:1 1 44px;min-height:44px;width:100%;display:flex;align-items:center;justify-content:center;position:relative;border-radius:6px}
+.v2-notch i{display:block;width:5px;border-radius:3px;background:var(--notch,var(--v2-notch-idle));transition:width .18s,opacity .18s}
+.v2-notch.role-primary i{height:56%;width:6px;opacity:1}
+.v2-notch.role-context i{height:34%;opacity:.62}
+.v2-notch.role-ghost i{height:20%;opacity:.34}
+.v2-notch.is-on{background:var(--v2-accent-soft)}
+.v2-notch.is-on i{width:9px;opacity:1}
+/* The skeleton IS the finished component with its label missing, so nothing is replaced when
+   the names arrive and nothing moves. */
+.v2-notch.is-skeleton i{background:var(--v2-notch-idle);animation:v2pulse 1.4s ease-in-out infinite}
+.v2-notch.is-more{font-size:11px;color:var(--v2-ink-2);flex:0 0 44px}
+@keyframes v2pulse{0%,100%{opacity:.3}50%{opacity:.75}}
+
+/* ── the margin: two detents on a phone ─────────────────────────────────────────────────────
+   PEEK is what a chat link opens on — the term pair and one line — so the figure keeps the
+   screen. HALF is one tap or one drag on the handle. There is no auto-opened full sheet: that
+   is the 42%-of-viewport surface the audit measured against the framing. */
+.v2-margin{grid-area:margin;background:var(--v2-surface);border-top:1px solid var(--v2-line);box-shadow:0 -8px 30px #1b2a330a;display:flex;flex-direction:column;min-height:var(--v2-peek);max-height:var(--v2-peek);padding-bottom:env(safe-area-inset-bottom);transition:max-height .22s ease}
+.v2[data-detent=half] .v2-margin{max-height:min(48dvh,420px)}
+.v2-handle{align-self:center;min-height:44px;width:100%;display:flex;align-items:flex-start;justify-content:center;padding:8px 0 0}
+.v2-handle i{display:block;width:38px;height:4px;border-radius:2px;background:var(--v2-line)}
+.v2-term{display:flex;gap:10px;align-items:flex-start;padding:2px 16px 8px}
+.v2-term>div{min-width:0}
+.v2-term b{display:block;font-size:19px;font-weight:600;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-term i{display:block;font-size:12px;font-style:normal;color:var(--v2-ink-2);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:8px}
+.v2-margin-scroll{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:0 16px 14px;min-height:0}
+.v2-desc{margin:0 0 12px;font-size:14px;line-height:1.65;color:var(--v2-ink-2)}
+
+.v2-actions,.v2-views{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.v2-actions button,.v2-views button{min-height:44px;padding:0 14px;border:1px solid var(--v2-line);border-radius:10px;font-size:13px;color:var(--v2-ink-2)}
+.v2-actions .is-on,.v2-views .is-on{color:var(--v2-accent);border-color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
+
+.v2-search input{width:100%;min-height:44px;padding:0 12px;border:1px solid var(--v2-line);border-radius:10px;background:var(--v2-surface-2)}
+.v2-search ul,.v2-systems{list-style:none;margin:8px 0 0;padding:0}
+.v2-search li{display:flex;align-items:center;gap:6px;border-bottom:1px solid var(--v2-line-2)}
+.v2-result{flex:1;min-width:0;min-height:44px;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;padding:6px 0}
+.v2-result span{font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.v2-result i{font-size:11px;font-style:normal;color:var(--v2-ink-3)}
+.v2-plus{min-width:44px;min-height:44px;font-size:19px;color:var(--v2-accent)}
+.v2-empty{font-size:13px;color:var(--v2-ink-2);padding:12px 0}
+
+.v2-systems label{position:relative;display:flex;align-items:center;gap:10px;min-height:44px;font-size:14px;color:var(--v2-ink-2);opacity:.6;cursor:pointer}
+.v2-systems label.is-on{opacity:1;color:var(--v2-ink)}
+/* THE CHECKBOX IS THE WHOLE ROW. A native 20x20 box inside a 44 px label passes an eyeball test
+   and fails the floor: the thing with the hit area is the INPUT, and it is 20 px. Stretching it
+   over the label makes its own rect the target, keeps native checkbox semantics and keyboard
+   focus, and the visible mark is drawn by the sibling span. */
+.v2-systems input,.v2-set-foot input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer}
+.v2-systems label>.v2-box,.v2-set-foot label>.v2-box{width:20px;height:20px;border-radius:5px;border:1.5px solid var(--v2-line);flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.v2-systems input:checked~.v2-box,.v2-set-foot input:checked~.v2-box{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-systems input:checked~.v2-box::after,.v2-set-foot input:checked~.v2-box::after{content:"";width:5px;height:9px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg) translate(-1px,-1px)}
+.v2-systems input:focus-visible~.v2-box,.v2-set-foot input:focus-visible~.v2-box{outline:2px solid var(--v2-accent);outline-offset:2px}
+.v2-systems b{margin-left:auto;font-size:12px;font-weight:400;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+
+.v2-set h2{margin:4px 0 2px;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--v2-ink-3)}
+html:lang(zh-Hans) .v2-set h2,html:lang(zh-Hant) .v2-set h2{letter-spacing:.02em;text-transform:none;font-size:12px}
+.v2-row{display:flex;align-items:center;gap:4px;border-bottom:1px solid var(--v2-line-2)}
+.v2-row.is-on{background:var(--v2-accent-soft);border-radius:8px}
+.v2-row-name{flex:1;min-width:0;display:flex;align-items:center;gap:10px;min-height:48px;text-align:left;padding:0 8px}
+.v2-row-name>span{flex:1;min-width:0}
+.v2-row-name b{display:block;font-size:14px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-row-name i{display:block;font-size:11px;font-style:normal;color:var(--v2-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-row-name em{font-style:normal;font-size:12px;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-row-x{min-width:44px;min-height:44px;font-size:18px;color:var(--v2-ink-3)}
+.v2-set-foot{display:flex;align-items:center;gap:12px;padding-top:8px;font-size:12px;color:var(--v2-ink-2)}
+.v2-set-foot label{position:relative;display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
+.v2-set-foot button{min-height:44px;padding:0 10px;color:var(--v2-ink-2)}
+.v2-count{margin-left:auto;font-variant-numeric:tabular-nums}
+.v2-meta{display:flex;gap:16px;flex-wrap:wrap;padding-top:12px;margin-top:8px;border-top:1px solid var(--v2-line-2);font-size:11px;color:var(--v2-ink-3)}
+.v2-meta b{font-weight:500;color:var(--v2-ink-2)}
+.v2-meta a{min-height:44px;display:inline-flex;align-items:center;color:var(--v2-accent)}
+.v2-probe{margin-top:14px;padding:12px;background:var(--v2-surface-2);border-radius:10px;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:44dvh;overflow:auto}
+
+/* ── ?stage=1 — the chrome-free DISPLAY state (reserved for L32) ─────────────────────────────
+   State-driven, not a second app: the same DOM, one class. No camera, no microphone, no
+   WebSocket — those belong to the future display client, and this is only the surface it will
+   drive. Any tap on the exit control restores the chrome. */
+body.v2-stage .v2-head,body.v2-stage .v2-rail,body.v2-stage .v2-margin{display:none}
+body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template-areas:"field"}
+.v2-stage-exit{position:absolute;top:12px;right:12px;min-height:44px;min-width:44px;padding:0 14px;border-radius:10px;background:var(--v2-surface);border:1px solid var(--v2-line);font-size:12px;color:var(--v2-ink-2);opacity:.45}
+.v2-stage-exit:hover,.v2-stage-exit:focus-visible{opacity:1}
+.v2-stage-name{position:absolute;left:0;right:0;bottom:6dvh;text-align:center;pointer-events:none;padding:0 24px}
+.v2-stage-name b{display:block;font-size:clamp(28px,7vw,54px);font-weight:600;line-height:1.15}
+.v2-stage-name i{display:block;font-style:normal;font-size:clamp(14px,2.4vw,22px);color:var(--v2-ink-2);margin-top:6px}
+
+/* ── tiers ──────────────────────────────────────────────────────────────────────────────────
+   SIZING (pointer:coarse) is split from LAYOUT (width) on purpose: P3's restyle is unreviewable
+   if a later diff has to disentangle "this got bigger because it is a touch device" from "this
+   moved because the window is wider". */
+@media (pointer:coarse){
+ .v2-notch{min-height:48px}
+ .v2-actions button,.v2-views button{min-height:48px}
+}
+/* Tablet + desktop: the margin leaves the bottom and becomes a right-hand column that never
+   display:none's — the tablet defect D05 fixed in v1 cannot recur here by construction, because
+   the systems control lives INSIDE the margin and the margin is always on screen. */
+@media (min-width:768px){
+ .v2{grid-template-columns:1fr var(--v2-rail) 340px;grid-template-rows:var(--v2-head) 1fr;grid-template-areas:"head head head" "field rail margin"}
+ .v2-margin{max-height:none;min-height:0;border-top:0;border-left:1px solid var(--v2-line);box-shadow:none}
+ .v2[data-detent=half] .v2-margin{max-height:none}
+ .v2-handle{display:none}
+ .v2-term{padding-top:16px}
+ .v2-head h1{font-size:20px}
+}
+@media (min-width:1200px){
+ .v2{grid-template-columns:1fr var(--v2-rail) 380px}
+ .v2-head{padding-left:24px}
+}
+/* Compact landscape — a 390x844 phone rotated is 844x390 and would otherwise land in the tablet
+   tier with a 340 px margin eating 40% of the width (build-plan.md:136). */
+@media (pointer:coarse) and (max-height:520px){
+ .v2{grid-template-columns:1fr var(--v2-rail) 45%;grid-template-rows:var(--v2-head) 1fr;grid-template-areas:"head head head" "field rail margin"}
+ .v2-margin{max-height:none;min-height:0}
+ .v2-handle{display:none}
+ .v2-note{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+ *,::before,::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+}

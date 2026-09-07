@@ -54,4 +54,19 @@ bucket_name = "human-anatomy-snaps"
 # position and target: identical to the last float. So the pictures keyed l31h are still the
 # pictures this build draws, and re-keying would throw the cache away for nothing. The bump
 # is required for what a plate LOOKS like — not for every edit under the render path.
+# l31h STAYS l31h through L31 v2 as well, and here the reason is load-bearing rather than
+# tidy. v2 is a SECOND ENTRY at /v2/; the renderer screenshots `/` in snap mode and never
+# visits it. The v2 slice touches app/scene.tsx, app/url-state.ts and app/anatomy.ts, so
+# deploy.ps1's tripwire fires — but every one of those edits is behind a field the render path
+# does not pass: `insets` (v2 only, and the render branch is checked first), `priority` (absent
+# ⇒ the loader keeps its 0..14 cursor), and `data-atlas-scene-ready` (a NEW marker; the
+# renderer still waits on `data-atlas-ready` = all 15 chunks). MEASURED, not argued: the six
+# control plates were rendered against the live host before the deploy and again after, and
+# both the PNG sha256 and the projected subject rect and camera are compared
+# (scripts/plate-goldens.mjs, artefacts under .artifacts/L31/v2/goldens/).
+#
+# AND THE COST OF BEING WRONG THE OTHER WAY IS THE REASON TO BE CAREFUL: Cloudflare Browser
+# Rendering minutes are EXHAUSTED on the Adrey account. Bumping SITE_BUILD retires every cached
+# PNG, and the account cannot currently re-render a single one — so an unnecessary bump would
+# take ChatGPT from "a slightly older picture" to "no picture at all".
 SITE_BUILD = "l31h"

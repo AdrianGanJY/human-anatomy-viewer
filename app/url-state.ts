@@ -153,6 +153,18 @@ export function writeUrlState(state:SceneState,selectIds:readonly string[],capti
 }
 /** Machine-readable load/selection markers for headless verification and batch rendering. */
 export function markReady(){document.documentElement.dataset.atlasReady='1';}
+/**
+ * L31 v2 — SCENE READY. Every chunk the incoming scene named is merged and drawn; the rest of
+ * the atlas is still arriving in the background. This is a SECOND, NEW marker and it
+ * deliberately does not touch `data-atlas-ready`, which still means all 15 chunks: nine
+ * headless wait sites read that one, and the Pages screenshotter is among them, so pointing it
+ * at the barrier would screenshot a half-loaded scene at HTTP 200 and cache the PNG for 24 h.
+ * Only `/v2/` ever sets this; on `/` the attribute never appears.
+ */
+export function markSceneReady(on:boolean){
+ if(on)document.documentElement.dataset.atlasSceneReady='1';
+ else document.documentElement.removeAttribute('data-atlas-scene-ready');
+}
 export function markSelected(ids:readonly string[]){
  if(ids.length)document.documentElement.dataset.atlasSelected=ids.join(',');
  else document.documentElement.removeAttribute('data-atlas-selected');
