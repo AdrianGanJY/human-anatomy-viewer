@@ -311,6 +311,24 @@ test('D01/D04: the page really wires the codec in — the seed and the frame set
     'the camera fit must contain the frame set, falling back to focus when absent');
 });
 
+test('the settle guard is pinned to the OrbitControls behaviour that requires it', () => {
+  // L31. The focus fit moves `controls.target` to a computed centre, and OrbitControls r159
+  // dispatches `change` whenever the target differs from the previous update by MORE THAN
+  // ZERO — no epsilon, unlike the position and quaternion terms beside it — while its own
+  // target.clampLength() round trip can drift by one ULP forever. The result is `dirty` that
+  // never clears, so `data-atlas-settled` is never written and the snapshot renderer times
+  // out on a finished picture. MEASURED: change fired on 100% of frames at dTarget 1.2e-32.
+  // Both halves are pinned: if a three upgrade adds the epsilon upstream, this test says so.
+  const oc = readFileSync(join(ROOT, 'node_modules', 'three', 'examples', 'jsm', 'controls', 'OrbitControls.js'), 'utf8');
+  assert.match(oc, /lastTargetPosition\.distanceToSquared\(\s*scope\.target\s*\)\s*>\s*0/,
+    'OrbitControls no longer fires `change` on a zero-epsilon target delta — re-measure before trusting the raw event again');
+  const sceneSrc = readFileSync(join(ROOT, 'app', 'scene.tsx'), 'utf8');
+  assert.match(sceneSrc, /moved\.t\.distanceToSquared\(controls\.target\)<=1e-12/,
+    'the change listener must test the numbers, not the event');
+  assert.match(sceneSrc, /moved\.p\.copy\(camera\.position\);moved\.t\.copy\(controls\.target\);moved\.q\.copy\(camera\.quaternion\);dirty=true;/,
+    'and it must record the accepted camera state, or every later comparison drifts from a stale baseline');
+});
+
 test('MAX_STRUCTURES is pinned to the page SELECT_MAX that silently truncates', () => {
   const src = readFileSync(join(ROOT, 'app', 'url-state.ts'), 'utf8');
   const m = /SELECT_MAX\s*=\s*(\d+)/.exec(src);

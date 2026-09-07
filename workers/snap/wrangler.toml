@@ -47,4 +47,11 @@ bucket_name = "human-anatomy-snaps"
 # Measured on the forward-bend plate: touchesTopEdge true -> false at all four viewports,
 # subject coverage 5.49% -> 3.48% at 1024x768. Every p4a1-keyed PNG shows the old, clipped
 # framing and must not be served for this build.
+#
+# l31h STAYS l31h through the settle-guard fix that follows it. That change makes the page
+# write `data-atlas-settled` on a plate whose camera had already stopped moving; it does not
+# move the camera. Verified by re-running the same six scenes and diffing the reported camera
+# position and target: identical to the last float. So the pictures keyed l31h are still the
+# pictures this build draws, and re-keying would throw the cache away for nothing. The bump
+# is required for what a plate LOOKS like — not for every edit under the render path.
 SITE_BUILD = "l31h"

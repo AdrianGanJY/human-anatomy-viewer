@@ -35,7 +35,35 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError}:P
   renderer.setPixelRatio(Math.min(devicePixelRatio,innerWidth<768?1.5:2));renderer.setClearColor('#f2f3f3');renderer.outputColorSpace=T.SRGBColorSpace;renderer.toneMapping=T.ACESFilmicToneMapping;renderer.toneMappingExposure=1.12;el.appendChild(renderer.domElement);
   renderer.domElement.setAttribute('aria-label','Interactive human anatomy. Drag to orbit, pinch or scroll to zoom, and tap a structure to inspect it.');
   const scene=new T.Scene(),camera=new T.PerspectiveCamera(34,1,.005,100),controls=new OrbitControls(camera,renderer.domElement);
-  camera.position.set(1.4,1.05,3.6);controls.target.set(0,.85,0);controls.enableDamping=true;controls.dampingFactor=.085;controls.minDistance=.07;controls.maxDistance=40;controls.maxPolarAngle=Math.PI*.96;controls.addEventListener('change',()=>{dirty=true;});
+  camera.position.set(1.4,1.05,3.6);controls.target.set(0,.85,0);controls.enableDamping=true;controls.dampingFactor=.085;controls.minDistance=.07;controls.maxDistance=40;controls.maxPolarAngle=Math.PI*.96;
+  /**
+   * L31: `change` IS NOT EVIDENCE THAT THE CAMERA MOVED, and believing it hangs the renderer.
+   *
+   * OrbitControls r159 dispatches `change` when the target differs from the previous update by
+   * MORE THAN ZERO -- `lastTargetPosition.distanceToSquared(scope.target) > 0`
+   * (node_modules/three/examples/jsm/controls/OrbitControls.js:393), no epsilon, unlike the
+   * position and quaternion terms beside it which use EPS 1e-6. And its own
+   * `scope.target.clampLength(scope.minTargetRadius, scope.maxTargetRadius)` (:261) is a
+   * divide-by-length-then-multiply-by-length round trip, which for some coordinates does not
+   * return the identical float. One ULP of drift, forever, for target values that happen to
+   * land on the wrong side of that round trip.
+   *
+   * The consequence is not a wobble -- it is `dirty` never clearing, so the three still frames
+   * that mean `data-atlas-settled` never happen, so the snapshot renderer waits 60 s and fails
+   * on a picture that finished flying seconds earlier. MEASURED on the L31 forward-bend plate
+   * (focus = hip bone + semitendinosus): `change` fired on 100% of frames while dPos and
+   * dTarget were 1.2e-32 and dQuat 1.8e-15 -- i.e. sixteen orders of magnitude below one
+   * ULP of anything visible.
+   *
+   * So the movement test lives HERE, on the numbers, not on the event. 1e-12 on a squared
+   * distance is a micrometre on a 1.6 m subject: twenty orders of magnitude above the float
+   * noise and far below one pixel, so no real camera motion is ever swallowed.
+   */
+  const moved={p:new T.Vector3(),t:new T.Vector3(),q:new T.Quaternion()};
+  controls.addEventListener('change',()=>{
+   if(moved.p.distanceToSquared(camera.position)<=1e-12&&moved.t.distanceToSquared(controls.target)<=1e-12&&8*(1-Math.abs(moved.q.dot(camera.quaternion)))<=1e-12)return;
+   moved.p.copy(camera.position);moved.t.copy(controls.target);moved.q.copy(camera.quaternion);dirty=true;
+  });
   const pmrem=new T.PMREMGenerator(renderer),room=new RoomEnvironment(),env=pmrem.fromScene(room,.04);scene.environment=env.texture;room.dispose();pmrem.dispose();
   scene.add(new T.HemisphereLight(0xffffff,0xa7acb2,1.05));
   const key=new T.DirectionalLight(0xfffaf4,2.3);key.position.set(-2,4,3);scene.add(key);
