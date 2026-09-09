@@ -266,7 +266,11 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
   const satisfied=()=>{
    if(ready)return true;                                   // all 15 chunks in: trivially satisfied
    const ids=requiredRef.current??priorityRef.current??[];
-   if(!ids.length)return ready;                            // nothing named ⇒ only "everything" counts
+   // NOTHING NAMED ⇒ NOTHING TO WAIT FOR. `armIfSatisfied` is only ever called at or after the
+   // first-phase boundary, so by the time this can return true the first phase is complete — which
+   // is exactly when a no-selection visit used to publish. Returning `ready` here instead would
+   // silently delay the marker to full load on a plain `/v2/`.
+   if(!ids.length)return true;
    for(const c of chunksFor(ids))if(!loadedChunks.has(c))return false;
    return true;
   };
@@ -331,9 +335,23 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // "drawn" while firing synchronously after the merge, which also meant the byte count the
    // page freezes at the barrier was read before the last chunk's PerformanceResourceTiming
    // entry was guaranteed complete.
-   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyWanted=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
+   // ⚠️ THE LOADER MUST NOT ARM THE BARRIER DIRECTLY. Adversarial review (codex gpt-6-astra,
+   // 2026-09-09, High 2) found and EXECUTED this sequence against the first version of this block,
+   // which set `sceneReadyPending` and `sceneReadyAt` here by hand:
+   //
+   //   1. scene A starts its priority load
+   //   2. scene B supersedes it — the frame loop sees B's epoch and finds B NOT satisfied
+   //   3. A's first phase completes and this line unconditionally set pending = true
+   //   4. the next frame published readiness for B without B's chunks having arrived
+   //
+   // i.e. exactly failure mode (b) of R:29, reintroduced by the fix for failure mode (a). It also
+   // let a superseding generation's already-frozen `armedAt` be overwritten here. There must be ONE
+   // arming path, and it must be the generation-aware one — `armIfSatisfied` checks `satisfied()`
+   // and returns early when a barrier is already pending, so it both refuses a premature publish
+   // and preserves the first satisfied instant.
+   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyWanted=true;armIfSatisfied();}
    await run(rest);
-   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyWanted=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
+   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyWanted=true;}
     // EVERY CHUNK IS IN. If a generation is still owed a barrier at this point it is satisfied by
     // definition, and this is the line that makes failure mode (a) of R:29 impossible: previously
     // `onProgress(100)` restored `data-atlas-ready` and nothing ever restored the scene marker.

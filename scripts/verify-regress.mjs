@@ -47,6 +47,13 @@ mkdirSync(outDir, {recursive: true});
 const STAGE_RANK = {C1: 1, C2: 2};
 const rank = STAGE_RANK[stage.toUpperCase()];
 
+/** `REGRESS_CASES=readiness-generations,plural` runs a subset. The full run is eight cases and
+ *  many full atlas loads; iterating on one case — or RED-PROVING one gate by reverting its fix —
+ *  should not cost the other seven. Default is every case, so a plain invocation is still the
+ *  whole contract, and the summary says which set actually ran. */
+const ONLY = (process.env.REGRESS_CASES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const want = (id) => ONLY.length === 0 || ONLY.includes(id);
+
 const headers = (process.env.CF_ID && process.env.CF_SECRET)
   ? {'CF-Access-Client-Id': process.env.CF_ID, 'CF-Access-Client-Secret': process.env.CF_SECRET}
   : {};
@@ -84,11 +91,26 @@ const openCase = (id, owner, title, ref) => {
   cases.push(current);
   return current;
 };
-/** One assertion inside a case. The case's verdict is the AND of its assertions. */
-const assert = (name, pass, measured, want) => {
-  current.checks.push({name, pass: !!pass, measured: String(measured), want: want ?? ''});
-  console.log(`    ${pass ? 'ok  ' : 'NOT ok'} ${name} :: ${measured}${want ? ` want=${want}` : ''}`);
+/**
+ * One assertion inside a case.
+ *
+ * `prereq` marks an assertion that establishes the case actually RAN — a control was found and
+ * pressed, the fixture loaded, the page did not throw. It is NOT part of the defect claim.
+ *
+ * THAT DISTINCTION IS LOAD-BEARING, and its absence was a real hole. Adversarial review (codex
+ * gpt-6-astra, 2026-09-09, High 4) pointed out that classifying on "did ANY assertion fail" lets a
+ * driver failure masquerade as defect reproduction — and it had already happened here: in the
+ * pre-fix run the `edited-scene-persists` case never pressed Remove (the desktop controls were
+ * hidden, which is R:25), so its EXPECTED-RED was proof of nothing at all. A prereq failure now
+ * makes the case BROKEN and fails the suite whatever the stage, because a case that did not
+ * exercise its defect is not evidence either way.
+ */
+const assert = (name, pass, measured, want, prereq = false) => {
+  current.checks.push({name, pass: !!pass, measured: String(measured), want: want ?? '', prereq: !!prereq});
+  console.log(`    ${pass ? 'ok  ' : 'NOT ok'} ${prereq ? '[prereq] ' : ''}${name} :: ${measured}${want ? ` want=${want}` : ''}`);
 };
+/** Shorthand for the assertions that only say "the case ran". */
+const prereq = (name, pass, measured, want) => assert(name, pass, measured, want, true);
 
 const browser = await chromium.launch({
   executablePath: 'C:\\Users\\adrian\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
@@ -170,7 +192,7 @@ const openMargin = async (page) => {
 //
 // ASSERTED ON RENDERER STATE, NOT ON THE URL (codex-plan-review.md §D). A URL check would pass on
 // a page that had merely echoed the query back.
-{
+if (want('cold-legacy')) {
   openCase('cold-legacy', 'C1', 'a cold legacy link applies camera + visibility on /v2/', 'R:26');
   const {context, page, errors} = await fresh();
   try {
@@ -187,9 +209,20 @@ const openMargin = async (page) => {
     assert('view=side reached the controller', s1?.view === 'side', `state.view=${s1?.view}`, 'side');
     // isolate=1 + system=none ⇒ ONLY the requested structure may be drawn. The parts list is the
     // set the GPU was actually given, so a stray system still being visible is visible here.
+    // THE SELECTION MUST BE DRAWN BEFORE "nothing else is" MEANS ANYTHING. `__atlasTargets` returns
+    // `parts` from the frame loop's cached projection, which is EMPTY unless the body is exploded or
+    // a plate is rendering — so the pre-fix run reported "nothing else is drawn" with a total of
+    // ZERO parts, which is a vacuous green (codex review, 2026-09-09, Medium 3). The group lane is
+    // computed on demand and is the one that answers "is the requested structure on screen".
+    const selfDrawn = (t1.groups?.FMA22359?.n ?? 0);
+    prereq('the requested structure is actually drawn', selfDrawn > 0,
+      `${selfDrawn} meshes of FMA22359 projected, parts lane = ${t1.parts.length}`, '> 0');
     const drawnOutside = t1.parts.filter((p) => p.concept !== 'FMA22359' && p.id !== 'FMA22359').length;
-    assert('isolate=1 & system=none ⇒ nothing else is drawn', drawnOutside === 0,
-      `${drawnOutside} parts drawn outside the selection (of ${t1.parts.length})`, '0');
+    assert('isolate=1 & system=none ⇒ nothing else is drawn', t1.parts.length > 0 && drawnOutside === 0,
+      t1.parts.length === 0
+        ? 'the projection lane was EMPTY, so this assertion would have been vacuous'
+        : `${drawnOutside} parts drawn outside the selection (of ${t1.parts.length})`,
+      '0 outside, and a non-empty projection');
     assert('isolate=1 reached the controller', s1?.framing?.isolate === true, `framing.isolate=${s1?.framing?.isolate}`, 'true');
 
     // AFTER THE DEBOUNCE AND A RELOAD. writeUrlState fires 200 ms after the atlas arrives; a link
@@ -207,8 +240,8 @@ const openMargin = async (page) => {
     const s2 = await atlasState(page);
     assert('the settings survive a reload', a2.x > 0.9 && s2?.view === 'side' && s2?.framing?.isolate === true,
       `direction x=${a2.x.toFixed(2)} view=${s2?.view} isolate=${s2?.framing?.isolate}`, 'side, isolated');
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -217,7 +250,7 @@ const openMargin = async (page) => {
 // a fixed key list (app/url-state.ts:135-149) that has no `stage` and no `probe`, so 200 ms after
 // entry the flags are gone; the page keeps its React state, so nothing looks wrong until a reload
 // brings the chrome back. `?stage=1` is the L32 display client's whole contract.
-{
+if (want('stage-probe')) {
   openCase('stage-probe', 'C1', '?stage=1 and ?probe=1 survive entry, debounce, reload and exit', 'R:31, R:110');
   const {context, page, errors} = await fresh();
   try {
@@ -268,7 +301,7 @@ const openMargin = async (page) => {
     // EXIT restores the chrome and must clear the flag from the URL, or the next reload re-stages
     // the page a human just left.
     const exit = await page.$('.v2-stage-exit');
-    assert('the stage exit control exists', !!exit, exit ? 'present' : 'absent', 'present');
+    prereq('the stage exit control exists', !!exit, exit ? 'present' : 'absent', 'present');
     if (exit) {
       await clickAt(page, exit);
       await page.waitForTimeout(1200);
@@ -281,8 +314,8 @@ const openMargin = async (page) => {
         `stage=${afterExit.stage} headShown=${afterExit.head} search=${afterExit.search.slice(0, 100)}`, 'unstaged, no stage=1');
       assert('exit keeps probe=1 (it is a separate flag)', /probe=1/.test(afterExit.search), afterExit.search.slice(0, 100), 'probe=1 retained');
     }
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -292,7 +325,7 @@ const openMargin = async (page) => {
 // (app/url-state.ts:84). v2's hashchange handler throws that away: `if (!u.scene) return`
 // (app/v2/page.tsx:345), so the previous scene keeps drawing while the URL says otherwise, and the
 // legacy keys in the new hash are ignored.
-{
+if (want('scene-clear')) {
   openCase('scene-clear', 'C1', '#scene= (empty) clears the previous scene and applies the legacy keys', 'R:7, R:30');
   const {context, page, errors} = await fresh();
   try {
@@ -301,7 +334,7 @@ const openMargin = async (page) => {
     await waitAll(page);
     await page.waitForTimeout(SETTLE);
     const before = await atlasState(page);
-    assert('the scene is on screen to begin with', !!before?.blob, `blob=${(before?.blob || '').slice(0, 12)}…`, 'a blob');
+    prereq('the scene is on screen to begin with', !!before?.blob, `blob=${(before?.blob || '').slice(0, 12)}…`, 'a blob');
 
     await page.evaluate(() => { location.hash = 'scene=&select=FMA9611&view=front'; });
     await page.waitForTimeout(SETTLE);
@@ -324,8 +357,8 @@ const openMargin = async (page) => {
     // blob; a clear that leaves the focus fit armed is a half-clear.
     assert('the cleared scene no longer supplies a focus set', (after?.framing?.focus ?? 0) === 0,
       `framing.focus=${after?.framing?.focus}`, '0');
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -333,25 +366,39 @@ const openMargin = async (page) => {
 // codex-app-review.md §2 row 5 (R:29), the subtlest of the six and the one with two opposite
 // failure modes in one line of code:
 //
-//   markSceneReady(phase === 'atlas')            app/v2/page.tsx:352
+//   markSceneReady(phase === 'atlas')            app/v2/page.tsx (before v2.1a)
 //
-// (a) BETWEEN THE BARRIER AND FULL LOAD, `phase` is 'scene', so the re-drive clears readiness and
-//     publishes false — and nothing ever restores it, because `onProgress(100)` calls `markReady`
-//     and never `markSceneReady`. The marker the renderer waits on is gone for the life of the tab.
-// (b) BEFORE THE FIRST BARRIER, the pending barrier belongs to the PREVIOUS scene's priority set.
-//     It fires, publishes readiness, and the page is showing a different scene whose meshes may
-//     not have arrived — readiness true for the wrong generation.
+// (a) BETWEEN THE BARRIER AND FULL LOAD, `phase` is 'scene', so a re-drive cleared readiness and
+//     published false — and nothing ever restored it, because `onProgress(100)` calls `markReady`
+//     and never `markSceneReady`. The marker the renderer waits on was gone for the life of the tab.
+// (b) BEFORE THE FIRST BARRIER, the pending barrier belonged to the PREVIOUS scene's priority set.
+//     It fired, published readiness, and the page was showing a different scene whose meshes had
+//     not arrived — readiness true for the wrong generation.
 //
-// Both are asserted. (b) needs two scenes with DISJOINT chunk sets or the mistake is invisible
-// (the second scene's meshes happen to be loaded already), so the disjointness is checked at
-// runtime rather than assumed from the fixture.
-{
-  openCase('readiness-generations', 'C1', 're-drive readiness publishes only for the CURRENT scene, in all three timings', 'R:29');
+// ══ WHY THIS CASE HOLDS CHUNKS INSTEAD OF RACING THEM ══════════════════════════════════════════
+// The first version of (b) navigated with `waitUntil:'commit'` and wrote the hash immediately,
+// hoping to land inside the window. Adversarial review (codex gpt-6-astra, 2026-09-09, High 3)
+// showed why that is not a gate: the write can precede the app's own initialisation (making B the
+// INITIAL scene rather than a re-drive), the middle timing silently accepted an atlas that had
+// already finished loading, and the geometry check read `__atlasTargets` group counts — which are
+// projected from atlas METADATA and visibility flags and are therefore not proof that a mesh was
+// ever uploaded.
+//
+// So the window is CONSTRUCTED, not awaited. The driver intercepts `/models/body-*.bin` and holds
+// chosen chunks indefinitely, which makes every step deterministic:
+//   · hold one of A's priority chunks  ⇒ A's first phase CANNOT complete
+//   · hold all of B's own chunks       ⇒ B can never be satisfied, and `ready` never becomes true
+// and the assertion becomes the one that actually matters and needs no geometry inference:
+// **the marker must be ABSENT while the current scene's geometry is missing.** That is exactly the
+// sequence review High 2 found in the first draft of the repair, where A's first-phase completion
+// armed the barrier unconditionally and published it for B.
+if (want('readiness-generations')) {
+  openCase('readiness-generations', 'C1', 'readiness is published only when the CURRENT scene has its chunks', 'R:29');
   const {context, page, errors} = await fresh();
+  let chunks = null;
   try {
-    // The fixtures' chunk sets, from the atlas the app itself loads.
     await page.goto(`${base}/v2/`, {waitUntil: 'domcontentloaded', timeout: 180000});
-    const chunks = await page.evaluate(async (ids) => {
+    chunks = await page.evaluate(async (ids) => {
       const a = await (await fetch('/models/atlas.json')).json();
       const parts = new Map(a.parts.map((p) => [p.id, p]));
       const concepts = new Map(a.concepts.map((c) => [c.id, c]));
@@ -362,58 +409,106 @@ const openMargin = async (page) => {
         }
         return [...out].sort((x, y) => x - y);
       };
-      return {a: of(ids.a), b: of(ids.b)};
+      return {a: of(ids.a), b: of(ids.b), total: a.chunks.length};
     }, {a: SCENE.structures.map((s) => s.id), b: SCENE_B.structures.map((s) => s.id)});
-    const overlap = chunks.a.filter((c) => chunks.b.includes(c));
-    assert('the two fixtures need DIFFERENT chunks (or case (b) cannot fail)',
-      chunks.b.some((c) => !chunks.a.includes(c)),
-      `A=[${chunks.a}] B=[${chunks.b}] overlap=[${overlap}]`, 'B needs at least one chunk A does not');
+  } catch (e) { current.error = String(e).slice(0, 240); }
+  finally { await context.close(); }
 
-    // ── (a) re-drive BETWEEN the barrier and full load ────────────────────────────────────────
-    await page.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
-    await waitScene(page);
-    const fullyLoaded = await page.evaluate(() => document.documentElement.dataset.atlasReady === '1');
-    await page.evaluate((b) => { location.hash = `scene=${b}`; }, BLOB_B);
-    let restored = true;
-    try { await waitScene(page, 90000); } catch { restored = false; }
-    assert(`readiness returns after a re-drive between the barrier and full load${fullyLoaded ? ' (NOTE: the atlas had already finished on this host — see measured)' : ''}`,
-      restored, restored ? 'the marker came back' : 'the marker NEVER came back within 90 s', 'the marker returns');
-    await page.waitForTimeout(SETTLE);
-    const sB = await atlasState(page);
-    assert('and it is published for the CURRENT scene', sB?.blob === BLOB_B,
-      `state.blob=${(sB?.blob || '').slice(0, 12)}… want=${BLOB_B.slice(0, 12)}…`, 'scene B');
-    const tB = await targets(page, ['FMA7088']);
-    assert('the current scene is actually drawn when readiness is published',
-      !!tB.groups?.FMA7088 && tB.groups.FMA7088.n > 0, `${tB.groups?.FMA7088?.n ?? 0} meshes of the new primary projected`, '> 0');
+  const onlyB = chunks ? chunks.b.filter((c) => !chunks.a.includes(c)) : [];
+  prereq('the two fixtures need DIFFERENT chunks (or the generation cases cannot fail)',
+    onlyB.length > 0, chunks ? `A=[${chunks.a}] B=[${chunks.b}] onlyB=[${onlyB}]` : `atlas read failed: ${current.error}`,
+    'B needs at least one chunk A does not');
 
-    // ── (b) re-drive BEFORE the first barrier ─────────────────────────────────────────────────
-    // `waitUntil:'commit'` returns as soon as the navigation is committed, so the hash is set
-    // while the first priority set is still downloading. The invariant asserted is the one that
-    // matters: WHEN readiness first appears, the scene it describes is the current one.
-    const {context: c2, page: p2, errors: e2} = await fresh();
+  if (onlyB.length) {
+    // ── (b) THE HELD-CHUNK INVARIANT — the decisive one ────────────────────────────────────────
+    const {context: cx, page: pg, errors: er} = await fresh();
+    const holdA = chunks.a[chunks.a.length - 1];
+    const hold = new Set([holdA, ...onlyB]);
+    const parked = [];
     try {
-      await p2.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'commit', timeout: 180000});
-      await p2.evaluate((b) => { location.hash = `scene=${b}`; }, BLOB_B).catch(() => {});
-      let early = true;
-      try { await waitScene(p2, 120000); } catch { early = false; }
-      const atMarker = await p2.evaluate(() => ({
-        blob: window.atlas?.state?.().blob ?? null,
-        marker: document.documentElement.dataset.atlasSceneReady ?? null,
-        sceneAttr: document.documentElement.dataset.atlasScene ?? null,
-      }));
-      assert('readiness appears at all after a pre-barrier re-drive', early, early ? 'appeared' : 'never appeared in 120 s', 'appears');
-      assert('readiness never describes the SUPERSEDED scene',
-        atMarker.blob === BLOB_B && atMarker.sceneAttr === BLOB_B.slice(0, 16),
-        `state.blob=${(atMarker.blob || '').slice(0, 12)}… data-atlas-scene=${atMarker.sceneAttr}`, `scene B (${BLOB_B.slice(0, 12)}…)`);
-      await p2.waitForTimeout(SETTLE);
-      const t2b = await targets(p2, ['FMA7088']);
-      assert('the superseding scene is drawn by the time readiness is published',
-        !!t2b.groups?.FMA7088 && t2b.groups.FMA7088.n > 0, `${t2b.groups?.FMA7088?.n ?? 0} meshes projected`, '> 0');
-      assert('no page error (pre-barrier re-drive)', e2.length === 0, e2.slice(0, 2).join(' | ') || 'none', 'none');
-    } finally { await c2.close(); }
+      await cx.route(/\/models\/body-\d+\.bin(\.gz)?$/, (route) => {
+        const n = Number(/body-(\d+)\.bin/.exec(route.request().url())[1]);
+        if (hold.has(n)) { parked.push({n, route}); return; }   // held: deliberately never continued
+        return route.continue();
+      });
+      const release = async (n) => {
+        hold.delete(n);
+        for (const p of parked.filter((x) => x.n === n)) { try { await p.route.continue(); } catch { /* gone */ } }
+      };
+      const marker = () => pg.evaluate(() => document.documentElement.dataset.atlasSceneReady ?? null);
 
-    // ── (c) re-drive AFTER full load ─────────────────────────────────────────────────────────
-    const {context: c3, page: p3} = await fresh();
+      await pg.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      // A's first phase cannot complete while one of ITS chunks is held, so the marker must not
+      // exist yet. This also proves the hold is working — without it everything below is vacuous.
+      await pg.waitForTimeout(7000);
+      const m0 = await marker();
+      prereq('the chunk hold works: A’s barrier has NOT fired while one of A’s chunks is held',
+        m0 === null, `data-atlas-scene-ready=${m0}, ${parked.length} requests parked`, 'absent');
+
+      // Re-drive to B BEFORE A's barrier — the exact window review High 2 identified.
+      await pg.evaluate((b) => { location.hash = `scene=${b}`; }, BLOB_B);
+      await pg.waitForTimeout(700);
+      const m1 = await marker();
+      assert('a re-drive withdraws readiness', m1 === null, `data-atlas-scene-ready=${m1}`, 'absent');
+
+      // Release A's chunk. A's first phase completes now — and it must NOT publish readiness,
+      // because the page is showing B and B's geometry is still held.
+      await release(holdA);
+      await pg.waitForTimeout(7000);
+      const m2 = await marker();
+      const shown = await atlasState(pg);
+      assert('A’s completing first phase does NOT publish readiness for B',
+        m2 === null, `data-atlas-scene-ready=${m2}, on screen=${(shown?.blob || '').slice(0, 12)}…`, 'absent');
+
+      // Release B's chunks. NOW readiness is owed, and it must describe B.
+      for (const n of [...onlyB]) await release(n);
+      let arrived = true;
+      try { await waitScene(pg, 90000); } catch { arrived = false; }
+      const after = await atlasState(pg);
+      assert('once B’s chunks arrive, readiness IS published', arrived,
+        arrived ? 'the marker appeared' : 'the marker never appeared within 90 s of release', 'published');
+      assert('and it describes B, not the superseded scene', after?.blob === BLOB_B,
+        `state.blob=${(after?.blob || '').slice(0, 12)}… want=${BLOB_B.slice(0, 12)}…`, 'scene B');
+      prereq('no page error (held-chunk case)', er.length === 0, er.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the held-chunk case ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { for (const p of parked) { try { await p.route.continue(); } catch { /* gone */ } } await cx.close(); }
+
+    // ── (a) re-drive BETWEEN the barrier and full load ─────────────────────────────────────────
+    // Constructed the same way rather than raced: holding one chunk NEITHER fixture needs keeps
+    // `ready` false for the whole case, so "between the barrier and full load" is a state the run
+    // is IN rather than one it hopes to catch. The old version accepted an already-complete atlas
+    // and said so in its own measured string, which is not a gate.
+    const spare = Array.from({length: chunks.total}, (_, i) => i)
+      .find((i) => !chunks.a.includes(i) && !chunks.b.includes(i));
+    const {context: cx2, page: p2, errors: e2} = await fresh();
+    const parked2 = [];
+    try {
+      prereq('a chunk exists that neither fixture needs (so full load can be withheld)',
+        spare !== undefined, `spare=${spare} of ${chunks.total} chunks`, 'one spare chunk');
+      await cx2.route(/\/models\/body-\d+\.bin(\.gz)?$/, (route) => {
+        const n = Number(/body-(\d+)\.bin/.exec(route.request().url())[1]);
+        if (n === spare) { parked2.push(route); return; }
+        return route.continue();
+      });
+      await p2.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await waitScene(p2);
+      const fullyLoaded = await p2.evaluate(() => document.documentElement.dataset.atlasReady === '1');
+      prereq('the atlas is NOT fully loaded, so this really is the middle window',
+        fullyLoaded === false, `data-atlas-ready=${fullyLoaded ? '1' : 'absent'}`, 'absent');
+      await p2.evaluate((b) => { location.hash = `scene=${b}`; }, BLOB_B);
+      let restored = true;
+      try { await waitScene(p2, 90000); } catch { restored = false; }
+      assert('readiness returns after a re-drive between the barrier and full load', restored,
+        restored ? 'the marker came back' : 'the marker NEVER came back within 90 s', 'the marker returns');
+      const sB = await atlasState(p2);
+      assert('and it is published for the CURRENT scene', sB?.blob === BLOB_B,
+        `state.blob=${(sB?.blob || '').slice(0, 12)}…`, 'scene B');
+      prereq('no page error (middle-window case)', e2.length === 0, e2.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the middle-window case ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { for (const r of parked2) { try { await r.continue(); } catch { /* gone */ } } await cx2.close(); }
+
+    // ── (c) re-drive AFTER full load ──────────────────────────────────────────────────────────
+    const {context: cx3, page: p3, errors: e3} = await fresh();
     try {
       await p3.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await waitAll(p3);
@@ -423,11 +518,12 @@ const openMargin = async (page) => {
       const s3 = await atlasState(p3);
       assert('readiness is republished after a post-load re-drive', post && s3?.blob === BLOB_B,
         `${post ? 'marker present' : 'marker MISSING'}, blob=${(s3?.blob || '').slice(0, 12)}…`, 'present, scene B');
-    } finally { await c3.close(); }
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
-  finally { await context.close(); }
+      prereq('no page error (post-load case)', e3.length === 0, e3.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the post-load case ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { await cx3.close(); }
+  }
 }
+
 
 // ══ CASE 5 — WARM LEGACY RE-DRIVE, THROUGH A REUSED PAGE ═══════════════════════════════════════
 // codex-app-review.md §2 row 10 (R:34). The renderer re-drives a WARM tab by setting the hash
@@ -441,7 +537,7 @@ const openMargin = async (page) => {
 // (every key present, cache identity unchanged) is a unit test — test/redrive-hash.test.mjs — and
 // this is the end-to-end half codex asked for: "through a reused renderer page, both transition
 // directions".
-{
+if (want('warm-legacy-redrive')) {
   openCase('warm-legacy-redrive', 'C1', 'a warm legacy re-drive resets language and system in both directions', 'R:34');
   const {context, page, errors} = await fresh();
   try {
@@ -450,8 +546,44 @@ const openMargin = async (page) => {
     await page.goto(`${base}/?select=FMA22359&lang=zh-Hans&system=skeletal&snap=1`, {waitUntil: 'domcontentloaded', timeout: 180000});
     await waitAll(page);
     await page.waitForTimeout(1500);
-    const warm = await page.evaluate(() => ({lang: document.documentElement.lang, systems: document.documentElement.dataset.atlasSelected}));
-    assert('the warm tab really is in zh-Hans first', warm.lang === 'zh-Hans', `lang=${warm.lang}`, 'zh-Hans');
+    // `isolate=0` matters: the legacy re-drive defaults `isolate` to 1, and an isolated view draws
+    // only the selection, which would hide the very thing a system-visibility assertion measures.
+    // ASKED THROUGH THE GROUP LANE, NOT THE PARTS LANE. `parts` comes from the frame loop's cached
+    // projection and is EMPTY unless the body is exploded or a plate is rendering — the first
+    // version of this assertion read it and compared 0 with 0, which is the very vacuity codex
+    // flagged one finding earlier. `groups` is computed on demand and only contains ids whose
+    // meshes passed the visibility filter, so presence there means DRAWN.
+    //
+    // FMA7088 (the heart) is the probe because it is CARDIAC: `system=skeletal` excludes it, and the
+    // default system set includes it. The femur would prove nothing — it is skeletal in both states.
+    const heartDrawn = () => page.evaluate(async (id) => {
+      const g = window.__atlasTargets ? window.__atlasTargets([id]) : null;
+      return g ? (g.groups?.[id]?.n ?? 0) : null;
+    }, 'FMA7088');
+    const warm = await page.evaluate(() => ({lang: document.documentElement.lang}));
+    prereq('the warm tab really is in zh-Hans first', warm.lang === 'zh-Hans', `lang=${warm.lang}`, 'zh-Hans');
+
+    // ── THE SYSTEM RESET, asserted on what is DRAWN rather than on the URL ──────────────────
+    // The Worker's legacy branch now writes an explicit default system list; without it a warm tab
+    // that had rendered `system=skeletal` kept the skeleton. Measured through the renderer: with
+    // `isolate=0` and one muscle selected, a skeletal-only tab draws far fewer parts than one whose
+    // systems have been reset to the default. (codex review, 2026-09-09, Medium 2 — the first
+    // version of this case asserted language only, and its `systems` variable actually read
+    // `data-atlas-selected`.)
+    const skeletalOnly = reDriveHash(new URLSearchParams('select=FMA22359&system=skeletal&isolate=0'));
+    await page.evaluate((h) => { location.hash = h.replace(/^#/, ''); }, skeletalOnly);
+    await page.waitForTimeout(3000);
+    const restricted = await heartDrawn();
+    prereq('the skeletal-only re-drive really hides the cardiac probe', restricted === 0,
+      `${restricted} heart meshes drawn under system=skeletal`, '0');
+    const resetSystems = reDriveHash(new URLSearchParams('select=FMA22359&isolate=0'));
+    await page.evaluate((h) => { location.hash = h.replace(/^#/, ''); }, resetSystems);
+    await page.waitForTimeout(3000);
+    const restored = await heartDrawn();
+    assert('a re-drive with no system= restores the DEFAULT systems, not the previous skeletal-only view',
+      typeof restored === 'number' && restored > 0,
+      `${restored} heart meshes drawn after the reset (was ${restricted} under system=skeletal)`,
+      '> 0 — the cardiac system is visible again');
 
     const hash1 = reDriveHash(new URLSearchParams('select=FMA9611&view=front'));
     await page.evaluate((h) => { location.hash = h.replace(/^#/, ''); }, hash1);
@@ -477,8 +609,8 @@ const openMargin = async (page) => {
     await page.waitForTimeout(2500);
     const after3 = await page.evaluate(() => ({lang: document.documentElement.lang, selected: document.documentElement.dataset.atlasSelected}));
     assert('and a plain request after a zh-Hant one is English again', after3.lang === 'en', `lang=${after3.lang}`, 'en');
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -487,7 +619,7 @@ const openMargin = async (page) => {
 // (app/v2/copy.ts:35) with one mesh selected prints "1 pieces", and the design's own wireframe
 // draws "1 piece" — so the spec and the picture disagreed and the code matched neither.
 // FMA7487 "body of sternum" has exactly one element, which is what makes n===1 reachable at all.
-{
+if (want('plural')) {
   openCase('plural', 'C1', 'the selection count reads "1 piece", not "1 pieces"', 'G7');
   const {context, page, errors} = await fresh(390, 844, true);
   try {
@@ -504,8 +636,8 @@ const openMargin = async (page) => {
     await openMargin(page);
     const many = await page.evaluate(() => document.querySelector('.v2-count')?.textContent?.trim() ?? null);
     assert('three selected meshes still print the plural', many === '3 pieces', `"${many}"`, '"3 pieces"');
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -515,7 +647,7 @@ const openMargin = async (page) => {
 // `writeUrlState` writes `lastBlob` VERBATIM (app/url-state.ts:149) — deliberately, so a copied
 // plate URL reproduces the same picture — but nothing updates `lastBlob` when the human edits the
 // scene, so the URL, `plate()` and a reload all describe the scene as it ARRIVED.
-{
+if (want('edited-scene-persists')) {
   openCase('edited-scene-persists', 'C2', 'removing a structure changes the blob, the URL, plate() and a reload', 'R:27');
   const {context, page, errors} = await fresh();
   try {
@@ -526,7 +658,7 @@ const openMargin = async (page) => {
     await openMargin(page);
 
     const before = await atlasState(page);
-    assert('the scene starts with all five structures', (before?.ids ?? []).length === 5,
+    prereq('the scene starts with all five structures', (before?.ids ?? []).length === 5,
       `${(before?.ids ?? []).length} ids`, '5');
 
     // Remove the femur (a CONTEXT member, so the primary and the focus are untouched and the
@@ -543,7 +675,7 @@ const openMargin = async (page) => {
       if (owns) { clicked = await clickAt(page, x); break; }
     }
     if (!clicked && xs.length) clicked = await clickAt(page, xs[xs.length - 1]);
-    assert('a remove control was found and pressed', clicked, `${xs.length} remove controls in the set list`, 'one pressed');
+    prereq('a remove control was found and pressed', clicked, `${xs.length} remove controls in the set list`, 'one pressed');
     await page.waitForTimeout(1500);
 
     const after = await atlasState(page);
@@ -577,8 +709,8 @@ const openMargin = async (page) => {
     const reloaded = await atlasState(page);
     assert('a reload shows the EDITED scene', !(reloaded?.ids ?? []).includes(removed) && (reloaded?.ids ?? []).length === 4,
       `ids=${JSON.stringify(reloaded?.ids)}`, `4 ids, without ${removed}`);
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -590,7 +722,7 @@ const openMargin = async (page) => {
 //
 // MEMBERSHIP MUST NOT CHANGE. Retargeting is a camera operation; if the fix also drops the other
 // structures it has traded one defect for a worse one, so that is asserted alongside.
-{
+if (want('focus-retargets-camera')) {
   openCase('focus-retargets-camera', 'C2', 'focusing another declared member moves the camera target, not just the label', 'R:28');
   const {context, page, errors} = await fresh();
   try {
@@ -602,7 +734,7 @@ const openMargin = async (page) => {
     const t0 = await targets(page, ['FMA22359', 'FMA16203']);
     const s0 = await atlasState(page);
     const target0 = {x: t0.camera.tx, y: t0.camera.ty, z: t0.camera.tz};
-    assert('the scene declares a focus to begin with', (s0?.framing?.focus ?? 0) > 0,
+    prereq('the scene declares a focus to begin with', (s0?.framing?.focus ?? 0) > 0,
       `framing.focus=${s0?.framing?.focus}`, '> 0');
 
     // FMA16203 is the GHOST and the alphabetically-first member — the structure L31's hotfix
@@ -614,7 +746,7 @@ const openMargin = async (page) => {
       const isGhost = await n.evaluate((el) => el.className.includes('role-ghost'));
       if (isGhost) { moved = await clickAt(page, n); break; }
     }
-    assert('the ghost notch was found and pressed', moved, `${notches.length} notches in the rail`, 'one pressed');
+    prereq('the ghost notch was found and pressed', moved, `${notches.length} notches in the rail`, 'one pressed');
     await page.waitForTimeout(SETTLE);
 
     const t1 = await targets(page, ['FMA22359', 'FMA16203']);
@@ -635,8 +767,8 @@ const openMargin = async (page) => {
     assert('membership is unchanged by a focus change', (s1?.ids ?? []).length === (s0?.ids ?? []).length,
       `${(s0?.ids ?? []).length} -> ${(s1?.ids ?? []).length} ids`, 'unchanged');
     assert('the focus is recorded on the controller', s1?.focus === 'FMA16203', `focus=${s1?.focus}`, 'FMA16203');
-    assert('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
-  } catch (e) { current.error = String(e).slice(0, 240); assert('case ran', false, current.error, 'no throw'); }
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { current.error = String(e).slice(0, 240); prereq('case ran', false, current.error, 'no throw'); }
   finally { await context.close(); }
 }
 
@@ -644,24 +776,37 @@ await browser.close();
 
 // ══ VERDICTS ═══════════════════════════════════════════════════════════════════════════════════
 const rows = cases.map((c) => {
-  const passed = c.checks.length > 0 && c.checks.every((k) => k.pass);
+  const prereqs = c.checks.filter((k) => k.prereq);
+  const claims = c.checks.filter((k) => !k.prereq);
+  const ranAtAll = c.checks.length > 0 && prereqs.every((k) => k.pass);
+  const claimsHold = claims.length > 0 && claims.every((k) => k.pass);
   const due = STAGE_RANK[c.owner] <= rank;
-  // due & passed            -> GREEN
-  // due & !passed           -> FAIL           (the build breaks)
-  // !due & !passed          -> EXPECTED-RED   (the repro reproduces; this is the evidence)
-  // !due & passed           -> STALE-RED      (a finding: the case no longer demonstrates anything)
-  const verdict = due ? (passed ? 'GREEN' : 'FAIL') : (passed ? 'STALE-RED' : 'EXPECTED-RED');
-  return {...c, passed, due, verdict, failed: c.checks.filter((k) => !k.pass).map((k) => `${k.name} :: ${k.measured}`)};
+  //  !ranAtAll               -> BROKEN        the case did not exercise its defect; not evidence
+  //  due & claimsHold        -> GREEN
+  //  due & !claimsHold       -> FAIL          the build breaks
+  // !due & !claimsHold       -> EXPECTED-RED  the repro reproduces; THIS is the recorded evidence
+  // !due &  claimsHold       -> STALE-RED     a finding: the case no longer demonstrates anything
+  const verdict = !ranAtAll ? 'BROKEN'
+    : due ? (claimsHold ? 'GREEN' : 'FAIL')
+    : (claimsHold ? 'STALE-RED' : 'EXPECTED-RED');
+  return {
+    ...c, passed: ranAtAll && claimsHold, due, verdict,
+    failedPrereqs: prereqs.filter((k) => !k.pass).map((k) => `${k.name} :: ${k.measured}`),
+    failed: claims.filter((k) => !k.pass).map((k) => `${k.name} :: ${k.measured}`),
+  };
 });
 
-console.log(`\n${'═'.repeat(94)}\nL31 v2.1a REGRESSION CASES — stage ${stage.toUpperCase()}\n`);
+console.log(`\n${'═'.repeat(94)}\nL31 v2.1a REGRESSION CASES — stage ${stage.toUpperCase()}`
+  + `${ONLY.length ? `  (FILTERED to ${ONLY.join(', ')} — this is NOT the full contract)` : ''}\n`);
 for (const r of rows) {
   console.log(`${r.verdict.padEnd(13)} ${r.id.padEnd(24)} owner=${r.owner}  ${r.ref}`);
   console.log(`              ${r.title}`);
+  for (const f of r.failedPrereqs) console.log(`              ! PREREQ ${f}`);
   if (r.failed.length) for (const f of r.failed) console.log(`              - ${f}`);
 }
 
 const broken = rows.filter((r) => r.verdict === 'FAIL');
+const didNotRun = rows.filter((r) => r.verdict === 'BROKEN');
 const stale = rows.filter((r) => r.verdict === 'STALE-RED');
 const expectedRed = rows.filter((r) => r.verdict === 'EXPECTED-RED');
 const green = rows.filter((r) => r.verdict === 'GREEN');
@@ -669,7 +814,7 @@ const green = rows.filter((r) => r.verdict === 'GREEN');
 writeFileSync(join(outDir, `regress-${label}.json`), JSON.stringify({
   at: new Date().toISOString(), base, stage, label,
   scenes: {a: BLOB, b: BLOB_B},
-  totals: {green: green.length, fail: broken.length, expectedRed: expectedRed.length, stale: stale.length, cases: rows.length},
+  totals: {green: green.length, fail: broken.length, broken: didNotRun.length, expectedRed: expectedRed.length, stale: stale.length, cases: rows.length},
   cases: rows,
 }, null, 1));
 
@@ -678,4 +823,4 @@ if (expectedRed.length) console.log(`  expected-red (owned by a later commit): $
 if (stale.length) console.log(`  ⚠️ STALE-RED — these cases no longer reproduce their defect and prove nothing: ${stale.map((r) => r.id).join(', ')}`);
 console.log(`  -> ${join(outDir, `regress-${label}.json`)}`);
 // A stale red is a finding, not a pass: the case has to be strengthened or its owner corrected.
-process.exit(broken.length === 0 && stale.length === 0 ? 0 : 1);
+process.exit(broken.length === 0 && stale.length === 0 && didNotRun.length === 0 ? 0 : 1);

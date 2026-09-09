@@ -97,9 +97,10 @@ export function v2t(lang: Lang, key: string, vars?: Record<string, string | numb
  if (!row) return key;
  let s = row[lang] ?? row.en;
  if (!vars) return s;
- // `n` reaches here already localised (`(1234).toLocaleString()` ⇒ "1,234"), so parse rather than
- // compare: a separator makes this NaN, which is not 1, which is the plural — the right answer by
- // the right route.
+ // `n` reaches here already localised (`(1234).toLocaleString()` ⇒ "1,234"), so the separators are
+ // stripped before parsing: "1,024" becomes 1024, which is not 1, which is the plural. (An earlier
+ // note here claimed the separator produced NaN — it does not, because the strip runs first; the
+ // answer was right and the stated reason was wrong.)
  if (lang === 'en' && vars.n !== undefined && Number(String(vars.n).replace(/[\s,]/g, '')) === 1 && V2_ONE[key]) {
   s = V2_ONE[key];
  }

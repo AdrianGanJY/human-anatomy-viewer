@@ -16,10 +16,12 @@
  *  2. `app/v2/page.tsx` cannot be imported by `node --test` — Node strips TYPES but not JSX — so a
  *     function that lives in the page is a function with no unit coverage. Here it has some.
  *
- * ABSENT IS NOT EMPTY, and that distinction is the whole reason this is written with spreads rather
- * than with `??`: `system=none` legitimately means "nothing visible" (`visible: []`), which must not
- * be confused with "the key was not in the URL" (leave the previous value alone). `??` and `||` both
- * get that wrong for `[]`, `false` and `0` — and `isolate=0` and `explode=0` are real requests.
+ * ABSENT IS NOT EMPTY, and that distinction is why each field is spread conditionally on
+ * `!== undefined` rather than collapsed with a fallback operator. `system=none` legitimately means
+ * "nothing visible" (`visible: []`), which is not "the key was not in the URL" (leave the previous
+ * value alone). `||` gets that wrong for `false` and `0` — and `isolate=0` and `explode=0` are real
+ * requests. `??` would in fact be correct for all three values; it is not used only because the
+ * conditional spread states the absent/present distinction directly at each field.
  */
 import type {SceneState, SystemId, View} from '../anatomy';
 
@@ -32,8 +34,10 @@ export function legacySceneState(url: LegacyUrlFields, previous: SceneState): Sc
   ...(url.isolate !== undefined ? {isolate: url.isolate} : {}),
   ...(url.explode !== undefined ? {explode: url.explode} : {}),
   ...(url.visible !== undefined ? {visible: url.visible} : {}),
-  // The renderer's view/reset refit is keyed on `reset` (app/scene.tsx:378), so a mapping that
-  // changed `view` without bumping it would update the state and not the camera.
+  // The renderer refits on `s.view !== lastView || s.reset !== lastReset` (app/scene.tsx), so a
+  // VIEW change would refit on its own. `reset` is bumped for the others: `isolate` and `explode`
+  // are not in that condition, so a link that changes only those would update the state and leave
+  // the camera where it was.
   reset: previous.reset + 1,
  };
 }

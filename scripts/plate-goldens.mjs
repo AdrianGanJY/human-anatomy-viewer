@@ -46,6 +46,14 @@ import {encodeScene, normalizeScene} from '../app/scene-codec.js';
  *     "nothing changed" and that is the one reading it must never produce.
  */
 const GHOSTED = new Set(['forward-bend']);   // the only control scene with a `ghost` role
+/** THE REQUIRED INVENTORY, named here rather than derived from the artifacts being compared.
+ *  Deriving it meant a scene missing from BOTH sides simply vanished from verification — two empty
+ *  manifests compared equal and passed (codex review, 2026-09-09, High 7). An absent measurement
+ *  must never read as "nothing changed". */
+const REQUIRED = ['forward-bend', 'hip-flexors', 'rotator-cuff', 'spine', 'knee', 'feet'];
+/** A measurement is only usable if every field is present and finite. `{}` compared to `{}` is
+ *  equal on every key and therefore silently green. */
+const complete = (r) => !!r && ['l', 'r', 't', 'b', 'w', 'h'].every((k) => Number.isFinite(r[k])) && typeof r.cam === 'string' && r.cam.length > 0;
 
 if (process.argv[2] === 'compare') {
   const {readFileSync} = await import('node:fs');
@@ -56,13 +64,19 @@ if (process.argv[2] === 'compare') {
   }
   const before = JSON.parse(readFileSync(beforePath, 'utf8'));
   const after = JSON.parse(readFileSync(afterPath, 'utf8'));
-  const names = [...new Set([...Object.keys(before.plates), ...Object.keys(after.plates)])];
+  const names = [...new Set([...REQUIRED, ...Object.keys(before.plates), ...Object.keys(after.plates)])];
   const failures = [], notes = [];
   for (const name of names) {
     const b = before.plates[name], a = after.plates[name];
     if (!b || !a) { failures.push(`${name}: present on only one side (before=${!!b} after=${!!a})`); continue; }
     if (b.error || a.error) { failures.push(`${name}: errored (before=${b.error ?? 'ok'} after=${a.error ?? 'ok'})`); continue; }
-    if (!b.rect || !a.rect) { failures.push(`${name}: no projected rect on one side — the subject was not drawn`); continue; }
+    if (!complete(b.rect) || !complete(a.rect)) {
+      failures.push(`${name}: incomplete measurement — before=${JSON.stringify(b.rect)} after=${JSON.stringify(a.rect)}`);
+      continue;
+    }
+    if (typeof b.hash !== 'string' || typeof a.hash !== 'string' || !b.hash || !a.hash) {
+      failures.push(`${name}: a missing image hash on one side`); continue;
+    }
     if (b.rect.cam !== a.rect.cam) failures.push(`${name}: CAMERA moved\n      before ${b.rect.cam}\n      after  ${a.rect.cam}`);
     for (const k of ['l', 'r', 't', 'b', 'w', 'h']) {
       if (b.rect[k] !== a.rect[k]) failures.push(`${name}: projected bounds ${k} ${b.rect[k]} -> ${a.rect[k]}`);
@@ -73,7 +87,9 @@ if (process.argv[2] === 'compare') {
       else failures.push(`${line}  — camera and bounds are identical, so the PIXELS changed on their own`);
     }
   }
-  console.log(`plate goldens: ${names.length} control scenes\n  before ${beforePath}\n  after  ${afterPath}\n`);
+  const missing = REQUIRED.filter((n) => !before.plates[n] || !after.plates[n]);
+  console.log(`plate goldens: ${names.length} scenes compared, ${REQUIRED.length} required` +
+    `${missing.length ? ` — MISSING: ${missing.join(', ')}` : ''}\n  before ${beforePath}\n  after  ${afterPath}\n`);
   for (const n of notes) console.log(`  note  ${n}`);
   for (const f of failures) console.log(`  FAIL  ${f}`);
   console.log(`\n${failures.length === 0 ? 'IDENTICAL within tolerance' : `${failures.length} DIFFERENCE(S)`} — ${notes.length} tolerated note(s)`);

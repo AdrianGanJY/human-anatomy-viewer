@@ -272,10 +272,11 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
  .v2{grid-template-columns:1fr var(--v2-rail) 45%;grid-template-rows:var(--v2-head) 1fr;grid-template-areas:"head head head" "field rail margin"}
  .v2-margin{max-height:none;min-height:0}
  .v2-handle{display:none}
- /* SAME DEFECT, SAME CURE, and this tier is why the fix cannot live only in the width query: a
-    rotated 390x844 phone is 844x390, which is BELOW 768 wide and therefore never matches the block
-    above — yet it hides the handle too. A landscape phone had the identical unreachable-controls
-    bug and no oracle viewport loaded it. */
+ /* SAME DEFECT, SAME CURE. This tier needs its own copy because it is a SEPARATE rule set, not
+    because of the width: a rotated 390x844 phone is 844x390, which does match the >=768 block above
+    — but this short-viewport block re-declares the grid and hides the handle for its own reasons,
+    and a reader deleting the rule above would silently take the controls away here. A landscape
+    phone had the identical unreachable-controls bug and no oracle viewport loaded it. */
  .v2[data-detent=peek] .v2-margin-scroll{display:block}
  .v2-note{display:none}
 }

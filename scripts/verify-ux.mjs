@@ -49,9 +49,10 @@
  *                   in-flight 348 KB dictionary has no entry yet and is exactly the request the
  *                   assertion is about. A fresh EN visit must not fetch a Chinese dictionary
  *                   before the palette would open; a zh visit keeps its entry load.
- * 10  SAFE RECT     EVERY intended frame member is drawn AND fits the declared safe rectangle on
- *                   all four edges. Oracle 2 asserted the top edge of the UNION only; a member
- *                   clipped off the left while the union stays inside is invisible to it.
+ * 10  SAFE RECT     EVERY intended frame member is DRAWN, and the union fits the declared safe
+ *                   rectangle on all four edges rather than only at the top. The load-bearing half
+ *                   is the membership check: a member that is absent entirely cannot pull the union
+ *                   outside the field, so a union-only reading calls a missing structure "framed".
  * 11  DETENT        no horizontal overflow after each detent transition (peek->half->peek), not
  *                   only in the initial state.
  *
@@ -250,30 +251,50 @@ const newContext = async (vp) => {
     // recorded at the CALL, by wrapping the two APIs that make one, and the completed-entry
     // observer is kept as a second lane for subresources the page never fetches by hand
     // (stylesheets, the module graph). Earliest timestamp wins per URL.
-    window.__reqs = new Map();
-    const noteStart = (raw) => {
+    // EVERY START IS ITS OWN ROW. The first version kept a Map keyed by URL, which collapses
+    // repeated requests: twenty retries against one endpoint counted as ONE and could satisfy a
+    // request budget while a polling regression ran underneath it (codex review, 2026-09-09,
+    // High 5). An append-only ledger cannot do that, and de-duplication is left to the reader that
+    // actually wants distinct URLs.
+    window.__reqs = [];
+    const noteStart = (raw, via) => {
       try {
-        const name = new URL(String(raw), location.href).href;
-        if (!window.__reqs.has(name)) window.__reqs.set(name, performance.now());
+        window.__reqs.push({name: new URL(String(raw), location.href).href, at: performance.now(), via});
       } catch { /* not a URL we can attribute */ }
     };
     const nativeFetch = window.fetch;
     window.fetch = function (input, init) {
-      noteStart(typeof input === 'string' ? input : (input && input.url) || '');
+      noteStart(typeof input === 'string' ? input : (input && input.url) || '', 'fetch');
       return nativeFetch.call(this, input, init);
     };
+    // RECORDED AT send(), NOT open(). `open()` only configures the request — a caller that opens
+    // and never sends would otherwise be counted as network traffic that never happened.
     const nativeOpen = XMLHttpRequest.prototype.open;
     XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      noteStart(url);
+      this.__url = url;
       return nativeOpen.call(this, method, url, ...rest);
+    };
+    const nativeSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function (...rest) {
+      noteStart(this.__url ?? '', 'xhr');
+      return nativeSend.call(this, ...rest);
     };
     try {
       new PerformanceObserver((l) => {
-        // `startTime` is when the fetch began, so a late-arriving entry still reports an early
-        // start — which is the number this lane exists to preserve.
+        // The second lane, for subresources the page never fetches by hand (stylesheets, the module
+        // graph). `startTime` is when the fetch began, so a late-arriving entry still reports an
+        // early start. An entry whose start is already within a millisecond of a recorded fetch/xhr
+        // start is the SAME request seen twice and is not appended again.
+        // ONLY for names the page never fetched BY HAND. A timestamp window was the first attempt
+        // and it was too clever: a fetch start and its Resource Timing `startTime` can differ by
+        // more than a millisecond, so the same dictionary was appended twice and "both dictionaries
+        // requested" read 3 of 2. This lane exists solely to catch subresources with no JS call
+        // behind them (the stylesheet, the module graph), so keying it on absence-from-the-other-
+        // lanes is both simpler and exactly its purpose.
         for (const e of l.getEntries()) {
-          const prev = window.__reqs.get(e.name);
-          if (prev === undefined || e.startTime < prev) window.__reqs.set(e.name, e.startTime);
+          if (window.__reqs.some((r) => r.name === e.name && r.via !== 'resource')) continue;
+          if (window.__reqs.some((r) => r.name === e.name && r.via === 'resource')) continue;
+          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
         }
       }).observe({type: 'resource', buffered: true});
     } catch { /* no resource timing */ }
@@ -340,7 +361,13 @@ for (const vp of SWEEP) {
     // plus the fixed prefix; 9.6 MB is that with headroom. v1 must fetch all 33 MB before its
     // only readiness marker, so this is red there by construction — which is the point.
     const BYTE_BUDGET = 9.6e6;
-    check(vp.name, 'bytes before the view is usable', readyMs !== null && bytes.encoded <= BYTE_BUDGET,
+    // FROZEN, FINITE AND POSITIVE — not merely "<= the ceiling". A live fallback sum taken before
+    // many chunks completed satisfies a ceiling trivially, and zero satisfies it best of all
+    // (codex review, 2026-09-09, Medium 6). On v2 the number MUST come from the barrier stamp.
+    const bytesValid = Number.isFinite(bytes.encoded) && bytes.encoded > 0 && (variant !== 'v2' || bytes.frozen === true);
+    check(vp.name, 'the byte reading is the frozen barrier stamp, not a live sum', bytesValid,
+      `encoded=${bytes.encoded} frozen=${bytes.frozen}`, variant === 'v2' ? 'frozen, finite, > 0' : 'finite, > 0');
+    check(vp.name, 'bytes before the view is usable', readyMs !== null && bytesValid && bytes.encoded <= BYTE_BUDGET,
       `${bytes.encoded} B / ${bytes.requests} chunk requests${readyMs === null ? ' (readiness marker never appeared)' : ''}`, `<= ${BYTE_BUDGET} B`);
     // ── 9 REQUESTS ─────────────────────────────────────────────────────────────────────────
     // Its own row, tied to the SAME frozen barrier. It used to live inside the string above, and
@@ -348,7 +375,7 @@ for (const vp of SWEEP) {
     // the request count is the whole atlas by construction, which is that variant's finding.
     const CHUNK_BUDGET = variant === 'v2' ? 4 : 15;
     check(vp.name, `model chunk requests before the view is usable <= ${CHUNK_BUDGET}`,
-      readyMs !== null && bytes.requests > 0 && bytes.requests <= CHUNK_BUDGET,
+      readyMs !== null && bytesValid && bytes.requests > 0 && bytes.requests <= CHUNK_BUDGET,
       `${bytes.requests} chunk requests${bytes.frozen ? ' (frozen at the barrier)' : ' (live sum)'}`, `<= ${CHUNK_BUDGET}`);
     // NON-MODEL REQUESTS BEFORE THE BARRIER. The zh fixture below loads in zh-Hans, so its
     // dictionary request is EXPECTED here — that is the baseline the plan promises to preserve
@@ -356,13 +383,14 @@ for (const vp of SWEEP) {
     // "a fresh EN visit fetches no Chinese dictionary", is asserted on the bare EN page below,
     // because it is a claim about the EN entry and cannot be made from a zh one.
     const reqs = await page.evaluate((at) => {
-      const rows = [...(window.__reqs?.entries() ?? [])]
-        .filter(([, t]) => at === null || t <= at)
-        .map(([name]) => name.replace(location.origin, ''));
+      const rows = (window.__reqs ?? [])
+        .filter((r) => at === null || r.at <= at)
+        .map((r) => r.name.replace(location.origin, ''));
       return {
         at, total: rows.length,
         nonModel: rows.filter((n) => !/\/models\/body-/.test(n)),
         zhDicts: rows.filter((n) => /\/i18n\/zh-/.test(n)),
+        distinct: new Set(rows).size,
       };
     }, barrierAt);
     // The floor is the entry's own graph: the document, the module chunks, the stylesheet,
@@ -370,9 +398,13 @@ for (const vp of SWEEP) {
     // point of the bound is to catch a NEW eager fetch, not to pin the bundler's chunking.
     check(vp.name, 'non-model requests before the barrier (starts, not completions)',
       reqs.at !== null && reqs.nonModel.length <= 16,
-      `${reqs.nonModel.length} non-model starts, ${reqs.zhDicts.length} zh dictionaries${reqs.at === null ? ' (no barrier timestamp)' : ''}`, '<= 16');
-    check(vp.name, 'zh entry still loads its dictionaries on entry (baseline preserved)',
-      reqs.zhDicts.length === 2, `${reqs.zhDicts.length} of 2 zh dictionaries requested by the barrier`, '2');
+      `${reqs.nonModel.length} non-model starts (${reqs.distinct} distinct URLs), ${reqs.zhDicts.length} zh dictionaries${reqs.at === null ? ' (no barrier timestamp)' : ''}`, '<= 16');
+    // DISTINCT FILES, because that is what the claim is: there are exactly two dictionaries and both
+    // must have been asked for. Counting STARTS here would make a retry look like extra coverage —
+    // the retry is visible in the non-model start count above, which is where it belongs.
+    const zhDistinct = new Set(reqs.zhDicts).size;
+    check(vp.name, 'zh entry still loads BOTH dictionaries on entry (baseline preserved)',
+      zhDistinct === 2, `${zhDistinct} distinct zh dictionaries (${reqs.zhDicts.length} starts) by the barrier`, '2 distinct');
 
     // ── 1 ORIENTATION ──────────────────────────────────────────────────────────────────────
     let titleText = '';
@@ -459,9 +491,11 @@ for (const vp of SWEEP) {
       !framing.error && framing.area >= AREA_TARGET,
       framing.error || `${(framing.area * 100).toFixed(2)}% of a ${framing.fw}x${framing.fh} field`,
       `>= ${(AREA_TARGET * 100).toFixed(0)}%`, 'C3 (shell + fit-to-selection)');
-    // THE RATCHET. Baselined from the pre-v2.1a candidate run on this same fixture, minus a 1
-    // percentage-point tolerance for the coverage dither. Live, not deferred: C1 and C2 must not
-    // move framing at all, and this is the assertion that says so.
+    // THE RATCHET. Baselined from the pre-v2.1a candidate run on this same fixture, minus one
+    // percentage point. The tolerance is for CAMERA SETTLING, not for the coverage dither: `area`
+    // is computed from projected bounding boxes and never reads a pixel, so the alphaHash dither
+    // cannot move it (codex review, 2026-09-09, Medium 5 — the earlier rationale here named the
+    // wrong mechanism). Live, not deferred: C1 and C2 must not move framing at all.
     // MEASURED on the pre-v2.1a candidate at all six viewports (E:/Agentic/.artifacts/L31/v21a/):
     // 21.82 · 20.06 · 12.38 · 9.37 · 6.04 · 11.70 percent. Each floor is that figure minus one
     // percentage point. The 1920x860 and 1366x1024 numbers were GUESSED in the first draft of
@@ -554,15 +588,28 @@ for (const vp of SWEEP) {
         const o = await page.evaluate(() => ({
           s: document.documentElement.scrollWidth, c: document.documentElement.clientWidth,
           detent: document.querySelector('.v2')?.dataset.detent ?? null,
+          handle: !!document.querySelector('.v2-handle') && getComputedStyle(document.querySelector('.v2-handle')).display !== 'none',
         }));
-        measured = `detent=${o.detent} scrollWidth=${o.s} clientWidth=${o.c}`;
-        detents.push({step, ok: o.s === o.c, measured});
+        // THE TRANSITION MUST HAVE HAPPENED. Checking only overflow meant a phone that opens to
+        // half and cannot collapse still passed the "transition to peek" row — and deleting the
+        // drive entirely left both rows green (codex review, 2026-09-09, High 6). Where there is no
+        // handle (>=768, where the margin is a column) there is no transition to make, and the row
+        // says so instead of claiming one succeeded.
+        const applicable = o.handle;
+        const reached = !applicable || o.detent === step;
+        measured = applicable
+          ? `detent=${o.detent} (wanted ${step}) scrollWidth=${o.s} clientWidth=${o.c}`
+          : `not applicable: no detent handle at this width (detent=${o.detent}, margin is a column)`;
+        detents.push({step, applicable, ok: reached && o.s === o.c, measured});
       }
       // At >=768 the handle is display:none by design (v2.css:229) and there are no detents to
       // transition — the margin is a column. `boundingBox()` returns null there, so the loop
       // measures the same state twice, which is the correct no-op rather than a skip.
       for (const d of detents) {
-        check(vp.name, `no horizontal scroll after the detent transition to ${d.step}`, d.ok, d.measured, 'equal');
+        check(vp.name, d.applicable
+          ? `the margin reaches ${d.step} and stays free of horizontal scroll`
+          : `detent transition to ${d.step} is not applicable at this width`,
+        d.ok, d.measured, d.applicable ? `detent=${d.step}, no overflow` : 'n/a');
       }
     }
 
@@ -687,8 +734,15 @@ for (const vp of SWEEP) {
     // the state this page is in. The assertion is therefore exact now and stays exact when
     // v2.1b replaces the panel with the palette.
     const bareReqs = await barePage.evaluate(() => {
-      const rows = [...(window.__reqs?.keys() ?? [])].map((n) => n.replace(location.origin, ''));
-      return {zh: rows.filter((n) => /\/i18n\/zh-/.test(n)), lang: document.documentElement.lang, total: rows.length};
+      // The ledger is an APPEND-ONLY ARRAY of {name, at, via} — not a Map. The first version of this
+      // reader called `.keys()` on it, got integer indices, and threw `n.replace is not a function`
+      // inside the evaluate, which aborted the entire bare pass: 35 rows vanished from the sweep and
+      // the totals simply got smaller. Caught by comparing the row count against the previous run.
+      const rows = (window.__reqs ?? []).map((r) => r.name.replace(location.origin, ''));
+      return {
+        zh: rows.filter((n) => /\/i18n\/zh-/.test(n)),
+        lang: document.documentElement.lang, total: rows.length,
+      };
     });
     check(vp.name, 'a fresh EN visit requests NO Chinese dictionary before the palette opens',
       bareReqs.lang === 'en' && bareReqs.zh.length === 0,
@@ -720,6 +774,15 @@ for (const vp of SWEEP) {
       '>= 30%', 'C3 (fit-to-selection)');
     check(vp.name, 'the bare selection is drawn at all', !bareFrame.error && bareFrame.n > 0,
       bareFrame.error || `${bareFrame.n} meshes projected`, '> 0');
+    // THE BARE RATCHET. The 30% target is deferred to C3, but without a floor the bare subject
+    // could shrink to nothing while still reporting a positive mesh count and an empty fit key, and
+    // the suite would stay green (codex review, 2026-09-09, Medium 5). Measured on the pre-v2.1a
+    // candidate: 0.34 / 0.43 / 0.19 / 0.18 / 0.12 / 0.22 percent; each floor is that, less a fifth.
+    const BARE_FLOOR = {'390x844': 0.0027, '768x1024': 0.0034, '1024x768': 0.0015,
+      '1440x900': 0.0014, '1920x860': 0.0009, '1366x1024': 0.0017}[vp.name] ?? 0.0008;
+    check(vp.name, 'the bare subject has not shrunk below the v2.1a entry baseline',
+      !bareFrame.error && bareFrame.area >= BARE_FLOOR,
+      bareFrame.error || `${(bareFrame.area * 100).toFixed(3)}%`, `>= ${(BARE_FLOOR * 100).toFixed(3)}%`);
     // WHICH FIT OWNS IT. On a bare legacy visit the DEFAULT fit must own the camera — an empty
     // `fit.key` here is the correct reading, and asserting it makes the C3 change detectable
     // rather than something a future run has to guess at.
@@ -807,7 +870,12 @@ for (const vp of SWEEP) {
         reach = await reachOf();
       }
       const unreachable = reach.rows.filter((r) => !r.ok);
-      check(vp.name, `plain entry with no selection: Find, Systems and the views are reachable${reach.handle === null ? ' with no handle present' : ' after the handle'}`,
+      // NAMED HONESTLY: this fixture is a BARE LEGACY visit (`?select=`), not a zero-selection one.
+      // It is the right fixture — it is the shape of Adrian's screenshot and the path with no scene
+      // — but the row used to say "no selection" while navigating with one (codex review,
+      // 2026-09-09, Medium 4). The 1100/1179/1180 boundaries that review also asks for belong to
+      // v2.1b: this stylesheet's tiers are 768 and 1200, so 1180 is not yet a boundary that exists.
+      check(vp.name, `bare legacy entry: Find, Systems and the views are reachable${reach.handle === null ? ' with no handle present' : ' after the handle'}`,
         unreachable.length === 0,
         unreachable.length
           ? `${unreachable.map((r) => `${r.label}: ${r.why}`).join(' | ')} [detent=${reach.state.detent} scrollPort=${reach.state.scrollPort} scrollTop=${reach.state.scrollTop}/${reach.state.scrollHeight} viewportH=${reach.state.viewportH}]`
