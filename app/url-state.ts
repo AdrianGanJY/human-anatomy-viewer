@@ -130,8 +130,39 @@ export function setModes(snap:boolean,render:boolean){
  document.body.classList.toggle('snap-mode',snapOn);
  document.body.classList.toggle('render-mode',renderOn);
 }
+/**
+ * L31 v2.1a — THE v2-ONLY DISPLAY FLAGS, PASSED EXPLICITLY.
+ *
+ * `?stage=1` (the L32 display client's chrome-free state) and `?probe=1` (the only real-device
+ * timing lane this project has) were LOST 200 ms after entry: the serializer below builds the query
+ * from a fixed key list and neither key was in it (codex-app-review.md §2 row 7, R:31). Nothing
+ * looked wrong until a reload, because the page kept its React state — so the failure was a link
+ * that worked for the person who opened it and not for the person he sent it to.
+ *
+ * EXPLICIT, NOT PRESERVED-FROM-THE-URL. Re-reading `location.search` here would retain the flags
+ * forever and make "show controls" impossible to express: exiting stage has to be able to DROP the
+ * key. So the caller states the flags it owns, and absent means absent — which is also why v1,
+ * which passes no fourth argument, cannot be affected by this at all.
+ */
+export interface DisplayFlags{stage?:boolean;probe?:boolean;
+ /**
+  * L31 v2.1a — DROP A SPENT HASH (codex-plan-review.md §A.3: "a query update must never retain a
+  * hash that wins on reload").
+  *
+  * `readUrlState` merges search THEN hash, so the hash WINS (:120), and the write below preserves
+  * `location.hash` verbatim (:151). Both are deliberate: the hash is how the snapshot renderer and
+  * `window.atlas.applyScene` re-drive a warm page with no reload. But together they mean that once
+  * a page has been re-driven by `#scene=X`, every later edit writes the new blob into the QUERY
+  * while `#scene=X` sits there outranking it — so a reload silently restores the scene as it
+  * arrived and the human's edits vanish. That is the reload half of R:27.
+  *
+  * The hash has already been APPLIED by the time we write, so it is spent. Clearing it costs
+  * nothing and removes the override. Opt-in, and only v2 opts in: v1 must stay byte-identical, and
+  * this changes what its address bar contains after a renderer re-drive.
+  */
+ clearHash?:boolean}
 /** Mirror the scene into the query string. Defaults are omitted so a plain visit keeps a clean URL. */
-export function writeUrlState(state:SceneState,selectIds:readonly string[],caption:{title?:string;note?:string},lang:Lang='en'){
+export function writeUrlState(state:SceneState,selectIds:readonly string[],caption:{title?:string;note?:string},lang:Lang='en',flags:DisplayFlags={}){
  const p=new URLSearchParams();
  if(selectIds.length)p.set('select',selectIds.join(','));
  if(lang!=='en')p.set('lang',lang);
@@ -147,8 +178,15 @@ export function writeUrlState(state:SceneState,selectIds:readonly string[],capti
  // it from React state would quietly lose whatever the scene carries but the page does
  // not hold (styles, annotations, background, size).
  if(lastBlob)p.set('scene',lastBlob);
+ // LAST, so they read as the trailing state flags they are rather than as part of the scene.
+ if(flags.stage)p.set('stage','1');
+ if(flags.probe)p.set('probe','1');
  const query=p.toString();
- const next=`${location.pathname}${query?`?${query}`:''}${location.hash}`;
+ // A spent hash is dropped only when the caller asks AND the hash actually carries one of our keys
+ // -- an unrelated fragment (a future anchor link) is not ours to delete.
+ const OURS=/(^|[#&])(scene|select|view|isolate|explode|system|lang|title|note|mode|focus|contextOpacity|snap)=/;
+ const hash=flags.clearHash&&OURS.test(location.hash)?'':location.hash;
+ const next=`${location.pathname}${query?`?${query}`:''}${hash}`;
  if(next!==`${location.pathname}${location.search}${location.hash}`)history.replaceState(history.state,'',next);
 }
 /** Machine-readable load/selection markers for headless verification and batch rendering. */

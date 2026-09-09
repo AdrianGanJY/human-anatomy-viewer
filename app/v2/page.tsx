@@ -28,12 +28,13 @@
 import {useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import AnatomyScene from '../scene';
 import {DEFAULT_VISIBLE,SYSTEMS,explanation,type Atlas,type Concept,type SceneState,type SystemId,type View} from '../anatomy';
-import {addPick,dedupe,removePick,resolvePicks,sameIds,unionElements,type Pick} from '../selection';
+import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
 import {loadZhDicts,makeT,searchKeys,type Dicts} from '../i18n/dict';
 import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
+import {reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 
@@ -49,6 +50,9 @@ const FIELD_INSET = {top: 14, right: 14, bottom: 14, left: 14};
 const RAIL_MAX = 15;
 const ROLE_ORDER: Record<Role, number> = {primary: 0, context: 1, ghost: 2};
 const NO_IDS: string[] = [];
+/** The four named views, as a runtime list — `window.atlas.setView` takes an arbitrary string from
+ *  a caller this page does not control, so it needs a value check the TYPE cannot give it. */
+const VIEW_NAMES: View[] = ['three-quarter', 'front', 'side', 'back'];
 const MB = (n: number) => (n / 1048576).toFixed(1);
 
 const baseState: SceneState = {explode: 0, visible: DEFAULT_VISIBLE, selected: [], isolate: false, view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET};
@@ -58,13 +62,29 @@ export default function V2() {
  // network, so everything the link declared — title, note, structures, roles, language — is
  // available in the initial render. This is the single most load-bearing line in the file.
  const [url] = useState(() => readUrlState());
- const [scene, setScene] = useState<Scene | null>(url.scene ?? null);
- const [sceneBlob, setSceneBlob] = useState<string>(url.sceneBlob ?? '');
- const [caption, setCaption] = useState<{title?: string; note?: string}>(() => {
-  const sc = url.scene;
-  if (sc) return {title: sc.caption.place === 'in' ? sc.caption.title : undefined, note: sc.caption.place === 'in' ? sc.caption.note : undefined};
-  return {title: url.title, note: url.note};
- });
+ /**
+  * ONE OWNER. `scene`, `blob`, `picks`, `focusId` and the render state used to be five independent
+  * `useState`s that drifted apart the moment anything was edited (codex-app-review.md §1). They are
+  * now one value produced by one pure reducer — `app/v2/controller.ts` — and everything below is a
+  * DERIVED VIEW of it: the rail, the basket, the renderer's props, the URL and `atlas.plate()`.
+  */
+ const [ctl, setCtl] = useState<V2State>(() => ({
+  scene: url.scene ?? null,
+  blob: url.sceneBlob ?? '',
+  picks: url.scene ? sceneSelectIds(url.scene) : url.select ?? NO_IDS,
+  focusId: url.scene ? sceneFocusId(url.scene) : null,
+  render: baseState,
+ }));
+ const {scene, blob: sceneBlob, picks, focusId, render: state} = ctl;
+ /** The caption a NON-scene page shows. In scene mode the caption lives in the scene and is derived
+  *  below, so there is no second copy to fall out of step with an edit. */
+ const [legacyCaption, setLegacyCaption] = useState<{title?: string; note?: string}>(() => ({title: url.title, note: url.note}));
+ const caption = useMemo(() => {
+  if (!scene) return legacyCaption;
+  return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
+ }, [scene, legacyCaption]);
+ /** An edit the controller REFUSED, in words, for the human. Never a silent truncation. */
+ const [refused, setRefused] = useState('');
  const [lang, setLang] = useState<Lang>(() => {
   if (url.lang) return url.lang;
   let stored: string | null = null;
@@ -72,16 +92,18 @@ export default function V2() {
   return isLang(stored) ? stored : 'en';
  });
  const [dicts, setDicts] = useState<Dicts>({});
- const t = useMemo(() => makeT(lang, dicts[lang]), [lang, dicts]);
+ // The FULL dictionary map goes in, so `t.alt(id, script)` can read a name in a script the
+ // interface is not currently in — the accessor v2.1b's cross-script palette needs (G10).
+ const t = useMemo(() => makeT(lang, dicts[lang], dicts), [lang, dicts]);
  const tr = useCallback((k: string, v?: Record<string, string | number>) => v2t(lang, k, v), [lang]);
 
  const [atlas, setAtlas] = useState<Atlas | null>(null);
  const [error, setError] = useState('');
  const [expired, setExpired] = useState(false);
- const [state, setState] = useState<SceneState>(baseState);
- const [picks, setPicks] = useState<string[]>(() => (url.scene ? sceneSelectIds(url.scene) : url.select ?? NO_IDS));
- const [focusId, setFocusId] = useState<string | null>(() => (url.scene ? sceneFocusId(url.scene) : null));
  const [phase, setPhase] = useState<'boot' | 'scene' | 'atlas'>('boot');
+ /** THE SCENE GENERATION. Bumped on every re-drive, read by the renderer's re-armable barrier —
+  *  see the `sceneEpoch` prop in app/scene.tsx for why one number is the whole contract (R:29). */
+ const [epoch, setEpoch] = useState(0);
  const [bytes, setBytes] = useState({done: 0, total: 0});
  const [detent, setDetent] = useState<'peek' | 'half'>('peek');
  const [panel, setPanel] = useState<'none' | 'search' | 'systems'>('none');
@@ -92,6 +114,10 @@ export default function V2() {
  });
  const probeMode = useMemo(() => new URLSearchParams(location.search.replace(/^\?/, '')).get('probe') === '1', []);
  const [probeOut, setProbeOut] = useState<string>('');
+ /** Dismissing the PANEL, not the LANE. `probe=1` stays in the URL and the reading is still taken
+  *  and still posted — the panel is a fixed overlay now, so a reader who wants to see the figure
+  *  behind it needs a way to move it out of the way without losing the measurement. */
+ const [probeOpen, setProbeOpen] = useState(true);
 
  // THE PRIORITY SET, frozen at mount from the URL and never re-derived. Handing the loader
  // React selection state would race: the scene component mounts as soon as the atlas arrives,
@@ -143,11 +169,21 @@ export default function V2() {
  const systemId = focused?.system ?? focusedParts[0]?.system;
  const system = SYSTEMS.find((s) => s.id === systemId);
 
- useEffect(() => { if (!atlas) return; const union = unionElements(basket); setState((s) => (sameIds(s.selected, union) ? s : {...s, selected: union})); }, [atlas, basket]);
+ // `render.selected` is DERIVED (picks -> resolved basket -> mesh union), not a user intent, so it
+ // is written straight onto the controller state rather than through a command. Reference equality
+ // matters: the frame loop's change guard compares `selected` by identity (app/scene.tsx:336).
+ useEffect(() => {
+  if (!atlas) return;
+  const union = unionElements(basket);
+  setCtl((c) => (sameIds(c.render.selected, union) ? c : {...c, render: {...c.render, selected: union}}));
+ }, [atlas, basket]);
  useEffect(() => { markSelected(picks); }, [picks]);
  useEffect(() => { if (scene) markScene(sceneBlob || encodeScene(scene)); }, [scene, sceneBlob]);
  useEffect(() => { setModes(false, false); markSettled(false); markError(''); }, []);
- useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang]);
+ // `stage` and `probeMode` are passed EXPLICITLY, which is what makes them survive the debounced
+ // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
+ // therefore omits the key instead of preserving whatever the URL happened to say.
+ useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
@@ -224,23 +260,48 @@ export default function V2() {
   emitAtlas({type: 'scene-ready', ms: Math.round(performance.now())});
  }, [sampleBytes]);
 
- // ─── selection ────────────────────────────────────────────────────────────────────────────
+ // ─── the one door into the controller ─────────────────────────────────────────────────────
  const known = useCallback((id: string) => conceptsById.has(id) || parts.has(id), [conceptsById, parts]);
+ /**
+  * DISPATCH. `reduce` is pure, so the side effects live here and only here: publish the outcome,
+  * surface a refusal, open a renderer generation when the scene identity changed, and emit on the
+  * tool-surface event stream.
+  *
+  * It reads through `ctlRef` and writes it back synchronously rather than using `setCtl`'s
+  * functional form, because a handler sometimes dispatches twice in one tick (apply a scene, then
+  * focus) and the second command has to see the first one's result — React has not re-rendered yet.
+  */
+ const ctlRef = useRef(ctl);
+ ctlRef.current = ctl;
+ const dispatch = useCallback((cmd: Command): boolean => {
+  const out = reduce(ctlRef.current, cmd);
+  if (out.rejected) { setRefused(out.rejected); return false; }
+  setRefused('');
+  ctlRef.current = out.state;
+  setCtl(out.state);
+  if (out.epoch) { markSceneReady(false); markSettled(false); setEpoch((n) => n + 1); }
+  return true;
+ }, []);
+
  const replacePicks = useCallback((ids: readonly string[], focus?: string | null) => {
   const next = dedupe(ids).filter(known);
   if (!next.length) return false;
-  setPicks(next); setFocusId(focus ?? null); setPanel('none'); setDetent('half');
-  setState((s) => ({...s, isolate: false, rotate: false, reset: s.reset + 1}));
+  const ok = dispatch({type: 'replace', ids: next, focus});
+  if (!ok) return false;
+  setPanel('none'); setDetent('half');
   emitAtlas({type: 'select', ids: next});
   return true;
- }, [known]);
- const addToPicks = useCallback((id: string) => { if (!known(id)) return; setPicks((p) => addPick(p, id)); setFocusId(id); setDetent('half'); }, [known]);
+ }, [known, dispatch]);
+ const addToPicks = useCallback((id: string) => {
+  if (!known(id)) return;
+  if (dispatch({type: 'add', id})) setDetent('half');
+ }, [known, dispatch]);
  const focusPick = useCallback((id: string) => {
-  setFocusId(id); setDetent('half'); setPanel('none');
-  setState((s) => ({...s, reset: s.reset + 1, rotate: false}));
+  if (!dispatch({type: 'focus', id})) return;
+  setDetent('half'); setPanel('none');
   emitAtlas({type: 'focus', id});
- }, []);
- const clearPicks = () => { setPicks(NO_IDS); setFocusId(null); setState((s) => ({...s, isolate: false})); };
+ }, [dispatch]);
+ const clearPicks = useCallback(() => { dispatch({type: 'clear-all'}); emitAtlas({type: 'select', ids: []}); }, [dispatch]);
 
  const results = useMemo(() => {
   if (!atlas) return [] as Concept[];
@@ -278,6 +339,12 @@ export default function V2() {
    return true;
   },
   focus: (ids) => { const id = ids.find((x) => live.current.picks.includes(x)); if (!id) return false; focusPick(id); return true; },
+  // THE SAME COMMANDS THE ON-SCREEN CONTROLS SEND. Not a parallel implementation — that is the
+  // whole reason the controller exists (codex-app-review.md §1).
+  add: (id) => { if (!known(id)) return false; return dispatch({type: 'add', id}); },
+  remove: (id) => dispatch({type: 'remove', id}),
+  clear: () => dispatch({type: 'clear-all'}),
+  setView: (view) => (VIEW_NAMES.includes(view as View) ? dispatch({type: 'set-view', view: view as View}) : false),
   plate: () => {
    const blob = live.current.sceneBlob || (live.current.scene ? encodeScene(live.current.scene) : '');
    const ids = live.current.picks;
@@ -297,7 +364,7 @@ export default function V2() {
     framing: {focus: l.plate?.focus.length ?? 0, frame: l.plate?.frame.length ?? 0, isolate: l.state.isolate},
    };
   },
- }), [focusPick]);
+ }), [focusPick, known, dispatch]);
 
  /**
   * THE SCENE'S CAMERA, applied ONCE the atlas exists — and this was a real defect, caught by
@@ -311,28 +378,41 @@ export default function V2() {
   * question as ANGLE, and "the subject is big" is not the same claim as "this is the picture the
   * link asked for". Recorded because it is exactly the false green the P0 gate asked about.
   */
- const applySceneState = useCallback((sc: Scene, blob: string, redrive: boolean) => {
-  setScene(sc); setSceneBlob(blob);
-  setCaption({title: sc.caption.place === 'in' ? sc.caption.title : undefined, note: sc.caption.place === 'in' ? sc.caption.note : undefined});
+ const applySceneState = useCallback((sc: Scene, blob: string) => {
   if (sc.lang) applyLang(sc.lang);
-  const ids = sceneSelectIds(sc), focus = sceneFocusId(sc);
-  if (redrive) replacePicks(ids, focus); else { setPicks(ids.filter(known)); setFocusId(focus); }
-  setState((s) => ({...s,
-   view: sc.camera.view, explode: sc.camera.explode, rotate: sc.camera.rotate,
-   // `rest:'none'` is today's isolate exactly — the same mapping v1 makes at page.tsx:149 — so
-   // every P1-P3 deep link keeps meaning what it meant.
-   isolate: sc.rest.include === 'none',
-   visible: sc.rest.include === 'skeletal' ? ['skeletal'] : s.visible,
-   reset: s.reset + 1}));
-  emitAtlas({type: 'scene', blob, ids, focus});
+  if (!dispatch({type: 'apply-scene', scene: sc, blob})) return;
+  emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [known]);
+ }, [dispatch]);
+
+ /**
+  * LEAVING A SCENE, on purpose. `#scene=` with an empty value is how the snapshot renderer gets a
+  * warm tab OUT of a scene, and `readUrlState` already models it as `clearScene:true`
+  * (app/url-state.ts:84) — v2's handler threw that away and returned early, so the previous scene
+  * kept drawing while the URL said otherwise and every legacy key in the new hash was ignored
+  * (codex-app-review.md §2 row 6, R:30 + §1, R:7).
+  *
+  * `markScene('')` is load-bearing twice: it drops the DOM marker the renderer reads AND clears
+  * `lastBlob`, which is what `writeUrlState` writes back verbatim — without it the next debounced
+  * write would put the cleared scene straight back into the address bar.
+  */
+ const clearSceneState = useCallback((u: ReturnType<typeof readUrlState>) => {
+  markScene('');
+  setLegacyCaption({title: u.title, note: u.note});
+  if (u.lang) applyLang(u.lang);
+  dispatch({type: 'clear-scene', url: {...u, select: u.select?.filter(known)}});
+  emitAtlas({type: 'scene', blob: '', ids: u.select ?? [], focus: null});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [known, dispatch]);
 
  const sceneApplied = useRef(false);
  useEffect(() => {
   if (!atlas || sceneApplied.current) return;
   sceneApplied.current = true;
-  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene), false);
+  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene));
+  // A COLD LEGACY LINK. Without this the picks were the only thing a `?select=…&view=…&isolate=…`
+  // link achieved on /v2/ — see app/v2/legacy-url.ts for the measurement.
+  else dispatch({type: 'apply-legacy', url: {...url, select: url.select?.filter(known)}});
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [atlas]);
 
@@ -342,19 +422,26 @@ export default function V2() {
   const reapply = () => {
    const u = readUrlState();
    markSettled(false); markSceneReady(false);
-   if (!u.scene) return;
-   applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), true);
-   // A RE-DRIVE MAY NAME CHUNKS THAT ARE STILL IN THE BACKGROUND QUEUE. The priority set is
-   // frozen at mount, so a second scene gets no barrier of its own — and re-publishing
-   // readiness at phase 'scene' would assert that meshes still downloading are on screen
-   // (adversarial review item 1, the only High). Only the ATLAS phase can honestly claim it,
-   // because then every chunk is in by definition.
-   markSceneReady(phase === 'atlas');
+   // WITHDRAW READINESS AND OPEN A NEW GENERATION. The renderer re-arms its barrier against the
+   // ids below and publishes only once their chunks are merged AND drawn, which is what replaced
+   // `markSceneReady(phase === 'atlas')` — a line with two opposite failure modes (R:29): between
+   // the barrier and full load it published `false` and nothing ever restored it, and before the
+   // first barrier the pending barrier belonged to the scene being superseded.
+   setEpoch((n) => n + 1);
+   if (u.scene) { applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene)); return; }
+   if (u.clearScene) { clearSceneState(u); return; }
+   // Neither a scene nor an explicit clear: a legacy re-drive. `apply-legacy` carries BOTH the
+   // picks and the camera/visibility keys, so it is one transaction rather than two.
+   if (u.select?.length) {
+    setLegacyCaption({title: u.title, note: u.note});
+    if (u.lang) applyLang(u.lang);
+    dispatch({type: 'apply-legacy', url: {...u, select: u.select.filter(known)}});
+   }
   };
   window.addEventListener('hashchange', reapply);
   return () => window.removeEventListener('hashchange', reapply);
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [atlas, phase, applySceneState]);
+ }, [atlas, applySceneState, clearSceneState, replacePicks]);
 
  // ─── the probe ────────────────────────────────────────────────────────────────────────────
  useEffect(() => {
@@ -403,6 +490,13 @@ export default function V2() {
     atlas={atlas}
     state={{...state, ...(plate ?? {}), insets: FIELD_INSET}}
     priority={priority}
+    // THE GENERATION AND ITS REQUIREMENT. Both are read through refs assigned during RENDER
+    // (app/scene.tsx), never in an effect — so when a re-drive bumps the epoch and replaces the
+    // picks in the same batched update, the frame loop sees the new epoch and the new requirement
+    // in the same commit. Bumping the epoch against a stale requirement is precisely failure mode
+    // (b) of R:29: readiness published for the scene that was just superseded.
+    sceneEpoch={epoch}
+    requiredIds={picks}
     onSceneReady={onSceneReady}
     onSelect={(id, add) => { if (add) addToPicks(id); else replacePicks([id], id); }}
     onProgress={onProgress}
@@ -459,16 +553,21 @@ export default function V2() {
    </div>
 
    <div className="v2-margin-scroll">
+    {/* A REFUSED EDIT, IN WORDS. The controller enforces both scene bounds atomically and returns
+        the state unchanged with a sentence when an edit cannot be committed — never a silent
+        truncation (codex-plan-review.md §A.4). Without this the refusal would be invisible and the
+        control would read as broken. */}
+    {refused && <p className="v2-refused" role="alert">{refused}</p>}
     <div className="v2-actions">
      <button type="button" className={panel === 'search' ? 'is-on' : ''} onClick={() => { setPanel((p) => (p === 'search' ? 'none' : 'search')); setDetent('half'); }}>{tr('search.open')}</button>
      <button type="button" className={panel === 'systems' ? 'is-on' : ''} onClick={() => { setPanel((p) => (p === 'systems' ? 'none' : 'systems')); setDetent('half'); }}>{tr('systems.open')}</button>
-     <button type="button" onClick={() => setState((s) => ({...s, view: 'three-quarter', explode: 0, rotate: false, reset: s.reset + 1}))}>{tr('view.reset')}</button>
+     <button type="button" onClick={() => dispatch({type: 'reset-view'})}>{tr('view.reset')}</button>
     </div>
 
     <div className="v2-views" role="group">
      {(['three-quarter', 'front', 'side', 'back'] as View[]).map((v) => <button
       type="button" key={v} aria-pressed={state.view === v} className={state.view === v ? 'is-on' : ''}
-      onClick={() => setState((s) => ({...s, view: v, reset: s.reset + 1, rotate: false}))}>{tr(`view.${v}`)}</button>)}
+      onClick={() => dispatch({type: 'set-view', view: v})}>{tr(`view.${v}`)}</button>)}
     </div>
 
     {/* THE DESCRIPTION SITS BELOW THE CONTROLS, and that ordering is the CLS fix rather than a
@@ -494,7 +593,7 @@ export default function V2() {
 
     {panel === 'systems' && <div className="v2-systems">
      {SYSTEMS.filter((s) => counts[s.id] > 0).map((s) => <label key={s.id} className={state.visible.includes(s.id) ? 'is-on' : ''}>
-      <input type="checkbox" checked={state.visible.includes(s.id)} onChange={() => setState((st) => ({...st, isolate: false, visible: st.visible.includes(s.id) ? st.visible.filter((x) => x !== s.id) : [...st.visible, s.id]}))}/>
+      <input type="checkbox" checked={state.visible.includes(s.id)} onChange={() => dispatch({type: 'set-visible', visible: state.visible.includes(s.id) ? state.visible.filter((x) => x !== s.id) : [...state.visible, s.id]})}/>
       <span className="v2-box" aria-hidden="true"/>
       <span className="v2-dot" style={{background: s.color}}/>
       <span>{t.system(s.id, s.name)}</span>
@@ -510,11 +609,11 @@ export default function V2() {
        <span><b>{t.name(p.id, p.name)}</b>{t.secondary(p.id, p.name) && <i>{t.secondary(p.id, p.name)}</i>}</span>
        <em>{p.elements.length}</em>
       </button>
-      <button type="button" className="v2-row-x" aria-label={`${tr('margin.clear')} ${t.name(p.id, p.name)}`} onClick={() => setPicks((ids) => removePick(ids, p.id))}>×</button>
+      <button type="button" className="v2-row-x" aria-label={`${tr('margin.clear')} ${t.name(p.id, p.name)}`} onClick={() => dispatch({type: 'remove', id: p.id})}>×</button>
      </div>)}
      <div className="v2-set-foot">
       <label className={state.isolate ? 'is-on' : ''}>
-       <input type="checkbox" checked={state.isolate} onChange={() => setState((s) => ({...s, isolate: !s.isolate, explode: 0}))}/>
+       <input type="checkbox" checked={state.isolate} onChange={() => dispatch({type: 'set-isolate', on: !state.isolate})}/>
        <span className="v2-box" aria-hidden="true"/>
        <span>{tr('margin.hideOthers')}</span>
       </label>
@@ -528,8 +627,22 @@ export default function V2() {
      <a href="https://lifesciencedb.jp/bp3d/" target="_blank" rel="noreferrer">{tr('margin.source')}</a>
     </div>}
 
-    {probeMode && <pre className="v2-probe" aria-label="timing probe">{probeOut || 'measuring…'}</pre>}
    </div>
   </section>
+
+  {/* THE CHROME LAYER — a fixed pass-through overlay, and today the probe panel is its only
+      tenant. The probe used to be the last child of `.v2-margin-scroll`, which put the ONLY
+      real-device timing lane this project has inside the container that is hidden at the phone's
+      peek detent and that v2.1b's shell deletes at >=768 (v21-design.md:900, critic gap 5) —
+      while P2c's own gate requires running `?probe=1` on the iPad. It is `position:fixed` at
+      every width now, so the lane survives the shell rewrite by construction, and `?stage=1`
+      hides `.v2-chrome` as a whole so a future panel added here is fenced without anyone having
+      to remember a list. */}
+  {probeMode && probeOpen && !stage && <div className="v2-chrome">
+   <pre className="v2-probe" aria-label={tr('probe.aria')}>
+    {probeOut || 'measuring…'}
+    <button type="button" className="v2-probe-close" aria-label={tr('probe.close')} onClick={() => setProbeOpen(false)}>×</button>
+   </pre>
+  </div>}
  </main>;
 }

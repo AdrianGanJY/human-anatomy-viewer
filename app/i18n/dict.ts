@@ -63,16 +63,43 @@ export interface T {
  ui(key:string,vars?:Record<string,string|number>):string;
  name(id:string,en:string):string;
  secondary(id:string,en:string):string|null;
+ /**
+  * L31 v2.1a — A NAME IN A NAMED SCRIPT, INDEPENDENT OF THE INTERFACE LANGUAGE.
+  *
+  * `secondary` cannot do this and must not be changed to (v21-design.md:930, critic gap 10):
+  * `makeT` sets `const zh = lang !== 'en' && !!dict`, so in EN mode `secondary` returns null BY
+  * DESIGN — there is nothing to pair the English with. But cross-script search MATCHES on the
+  * Chinese name in EN mode (`searchKeys` reads every loaded dictionary), so a palette row could
+  * match "胸骨" and then have no accessor able to DISPLAY the spelling it matched on. That is the
+  * gap: a result the reader cannot see the reason for.
+  *
+  * So `alt` reads the requested script's dictionary DIRECTLY, and returns null when that dictionary
+  * is not loaded or has no entry — never a silent English fallback, because "the Chinese name is
+  * the English name" is a claim this accessor must not make. `secondary` is deliberately untouched.
+  */
+ alt(id:string,script:Lang):string|null;
  system(id:string,en:string):string;
  systemDesc(id:string,en:string):string;
  explanation(name:string,en:string):string;
 }
 
-export function makeT(lang:Lang,dict:Dict|null|undefined):T{
+/**
+ * `all` is the FULL dictionary map, and it is optional so every existing call site keeps working:
+ * `makeT(lang, dicts[lang])` behaves exactly as before, with `alt` simply returning null. A caller
+ * that wants cross-script display passes the map as well.
+ */
+export function makeT(lang:Lang,dict:Dict|null|undefined,all?:Dicts):T{
  const zh=lang!=='en'&&!!dict;
  const look=(id:string)=>dict?(dict.concepts[id]??dict.parts[id]):undefined;
  return {
   lang,zh,
+  // `all` first, then the dictionary this T was built with — so `alt(id, lang)` works even when the
+  // caller passed only the active dictionary. `alt(id,'en')` is null on purpose: English names live
+  // in atlas.json, not in a dictionary, and the caller already has the English in hand.
+  alt:(id,script)=>{
+   const d=all?.[script]??(script===lang?dict:undefined);
+   return d?(d.concepts[id]??d.parts[id]??null):null;
+  },
   ui:(key,vars)=>fmt((zh?dict!.ui[key]:undefined)??UI[key]??key,vars),
   name:(id,en)=>(zh?look(id):undefined)??en,
   // The English is kept as a small second line under the Chinese: Adrian is LEARNING the

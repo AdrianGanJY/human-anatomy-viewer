@@ -42,6 +42,18 @@ export interface AtlasState {
  framing: {focus: number; frame: number; isolate: boolean};
 }
 
+/**
+ * L31 v2.1a — THE EDIT VERBS (version 3).
+ *
+ * `add`, `remove`, `clear` and `setView` are not new capability: they are the SAME commands the
+ * on-screen controls already send, exposed on the same door. That is the point — codex's review
+ * asks that the tool surface and the shell call one owner (codex-app-review.md §1), so a voice
+ * session, v2.1b's toolbar and the margin's buttons cannot drift into three behaviours. Every one
+ * of them goes through `reduce` in app/v2/controller.ts and is subject to the same atomic limits.
+ *
+ * They return FALSE when the controller refused (an unknown id, or a bound exceeded) — never a
+ * partial application, and never a silent truncation.
+ */
 export interface AtlasTools {
  /** Apply a scene: a base64url blob, or a full URL/query carrying `scene=`. */
  applyScene(sceneOrUrl: string): boolean;
@@ -51,9 +63,16 @@ export interface AtlasTools {
   *  gated (`/api/snap` needs an owner identity), so a local tool never spends it silently. */
  plate(): {url: string; blob: string; ids: string[]};
  state(): AtlasState;
+ /** Add one structure to the view. In scene mode it joins the scene as CONTEXT. */
+ add(id: string): boolean;
+ /** Remove one structure, reconciling the declared focus, styles and annotations that named it. */
+ remove(id: string): boolean;
+ /** Leave scene mode and empty the selection. */
+ clear(): boolean;
+ setView(view: string): boolean;
  /** Subscribe to the event stream. Returns the unsubscriber. */
  on(listener: (e: AtlasEvent) => void): () => void;
- readonly version: 2;
+ readonly version: 3;
 }
 
 type Handlers = {
@@ -61,6 +80,10 @@ type Handlers = {
  focus: (ids: string[]) => boolean;
  plate: () => {url: string; blob: string; ids: string[]};
  state: () => AtlasState;
+ add: (id: string) => boolean;
+ remove: (id: string) => boolean;
+ clear: () => boolean;
+ setView: (view: string) => boolean;
 };
 
 const listeners = new Set<(e: AtlasEvent) => void>();
@@ -76,8 +99,14 @@ export function installAtlasTools(h: Handlers): () => void {
   focus: (ids) => h.focus(typeof ids === 'string' ? [ids] : [...(ids ?? [])].filter((x) => typeof x === 'string')),
   plate: () => h.plate(),
   state: () => h.state(),
+  // Guarded the same way `applyScene` is: a caller that hands this surface a non-string gets false
+  // rather than a thrown error inside a voice session's tool loop.
+  add: (id) => (typeof id === 'string' && !!id.trim() ? h.add(id.trim()) : false),
+  remove: (id) => (typeof id === 'string' && !!id.trim() ? h.remove(id.trim()) : false),
+  clear: () => h.clear(),
+  setView: (view) => (typeof view === 'string' ? h.setView(view) : false),
   on: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-  version: 2,
+  version: 3,
  };
  (window as unknown as {atlas?: AtlasTools}).atlas = api;
  return () => {
