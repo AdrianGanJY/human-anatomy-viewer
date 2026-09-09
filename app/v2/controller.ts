@@ -231,6 +231,14 @@ export function initialState(
   }
   // FALL THROUGH to the legacy fields rather than to nothing: the link still names structures, and
   // showing them beats showing an empty page for a scene the codec cannot honour.
+  //
+  // WHAT THIS DOES NOT DO, stated because the earlier wording here overclaimed it. This is NOT
+  // "the same as the link without a blob": a URL carrying the PRD's alias form
+  // (`mode=render&focus=…&contextOpacity=…`) has a scene SYNTHESIZED for it by `readUrlState`
+  // (app/url-state.ts `synthesize`), so a no-blob visit would arrive with a declared focus and
+  // isolation that this fallback does not reproduce — codex executed the comparison (review 4,
+  // Medium 2). The fallback preserves the LEGACY FIELDS the URL still names: selection, view,
+  // isolate, explode, systems. The refusal above tells the reader the view itself was not applied.
   const picks = uniq(url.select ?? []).slice(0, LIMITS.MAX_STRUCTURES);
   return {
    state: {...blank, picks, render: legacySceneState(url, render)},

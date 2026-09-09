@@ -103,7 +103,11 @@ export default function V2() {
   *  see the `sceneEpoch` prop in app/scene.tsx for why one number is the whole contract (R:29). */
  const [epoch, setEpoch] = useState(0);
  const [bytes, setBytes] = useState({done: 0, total: 0});
- const [detent, setDetent] = useState<'peek' | 'half'>('peek');
+ // A REFUSED ARRIVAL OPENS THE MARGIN. The alert renders inside `.v2-margin-scroll`, which is
+ // hidden at the phone's peek detent — so a link whose view was refused would have opened looking
+ // merely wrong, with the explanation present in the DOM and invisible. Same treatment a later
+ // refusal gets (see `dispatch`).
+ const [detent, setDetent] = useState<'peek' | 'half'>(seed.rejected ? 'half' : 'peek');
  const [panel, setPanel] = useState<'none' | 'search' | 'systems'>('none');
  const [query, setQuery] = useState('');
  const [stage, setStage] = useState(() => {
@@ -280,6 +284,12 @@ export default function V2() {
  ctlRef.current = ctl;
  const dispatch = useCallback((cmd: Command): boolean => {
   const out = reduce(ctlRef.current, cmd);
+  // AN ARRIVAL DOES NOT CLEAR A REFUSAL. A rejected seed has `scene:null`, so mount dispatches
+  // `apply-legacy` — which SUCCEEDS, and used to wipe the message explaining why the link's view is
+  // missing before the reader could ever see it (codex review 4, Medium 1: refusal populated at
+  // seed, empty after mount, detent still peek). Only a user action clears it, because only a user
+  // action means "I have moved on".
+  const arrival = cmd.type === 'apply-scene' || cmd.type === 'apply-legacy' || cmd.type === 'clear-scene';
   if (out.rejected) {
    setRefused(out.rejected);
    // AND MAKE IT VISIBLE. The alert renders inside `.v2-margin-scroll`, which is `display:none` at
@@ -290,7 +300,7 @@ export default function V2() {
    setDetent('half');
    return false;
   }
-  setRefused('');
+  if (!arrival) setRefused('');
   ctlRef.current = out.state;
   setCtl(out.state);
   if (out.epoch) { markSceneReady(false); markSettled(false); setEpoch((n) => n + 1); }

@@ -310,10 +310,23 @@ const newContext = async (vp) => {
         // fetch/XHR this ledger already recorded by hand — in which case it consumes THAT ONE row
         // and is not appended — or it is a subresource with no JS call behind it, in which case it
         // is its own row. A resource row is never matched against, so two entries can never collapse.
+        // PAIRED BY INITIATOR. One-to-one consumption stopped two entries collapsing, but it did
+        // not establish IDENTITY: codex executed sixteen completed SUBRESOURCE entries plus one
+        // still-pending fetch for the same URL and the subresource consumed the fetch's row, so
+        // seventeen starts recorded as sixteen and passed the <=16 gate (review 4, High 1).
+        //
+        // `initiatorType` is the browser's own answer to "did JavaScript make this request".
+        // Only a `fetch`/`xmlhttprequest` entry can be the completion of a row this ledger recorded
+        // by hand; a `script`, `link`, `img` or `css` entry never can, so it is always its own row
+        // and can never consume someone else's. The unpaired flag still prevents one fetch row from
+        // absorbing two entries.
         for (const e of l.getEntries()) {
-          const pair = window.__reqs.find((r) => r.name === e.name && r.via !== 'resource' && !r.paired);
+          const jsInitiated = e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest';
+          const pair = jsInitiated
+            ? window.__reqs.find((r) => r.name === e.name && r.via !== 'resource' && !r.paired)
+            : null;
           if (pair) { pair.paired = true; continue; }
-          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
+          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource', initiator: e.initiatorType});
         }
       }).observe({type: 'resource', buffered: true});
     } catch { /* no resource timing */ }
