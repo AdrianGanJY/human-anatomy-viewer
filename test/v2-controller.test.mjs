@@ -10,7 +10,7 @@
  */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {reduce} from '../app/v2/controller.ts';
+import {initialState, reduce} from '../app/v2/controller.ts';
 import {decodeScene, encodeScene, normalizeScene, LIMITS} from '../app/scene-codec.js';
 
 /** The §9 forward-bend scene — the same fixture the oracles and the regression cases use, and it
@@ -399,4 +399,45 @@ test('an already-canonical arrival blob survives byte-identically', () => {
   const canonical = encodeScene(SCENE);
   const {state} = reduce(bare(), {type: 'apply-scene', scene: SCENE, blob: canonical});
   assert.equal(state.blob, canonical);
+});
+
+// ══ codex REVIEW 3 — the cold seed ══════════════════════════════════════════════════════════════
+
+test('the COLD SEED validates before publishing, so a bad link never half-applies', () => {
+  // codex executed this with 25 real atlas concepts in a 448-character blob: the old inline
+  // initializer published all 25, and `apply-scene` then correctly refused them while preserving the
+  // state that already contained them — a scene declaring `side` live on a `three-quarter` camera.
+  const ids = Array.from({length: 25}, (_, i) => `FMA${5000 + i}`);
+  const over = normalizeScene({structures: ids.map((id) => ({id, role: 'primary'})), camera: {view: 'side', focus: []}});
+  const {state, rejected} = initialState(
+    {scene: over, sceneBlob: encodeScene(over), select: ids, view: 'side'}, {...render});
+  assert.ok(rejected, 'an unusable arrival must say so');
+  assert.equal(state.scene, null, 'and must NOT be published');
+  assert.equal(state.blob, '', 'so the marker and serializer never see it');
+  assert.ok(state.picks.length <= LIMITS.MAX_STRUCTURES, 'the fallback is bounded too');
+  assert.equal(state.render.view, 'side', 'the legacy fields it CAN honour are still honoured');
+});
+
+test('the cold seed publishes a VALID scene untouched', () => {
+  const blob = encodeScene(SCENE);
+  const {state, rejected} = initialState({scene: SCENE, sceneBlob: blob}, {...render});
+  assert.equal(rejected, undefined);
+  assert.equal(state.blob, blob, 'a canonical arrival survives byte-identically');
+  assert.equal(state.picks.length, 5);
+  assert.equal(state.focusId, 'FMA22359');
+  // The CAMERA is not applied here on purpose: the page's mount effect dispatches `apply-scene`
+  // once the atlas exists, which is the single place that bumps `reset` and moves the view. Doing
+  // it in the seed as well would bump it twice for one arrival.
+  assert.equal(state.render.view, render.view, 'the seed carries the render state through untouched');
+});
+
+test('the cold seed bounds a bare legacy selection too', () => {
+  const ids = Array.from({length: 25}, (_, i) => `FMA${6000 + i}`);
+  const {state, rejected} = initialState({select: ids}, {...render});
+  assert.ok(rejected, '25 legacy selections must be reported');
+  assert.equal(state.picks.length, LIMITS.MAX_STRUCTURES, 'and bounded rather than published whole');
+  const fine = initialState({select: ids.slice(0, 3), view: 'back'}, {...render});
+  assert.equal(fine.rejected, undefined);
+  assert.deepEqual(fine.state.picks, ids.slice(0, 3));
+  assert.equal(fine.state.render.view, 'back');
 });

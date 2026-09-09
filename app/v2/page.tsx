@@ -34,7 +34,7 @@ import {loadZhDicts,makeT,searchKeys,type Dicts} from '../i18n/dict';
 import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
-import {reduce, type Command, type V2State} from './controller';
+import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 
@@ -68,13 +68,10 @@ export default function V2() {
   * now one value produced by one pure reducer — `app/v2/controller.ts` — and everything below is a
   * DERIVED VIEW of it: the rail, the basket, the renderer's props, the URL and `atlas.plate()`.
   */
- const [ctl, setCtl] = useState<V2State>(() => ({
-  scene: url.scene ?? null,
-  blob: url.sceneBlob ?? '',
-  picks: url.scene ? sceneSelectIds(url.scene) : url.select ?? NO_IDS,
-  focusId: url.scene ? sceneFocusId(url.scene) : null,
-  render: baseState,
- }));
+ // SEEDED THROUGH THE CONTROLLER, not around it. Building this inline was the one committing path
+ // that never met a gate — see `initialState` for the partial application codex executed.
+ const [seed] = useState(() => initialState(url, baseState));
+ const [ctl, setCtl] = useState<V2State>(seed.state);
  const {scene, blob: sceneBlob, picks, focusId, render: state} = ctl;
  /** The caption a NON-scene page shows. In scene mode the caption lives in the scene and is derived
   *  below, so there is no second copy to fall out of step with an edit. */
@@ -83,8 +80,9 @@ export default function V2() {
   if (!scene) return legacyCaption;
   return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
  }, [scene, legacyCaption]);
- /** An edit the controller REFUSED, in words, for the human. Never a silent truncation. */
- const [refused, setRefused] = useState('');
+ /** An edit the controller REFUSED, in words, for the human. Never a silent truncation. Seeded
+  *  from the cold arrival, so a link carrying an unusable scene says so instead of half-applying it. */
+ const [refused, setRefused] = useState(seed.rejected ?? '');
  const [lang, setLang] = useState<Lang>(() => {
   if (url.lang) return url.lang;
   let stored: string | null = null;

@@ -193,6 +193,57 @@ function withoutStructure(scene: Scene, id: string) {
  };
 }
 
+/**
+ * THE COLD SEED — the initial controller state, validated.
+ *
+ * `app/v2/page.tsx` used to build its first `V2State` inline from `readUrlState()`, copying the
+ * decoded scene, its blob and all of its picks straight in. That is a committing path like any
+ * other, and it was the one path that never went through a gate: `decodeScene` checks the version
+ * and that at least one structure survives, but it does NOT call `validateScene`.
+ *
+ * codex executed the consequence (review 3, High 1) with 25 real atlas concepts in a 448-character
+ * blob: the initializer published all 25 structures, then `apply-scene` correctly REFUSED them
+ * after the atlas arrived and preserved its input state — which already contained the invalid
+ * scene. The refusal stopped the camera being applied and left the scene live, so the page held a
+ * scene declaring `side` while the camera sat at `three-quarter`, and the marker and serializer
+ * both received the retained blob. Worse than either outcome alone: a partial application.
+ *
+ * Validating HERE means an unusable link degrades to what it can still honour — its legacy fields,
+ * which is exactly what a link with no blob would have given — instead of to a half-applied scene.
+ */
+export function initialState(
+ url: {scene?: Scene | null; sceneBlob?: string; select?: string[]} & LegacyUrlFields,
+ render: SceneState,
+): {state: V2State; rejected?: string} {
+ const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render};
+ if (url.scene) {
+  const scene = normalizeScene(url.scene) as Scene;
+  const invalid = validateScene(scene);
+  const encoded = invalid ? '' : encodeScene(scene);
+  if (!invalid && encoded.length <= LIMITS.SCENE_MAX_B64) {
+   return {
+    state: {
+     scene, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene),
+     blob: url.sceneBlob && url.sceneBlob === encoded ? url.sceneBlob : encoded,
+     render,
+    },
+   };
+  }
+  // FALL THROUGH to the legacy fields rather than to nothing: the link still names structures, and
+  // showing them beats showing an empty page for a scene the codec cannot honour.
+  const picks = uniq(url.select ?? []).slice(0, LIMITS.MAX_STRUCTURES);
+  return {
+   state: {...blank, picks, render: legacySceneState(url, render)},
+   rejected: `this link's view could not be applied — ${invalid ?? `it encodes to ${encoded.length} characters, over the ${LIMITS.SCENE_MAX_B64} limit`}`,
+  };
+ }
+ const picks = uniq(url.select ?? []);
+ const tooMany = overBound(picks);
+ return tooMany
+  ? {state: {...blank, picks: picks.slice(0, LIMITS.MAX_STRUCTURES), render: legacySceneState(url, render)}, rejected: tooMany}
+  : {state: {...blank, picks, render: legacySceneState(url, render)}};
+}
+
 export function reduce(state: V2State, cmd: Command): Outcome {
  switch (cmd.type) {
   // ── arrival paths ─────────────────────────────────────────────────────────────────────────

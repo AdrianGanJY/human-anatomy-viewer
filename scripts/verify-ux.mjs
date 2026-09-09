@@ -300,9 +300,20 @@ const newContext = async (vp) => {
         // counted twice; two entries for the same URL at different start times are two requests and
         // must be. `startTime` is the discriminator: entries are distinct instances, and a fetch
         // start recorded by hand sits within a few ms of its own entry.
+        // ONE-TO-ONE, NOT A PROXIMITY WINDOW. The 50 ms test searched every recorded row including
+        // earlier RESOURCE rows, so it merged genuinely distinct entries whose URLs matched and
+        // whose starts happened to be close. codex executed twenty entries for one URL and measured
+        // 1 recorded request at 1 ms spacing, 10 at 49 ms and 20 at 50 ms (review 3, High 2) — a
+        // burst could satisfy the <=16 budget by arriving quickly, which is precisely backwards.
+        //
+        // Each Resource Timing entry is one request instance. It is either the completion of a
+        // fetch/XHR this ledger already recorded by hand — in which case it consumes THAT ONE row
+        // and is not appended — or it is a subresource with no JS call behind it, in which case it
+        // is its own row. A resource row is never matched against, so two entries can never collapse.
         for (const e of l.getEntries()) {
-          const sameInstance = window.__reqs.some((r) => r.name === e.name && Math.abs(r.at - e.startTime) < 50);
-          if (!sameInstance) window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
+          const pair = window.__reqs.find((r) => r.name === e.name && r.via !== 'resource' && !r.paired);
+          if (pair) { pair.paired = true; continue; }
+          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
         }
       }).observe({type: 'resource', buffered: true});
     } catch { /* no resource timing */ }

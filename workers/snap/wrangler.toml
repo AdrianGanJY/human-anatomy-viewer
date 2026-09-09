@@ -106,4 +106,24 @@ bucket_name = "human-anatomy-snaps"
 #
 # `canonical()` is UNCHANGED, so no existing URL's key moves for any reason other than this id;
 # that is frozen in test/redrive-hash.test.mjs against a literal expected string.
+#
+# ── AND IT STAYS l31v21a THROUGH THE TWO CORRECTIVE COMMITS ─────────────────────────────────────
+# deploy.ps1's tripwire fires again, because both codex review passes touched files on its
+# renderPaths list — `app/scene.tsx` and `app/url-state.ts`. Neither touch can change a plate, and
+# that is a claim about specific fields rather than a general reassurance:
+#   · app/scene.tsx — the re-armable barrier is reached only through `onSceneReady`, `sceneEpoch`
+#     and `requiredIds`. v1 passes NONE of the three, so `sceneReadyCb.current` is undefined and
+#     `armIfSatisfied` returns on its first condition. The loader's own cursor and
+#     `data-atlas-ready` are untouched.
+#   · app/url-state.ts — `clearHash` is opt-in and only `/v2/` passes it; `OWNED_KEYS` exists solely
+#     to serve that flag; `stage`/`probe` are written only when the caller supplies them, and v1
+#     calls `writeUrlState` with four arguments. The snapshot renderer's own re-drive path
+#     (`reDriveHash` -> `location.hash`) is unchanged and its keys are unchanged.
+# The bump above is still warranted and still stands: `reDriveHash`'s legacy branch changed what a
+# WARM tab draws, and that is what retires the poisoned entries.
+#
+# MEASURED, not argued: the six control plates were rendered against the live host BEFORE this
+# deploy (.artifacts/L31/v21a/live-before/goldens-before.json) and are re-rendered after it, and
+# `plate-goldens.mjs compare` now FAILS on a missing scene, an incomplete measurement, any camera or
+# projected-bounds change, and on a PNG-size drift over 2% for the one ghost-bearing scene.
 SITE_BUILD = "l31v21a"
