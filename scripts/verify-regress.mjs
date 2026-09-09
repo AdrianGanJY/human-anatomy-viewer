@@ -772,6 +772,221 @@ if (want('focus-retargets-camera')) {
   finally { await context.close(); }
 }
 
+
+// ══ CASE 9 — THE THREE PATHS codex's SECOND REVIEW REPRODUCED ══════════════════════════════════
+// Every assertion here corresponds to a defect codex executed against the shipped tree (review 2,
+// Highs 1, 2 and 4). They are grouped in one case because they share a shape: each was a path the
+// existing suite did not walk, next to a path it did.
+if (want('review2-paths')) {
+  openCase('review2-paths', 'C2', 'Clear, a percent-encoded hash, and plain-entry readiness', 'codex review 2 H1/H2/H4');
+
+  // ── H1: the CLEAR BUTTON, not `#scene=` ──────────────────────────────────────────────────────
+  // `clearSceneState` called `markScene('')` by hand, so the `#scene=` case passed while the Clear
+  // button and `atlas.clear()` left the serializer's cached blob intact — and the next debounced
+  // write put `scene=` back, so a reload resurrected the cleared scene.
+  {
+    const {context, page, errors} = await fresh();
+    try {
+      await page.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await waitScene(page); await waitAll(page);
+      await page.waitForTimeout(SETTLE);
+      await openMargin(page);
+      const clearBtn = (await page.$$('.v2-set-foot button')).at(-1);
+      prereq('the Clear control was found', !!clearBtn, clearBtn ? 'present' : 'absent', 'present');
+      if (clearBtn) await clickAt(page, clearBtn);
+      await page.waitForFunction(() => !/(\?|&)scene=/.test(location.search), null, {timeout: 15000})
+        .catch(() => { /* leave it to the assertion to report what it actually found */ });
+      await page.waitForTimeout(400);
+      const afterClear = await page.evaluate(() => ({
+        search: location.search,
+        marker: document.documentElement.getAttribute('data-atlas-scene'),
+        ids: window.atlas?.state?.().ids ?? null,
+        blob: window.atlas?.state?.().blob ?? null,
+      }));
+      assert('Clear empties the controller', (afterClear.ids ?? []).length === 0 && afterClear.blob === '',
+        `ids=${JSON.stringify(afterClear.ids)} blob="${afterClear.blob}"`, 'empty');
+      assert('Clear drops scene= from the URL', !/(\?|&)scene=/.test(afterClear.search),
+        afterClear.search.slice(0, 120) || '(empty)', 'no scene=');
+      assert('Clear drops the DOM scene marker', afterClear.marker === null,
+        afterClear.marker === null ? 'absent' : `data-atlas-scene="${afterClear.marker}"`, 'absent');
+      await page.reload({waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForTimeout(4000);
+      const afterReload = await page.evaluate(() => window.atlas?.state?.().ids ?? null);
+      assert('a reload does NOT resurrect the cleared scene', (afterReload ?? []).length === 0,
+        `ids=${JSON.stringify(afterReload)}`, 'still empty');
+      prereq('no page error (clear path)', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the clear path ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { await context.close(); }
+  }
+
+  // ── H2: a PERCENT-ENCODED key name in the spent hash ─────────────────────────────────────────
+  // `URLSearchParams` decodes `%73cene` to `scene`, so `#%73cene=X` is a scene hash to every reader
+  // in url-state — but the fence was a regex on the RAW string and did not see it. The stale hash
+  // then outranked the edited query on reload and restored the removed structure.
+  {
+    const {context, page, errors} = await fresh();
+    try {
+      // IN THE INITIAL URL, not set afterwards. The first version assigned `location.hash` right
+      // after `goto`, before the atlas had loaded — so the hashchange listener was not registered
+      // yet (it is created only once `atlas` exists) and the mount-time `readUrlState` had already
+      // run. The scene never applied and the case measured its own race.
+      await page.goto(`${base}/v2/#%73cene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await waitScene(page); await waitAll(page);
+      await page.waitForTimeout(SETTLE);
+      await openMargin(page);
+      const before = await atlasState(page);
+      prereq('the percent-encoded hash really applied the scene', (before?.ids ?? []).length === 5,
+        `${(before?.ids ?? []).length} ids from #%73cene=`, '5');
+      // remove a member, then reload
+      const xs = await page.$$('.v2-row-x');
+      prereq('a remove control was found', xs.length > 0, `${xs.length} remove controls`, '> 0');
+      if (xs.length) await clickAt(page, xs[xs.length - 1]);
+      await page.waitForFunction(() => (window.atlas?.state?.().ids ?? []).length === 4, null, {timeout: 15000})
+        .catch(() => { /* the assertion reports what it found */ });
+      await page.waitForTimeout(600);
+      const edited = await atlasState(page);
+      assert('the edit applied', (edited?.ids ?? []).length === 4, `${(edited?.ids ?? []).length} ids`, '4');
+      const hashAfter = await page.evaluate(() => location.hash);
+      assert('the spent percent-encoded hash is dropped', !/cene=/i.test(decodeURIComponent(hashAfter)),
+        hashAfter.slice(0, 60) || '(empty)', 'no scene key');
+      await page.reload({waitUntil: 'domcontentloaded', timeout: 180000});
+      await waitScene(page);
+      await page.waitForTimeout(SETTLE);
+      const reloaded = await atlasState(page);
+      assert('a reload keeps the EDIT, not the encoded hash’s original scene',
+        (reloaded?.ids ?? []).length === 4, `${(reloaded?.ids ?? []).length} ids after reload`, '4');
+      prereq('no page error (encoded hash path)', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the encoded-hash path ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { await context.close(); }
+  }
+
+  // ── H4: PLAIN `/v2/` — no selection at all, with every model chunk held ──────────────────────
+  // The bare sweep selects a sternum, so it never exercised an EMPTY requirement. `apply-legacy`
+  // raises the epoch with empty `requiredIds`, and the corrective pass's `if(!ids.length) return
+  // true` then armed readiness with zero chunks loaded, freezing a zero-byte metric.
+  {
+    const {context: cx, page: pg, errors: er} = await fresh();
+    const parked = [];
+    try {
+      // A RELEASE FLAG, because chunks keep being requested after the hold is lifted. The first
+      // version parked every request unconditionally, so the loader could never finish and the
+      // "and once released it becomes ready" row failed on the harness rather than on the app.
+      let holding = true;
+      await cx.route(/\/models\/body-\d+\.bin(\.gz)?$/, (route) => {
+        if (holding) { parked.push(route); return; }
+        return route.continue();
+      });
+      await pg.goto(`${base}/v2/`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await pg.waitForTimeout(8000);
+      const held = await pg.evaluate(() => ({
+        marker: document.documentElement.getAttribute('data-atlas-scene-ready'),
+        bytes: document.documentElement.dataset.atlasSceneBytes ?? null,
+      }));
+      prereq('every model chunk is held, so nothing can legitimately be ready',
+        parked.length > 0, `${parked.length} chunk requests parked`, '> 0');
+      assert('a plain visit does NOT publish readiness before any model byte arrives',
+        held.marker === null,
+        `data-atlas-scene-ready=${held.marker}, frozen bytes=${held.bytes}`, 'absent');
+      // release, and it must then become ready normally
+      holding = false;
+      for (const r of parked) { try { await r.continue(); } catch { /* gone */ } }
+      let ok = true;
+      try { await waitScene(pg, 120000); } catch { ok = false; }
+      const bytes = await pg.evaluate(() => Number(document.documentElement.dataset.atlasSceneBytes ?? 0));
+      assert('and once the chunks are released it becomes ready with a non-zero byte reading',
+        ok && bytes > 0, `${ok ? 'ready' : 'never ready'}, frozen bytes=${bytes}`, 'ready, > 0 bytes');
+      prereq('no page error (plain entry)', er.length === 0, er.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the plain-entry path ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { for (const r of parked) { try { await r.continue(); } catch { /* gone */ } } await cx.close(); }
+  }
+}
+
+
+// ══ CASE 10 — PLAIN `/v2/`, NO SELECTION AT ALL, AT THE REQUIRED WIDTHS ════════════════════════
+// codex asked for this twice (plan review §D, and review 2 Medium 7) and I under-delivered twice:
+// the sweep's "bare" fixture navigates with `?select=FMA7485`, so the ZERO-selection entry — the
+// literal case R:25 describes — was never loaded, and reachability was hit-tested without ever
+// pressing anything. The widths 1100/1179/1180 are also named explicitly. My earlier disposition
+// said 1180 "is not yet a boundary that exists"; that was answering a different question. The point
+// is not that the stylesheet has a rule there, it is that the CONTROLS MUST WORK there, and that is
+// an existing-behaviour acceptance check whichever tier the width happens to land in.
+//
+// So this loads plain `/v2/` and actually USES the controls: Find opens a search field, Systems
+// opens the system list, and a view button moves the camera onto the axis it names.
+if (want('plain-entry-widths')) {
+  openCase('plain-entry-widths', 'C1', 'plain /v2/ with NO selection: the controls are reachable AND work at 1100–1920', 'R:25');
+  for (const width of [1100, 1179, 1180, 1440, 1920]) {
+    const {context, page, errors} = await fresh(width, 900);
+    try {
+      await page.goto(`${base}/v2/`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      // No scene and no selection, so there is no scene barrier to wait for — wait for the atlas.
+      await waitAll(page);
+      await page.waitForTimeout(2500);
+      await openMargin(page);
+
+      const find = async (label) => {
+        const handle = await page.evaluateHandle((l) => [...document.querySelectorAll('button')]
+          .find((b) => (b.textContent || '').trim() === l) ?? null, label);
+        const el = handle.asElement();
+        return el;
+      };
+      const reachable = async (label) => {
+        const el = await find(label);
+        if (!el) return {ok: false, why: 'absent'};
+        const box = await el.boundingBox();
+        if (!box) return {ok: false, why: 'not rendered'};
+        const hit = await el.evaluate((node) => {
+          node.scrollIntoView({block: 'nearest'});
+          const r = node.getBoundingClientRect();
+          const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return !!top && (top === node || node.contains(top));
+        });
+        return {ok: hit, why: hit ? 'reachable' : 'covered', el};
+      };
+
+      const missing = [];
+      for (const label of ['Find', 'Systems', 'Reset view', 'Three-quarter', 'Front', 'Side', 'Back']) {
+        const r = await reachable(label);
+        if (!r.ok) missing.push(`${label}: ${r.why}`);
+      }
+      assert(`[${width}px] every control on a ZERO-selection entry is reachable`,
+        missing.length === 0, missing.length ? missing.join(' | ') : 'all 7 reachable', '0 unreachable');
+
+      // AND THEY WORK. Reachability without operation is the vacuous half of the check.
+      const findBtn = await reachable('Find');
+      if (findBtn.ok) {
+        await clickAt(page, findBtn.el);
+        await page.waitForTimeout(500);
+        const searchOpen = await page.evaluate(() => !!document.querySelector('.v2-search input'));
+        assert(`[${width}px] Find opens a search field`, searchOpen, `search input present=${searchOpen}`, 'true');
+        await clickAt(page, findBtn.el);   // close it again
+        await page.waitForTimeout(300);
+      }
+      const sysBtn = await reachable('Systems');
+      if (sysBtn.ok) {
+        await clickAt(page, sysBtn.el);
+        await page.waitForTimeout(500);
+        const rows = await page.evaluate(() => document.querySelectorAll('.v2-systems label').length);
+        assert(`[${width}px] Systems opens the system list`, rows > 0, `${rows} system rows`, '> 0');
+        await clickAt(page, sysBtn.el);
+        await page.waitForTimeout(300);
+      }
+      const sideBtn = await reachable('Side');
+      if (sideBtn.ok) {
+        await clickAt(page, sideBtn.el);
+        await page.waitForTimeout(3000);
+        const t = await targets(page, []);
+        const a = axis(t);
+        assert(`[${width}px] the Side view actually moves the camera onto +X`,
+          a.x > 0.9 && Math.abs(a.z) < 0.3,
+          `direction (${a.x.toFixed(2)}, ${a.y.toFixed(2)}, ${a.z.toFixed(2)})`, 'x > 0.9');
+      }
+      prereq(`[${width}px] no page error`, errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq(`[${width}px] the case ran`, false, String(e).slice(0, 200), 'no throw'); }
+    finally { await context.close(); }
+  }
+}
+
 await browser.close();
 
 // ══ VERDICTS ═══════════════════════════════════════════════════════════════════════════════════

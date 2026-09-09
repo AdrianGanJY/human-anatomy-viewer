@@ -266,11 +266,17 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
   const satisfied=()=>{
    if(ready)return true;                                   // all 15 chunks in: trivially satisfied
    const ids=requiredRef.current??priorityRef.current??[];
-   // NOTHING NAMED ⇒ NOTHING TO WAIT FOR. `armIfSatisfied` is only ever called at or after the
-   // first-phase boundary, so by the time this can return true the first phase is complete — which
-   // is exactly when a no-selection visit used to publish. Returning `ready` here instead would
-   // silently delay the marker to full load on a plain `/v2/`.
-   if(!ids.length)return true;
+   // NOTHING NAMED ⇒ WAIT FOR THE FIRST PHASE, and the comment that used to sit here was FALSE.
+   // It claimed `armIfSatisfied` is only called at or after the first-phase boundary; an EPOCH
+   // change calls it immediately, and a plain `/v2/` initialises through `apply-legacy`, which
+   // raises the epoch with an EMPTY requiredIds. So `return true` armed readiness with zero chunks
+   // loaded and froze a zero-byte metric — codex executed the extracted arming functions and got
+   // `loadedChunks: 0, sceneReadyPending: true` (review 2, High 4). It was a regression introduced
+   // by the previous corrective pass, which is exactly where one hides.
+   //
+   // `sceneReady` is the loader's own first-phase flag, so this now says what was meant: an
+   // unresolved requirement waits for the first phase and no longer than that.
+   if(!ids.length)return sceneReady||ready;
    for(const c of chunksFor(ids))if(!loadedChunks.has(c))return false;
    return true;
   };

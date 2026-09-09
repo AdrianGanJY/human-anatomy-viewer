@@ -287,3 +287,116 @@ test('the controller’s uniq agrees with selection.ts dedupe (the copy cannot d
     assert.deepEqual(uniq(sample), dedupe(sample), `uniq drifted from dedupe on ${JSON.stringify(sample)}`);
   }
 });
+
+// ══ codex REVIEW 2 — the four executed counterexamples, as standing assertions ══════════════════
+// Each of these reproduced a real defect in the shipped controller. They are here so the same hole
+// cannot reopen quietly.
+
+test('an ARRIVING scene is validated: 25 real structures in a short blob is refused, not committed', () => {
+  // codex's counterexample: 25 genuine atlas concepts encode to only 351 characters, so the length
+  // bound never fires — and `decodeScene` does NOT call `validateScene`, so nothing else caught it.
+  const ids = Array.from({length: 25}, (_, i) => `FMA${2000 + i}`);
+  const fat = normalizeScene({structures: ids.map((id) => ({id, role: 'primary'})), camera: {view: 'front', focus: []}});
+  const before = bare();
+  const out = reduce(before, {type: 'apply-scene', scene: fat, blob: encodeScene(fat)});
+  assert.ok(out.rejected, 'a 25-structure arrival must be refused');
+  assert.match(out.rejected, /25 structures|maximum is 24/);
+  assert.equal(out.state, before, 'and the page keeps the state it already had');
+});
+
+test('an ARRIVING scene that exceeds the encoded budget is refused', () => {
+  const ids = Array.from({length: 20}, (_, i) => `FMA${3000 + i}`);
+  const huge = normalizeScene({
+    structures: ids.map((id) => ({id, role: 'primary'})),
+    camera: {view: 'front', focus: []},
+    annotations: ids.slice(0, 8).map((id) => ({type: 'label', target: id, text: 'x'.repeat(60)})),
+    styles: ids.map((id) => ({id, emphasis: 'highlight', opacity: 0.5})),
+    caption: {title: 'y'.repeat(80), note: 'z'.repeat(600), place: 'in'},
+  });
+  const blob = encodeScene(huge);
+  const before = bare();
+  const out = reduce(before, {type: 'apply-scene', scene: huge, blob});
+  if (blob.length > LIMITS.SCENE_MAX_B64) {
+    assert.ok(out.rejected, `a ${blob.length}-character arrival must be refused`);
+    assert.equal(out.state, before);
+  } else {
+    // If the fixture did not exceed the bound, the committed blob must still be decodable — the
+    // property the bound exists to protect.
+    assert.ok(decodeScene(out.state.blob), 'a committed blob must decode');
+  }
+});
+
+test('every membership path is bounded, not just the scene edits', () => {
+  const ids = Array.from({length: 25}, (_, i) => `FMA${4000 + i}`);
+  const before = bare();
+  for (const cmd of [
+    {type: 'replace', ids},
+    {type: 'apply-legacy', url: {select: ids}},
+    {type: 'clear-scene', url: {select: ids}},
+  ]) {
+    const out = reduce(before, cmd);
+    assert.ok(out.rejected, `${cmd.type} must refuse 25 selections`);
+    assert.equal(out.state, before, `${cmd.type} must leave the state untouched`);
+    assert.equal(out.state.picks.length, before.picks.length, `${cmd.type} must NOT truncate`);
+  }
+  // and 24 is still accepted on each of them
+  const ok = ids.slice(0, 24);
+  assert.equal(reduce(before, {type: 'replace', ids: ok}).rejected, undefined);
+  assert.equal(reduce(before, {type: 'apply-legacy', url: {select: ok}}).rejected, undefined);
+  assert.equal(reduce(before, {type: 'clear-scene', url: {select: ok}}).rejected, undefined);
+});
+
+test('clear-all leaves NOTHING for the serializer to put back', () => {
+  // The page's marker effect is what actually writes `lastBlob`, and it used to skip the call when
+  // the scene became null — so Clear cleared the controller and the URL restored the scene on
+  // reload (codex review 2, High 1). The controller half of that contract is asserted here: after
+  // clear-all there is no scene and no blob, so an unconditional marker write publishes ''.
+  const {state} = reduce(withScene(), {type: 'clear-all'});
+  assert.equal(state.scene, null);
+  assert.equal(state.blob, '');
+  assert.deepEqual(state.picks, []);
+});
+
+// ══ codex REVIEW 2 — the Mediums that were product defects ══════════════════════════════════════
+
+test('apply-legacy reconciles the focus and leaves scene mode', () => {
+  // Executed by codex: applying `[FMA7088]` over a scene focused on FMA22359 left `state.focus`
+  // reporting the old id while the visible detail had already fallen back to the new basket — and
+  // kept the old scene and blob while replacing the picks, so the URL described structures that
+  // were no longer selected.
+  const {state} = reduce(withScene(), {type: 'apply-legacy', url: {select: ['FMA7088'], view: 'front'}});
+  assert.equal(state.scene, null, 'the legacy contract has no scene by definition');
+  assert.equal(state.blob, '');
+  assert.deepEqual(state.picks, ['FMA7088']);
+  assert.equal(state.focusId, null, 'a focus outside membership must not survive');
+  // a focus that IS still a member survives
+  const keep = reduce({...bare(), focusId: 'FMA9611'}, {type: 'apply-legacy', url: {select: ['FMA9611', 'FMA7088']}});
+  assert.equal(keep.state.focusId, 'FMA9611');
+});
+
+test('set-view writes camera.rotate into the blob, not only into the live view', () => {
+  const spinning = normalizeScene({...SCENE, camera: {...SCENE.camera, rotate: true}});
+  const s = {scene: spinning, blob: encodeScene(spinning), picks: spinning.structures.map((x) => x.id).sort(), focusId: null, render: {...render, rotate: true}};
+  const {state} = reduce(s, {type: 'set-view', view: 'front'});
+  assert.equal(state.render.rotate, false, 'the live turntable stops');
+  assert.equal(decodeScene(state.blob).camera.rotate, false, 'and the blob says so too');
+  assert.equal(decodeScene(state.blob).camera.view, 'front');
+});
+
+test('set-isolate writes the explosion reset it performs', () => {
+  const exploded = normalizeScene({...SCENE, camera: {...SCENE.camera, explode: 0.5}});
+  const s = {scene: exploded, blob: encodeScene(exploded), picks: exploded.structures.map((x) => x.id).sort(), focusId: null, render: {...render, explode: 0.5}};
+  const {state} = reduce(s, {type: 'set-isolate', on: true});
+  assert.equal(state.render.explode, 0, 'the live explosion collapses');
+  assert.equal(decodeScene(state.blob).camera.explode, 0, 'and the blob agrees');
+  // the isolate FLAG itself is still the documented exception: rest.include is untouched
+  assert.equal(decodeScene(state.blob).rest.include, exploded.rest.include);
+});
+
+test('an already-canonical arrival blob survives byte-identically', () => {
+  // The weaker, TRUE claim: canonical in, canonical out. A non-canonical spelling is normalised,
+  // which is what the codec is for — two spellings of one picture must share one R2 entry.
+  const canonical = encodeScene(SCENE);
+  const {state} = reduce(bare(), {type: 'apply-scene', scene: SCENE, blob: canonical});
+  assert.equal(state.blob, canonical);
+});

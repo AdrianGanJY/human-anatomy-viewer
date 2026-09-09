@@ -89,6 +89,24 @@ import type {Role, Scene} from '../scene-model';
  * membership with an `includes` guard, so they reduce to an append and a filter.
  */
 const uniq = (ids: readonly string[]): string[] => [...new Set(ids.map((s) => s.trim()).filter(Boolean))];
+
+/**
+ * THE MEMBERSHIP BOUND, applied to EVERY path that can set `picks` — not only to the scene-mode
+ * edits that route through `commitScene`.
+ *
+ * codex's second review (High 3) executed the counterexamples: a bare `replace` and an
+ * `apply-legacy` both accepted 25 selections, and `clear-scene` had no bound at all. The URL layer
+ * slices `select=` at 24 (app/url-state.ts `idList`), so those lists arrive bounded from a link —
+ * but `window.atlas` and the search panel do not go through the URL layer, and "the caller happens
+ * to bound it" is not an invariant this file can rely on.
+ *
+ * REFUSED, NEVER TRUNCATED. Silently dropping the tail is how a scene renders a confidently wrong
+ * picture, which is the failure this whole contract exists to prevent.
+ */
+const overBound = (ids: readonly string[]): string | null =>
+ ids.length > LIMITS.MAX_STRUCTURES
+  ? `that is ${ids.length} structures and the maximum is ${LIMITS.MAX_STRUCTURES} — remove some first`
+  : null;
 import {legacySceneState} from './legacy-url.ts';
 import type {LegacyUrlFields} from './legacy-url';
 
@@ -180,6 +198,21 @@ export function reduce(state: V2State, cmd: Command): Outcome {
   // ── arrival paths ─────────────────────────────────────────────────────────────────────────
   case 'apply-scene': {
    const scene = normalizeScene(cmd.scene) as Scene;
+   // ⚠️ AN ARRIVAL IS NOT PRE-VALIDATED. `decodeScene` normalizes and checks the VERSION and that
+   // at least one structure survives — it does NOT call `validateScene` (app/scene-codec.js), so a
+   // blob naming 25 real concepts in 351 characters decodes happily and used to be committed
+   // straight into state. codex executed exactly that, plus a normalized scene encoding to 2,462
+   // characters whose resulting blob could not decode at all (review 2, High 3).
+   //
+   // So the arrival goes through the same gate every edit does. A rejected link degrades to the
+   // state the page already had, with a message — never to a page rendering a scene it cannot
+   // serialise, and never to a truncation.
+   const invalidArrival = validateScene(scene);
+   if (invalidArrival) return {state, rejected: `this link's view could not be applied — ${invalidArrival}`};
+   const arrivalBlob = encodeScene(scene);
+   if (arrivalBlob.length > LIMITS.SCENE_MAX_B64) {
+    return {state, rejected: `this link's view encodes to ${arrivalBlob.length} characters and the limit is ${LIMITS.SCENE_MAX_B64}`};
+   }
    const render = intent(state.render, {
     view: scene.camera.view,
     explode: scene.camera.explode,
@@ -189,12 +222,15 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     isolate: scene.rest.include === 'none',
     visible: scene.rest.include === 'skeletal' ? ['skeletal'] : state.render.visible,
    });
-   // THE ARRIVAL BLOB IS PRESERVED WHEN IT IS EQUIVALENT. A link a human copied must reproduce
-   // byte-identically, and re-encoding a scene that decoded from `cmd.blob` would silently change
-   // the R2 cache key for anyone who pasted it — even though the picture is the same. So the
-   // incoming string wins whenever it canonicalises to this scene, and only an EDIT re-encodes.
-   const canonical = encodeScene(scene);
-   const blob = cmd.blob && cmd.blob === canonical ? cmd.blob : canonical;
+   // THE ARRIVAL BLOB IS KEPT ONLY WHEN IT IS ALREADY CANONICAL, and the earlier wording here
+   // overstated that. codex passed a valid blob using the supported `structures` spelling instead of
+   // the canonical `s`, and it was rewritten on arrival (review 2, Medium 5) — semantically the same
+   // scene, a different string. That is CANONICALISATION, not preservation, and it is the desired
+   // behaviour (two spellings of one picture must share one R2 entry, which is the whole reason the
+   // codec canonicalises at all) — but the claim has to match the code. A canonical blob, which is
+   // what every link this app and `/mcp` emit carries, survives byte-identically; a hand-written or
+   // legacy spelling is normalised.
+   const blob = cmd.blob && cmd.blob === arrivalBlob ? cmd.blob : arrivalBlob;
    return {
     state: {...state, scene, blob, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene), render},
     epoch: true,
@@ -204,15 +240,36 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // No scene: the P1–P3 contract. Camera and visibility come off the URL (R:26); see
    // `legacySceneState` for the measurement of what used to happen instead.
    const picks = cmd.url.select ? uniq(cmd.url.select) : state.picks;
-   return {state: {...state, picks, render: legacySceneState(cmd.url, state.render)}, epoch: true};
+   const tooMany = overBound(picks);
+   if (tooMany) return {state, rejected: tooMany};
+   // A LEGACY APPLY LEAVES SCENE MODE, and it reconciles the focus. codex executed both halves
+   // (review 2, Medium 2): applying `[FMA7088]` over a scene whose focus was `FMA22359` left
+   // `atlas.state().focus` reporting the old id while the visible detail had already fallen back to
+   // the new basket — the exact controller/view disagreement this file exists to end. And applying
+   // it to a scene-bearing controller kept the old scene and blob while replacing the picks, so the
+   // URL described structures that were no longer selected.
+   //
+   // The legacy contract has no scene by definition (`synthesize()` returns early unless
+   // mode=render), so arriving through it means the page is no longer showing the link's scene.
+   return {
+    state: {
+     ...state, scene: null, blob: '', picks,
+     focusId: state.focusId && picks.includes(state.focusId) ? state.focusId : null,
+     render: legacySceneState(cmd.url, state.render),
+    },
+    epoch: true,
+   };
   }
   case 'clear-scene': {
    // `#scene=` — LEAVING scene mode on purpose (R:7, R:30). The blob is cleared, which is what
    // stops `writeUrlState` writing the abandoned scene straight back into the address bar.
+   const cleared = cmd.url.select ? uniq(cmd.url.select) : [];
+   const clearTooMany = overBound(cleared);
+   if (clearTooMany) return {state, rejected: clearTooMany};
    return {
     state: {
      ...state, scene: null, blob: '', focusId: null,
-     picks: cmd.url.select ? uniq(cmd.url.select) : [],
+     picks: cleared,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -223,6 +280,8 @@ export function reduce(state: V2State, cmd: Command): Outcome {
   case 'replace': {
    const ids = uniq(cmd.ids);
    if (!ids.length) return {state, rejected: 'nothing to select'};
+   const replaceTooMany = overBound(ids);
+   if (replaceTooMany) return {state, rejected: replaceTooMany};
    // "Show me this instead" — a search result, or a tap on the model. It IS a camera intent.
    const render = intent(state.render, {isolate: false, rotate: false});
    if (!state.scene) return {state: {...state, picks: ids, focusId: cmd.focus ?? null, render}};
@@ -306,9 +365,14 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    return {state: {...state, focusId: cmd.id, render}};
   }
   case 'set-view': {
+   // `rotate:false` GOES INTO THE BLOB TOO. codex executed the divergence (review 2, Medium 4):
+   // choosing a view stopped the live turntable while the decoded blob still said
+   // `camera.rotate:true`, so the link and the screen disagreed about a field the codec can express
+   // perfectly well. Every camera field this command touches has to be written, or the exception
+   // list in this file's header is a fiction.
    const render = intent(state.render, {view: cmd.view, rotate: false});
    if (!state.scene) return {state: {...state, render}};
-   return commitScene(state, {...state.scene, camera: {...state.scene.camera, view: cmd.view}}, render);
+   return commitScene(state, {...state.scene, camera: {...state.scene.camera, view: cmd.view, rotate: false}}, render);
   }
   case 'reset-view': {
    const render = intent(state.render, {view: 'three-quarter', explode: 0, rotate: false});
@@ -334,10 +398,18 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // undisturbed, this leaves it undisturbed: "Hide others" is a VIEW control on a link a human is
    // exploring, not an edit to what the link teaches. Making it a scene edit needs a `rest` mode
    // for it — a versioned additive codec change, in its own commit, with its own goldens
-   // (codex-plan-review.md §A.4: "Defer controls whose live behavior cannot round-trip"). Recorded
-   // here because it is the one place in this file where the live view and the blob may disagree,
-   // and that disagreement is deliberate and bounded to this single field.
-   return {state: {...state, render: {...state.render, isolate: cmd.on, explode: 0}}};
+   // (codex-plan-review.md §A.4: "Defer controls whose live behavior cannot round-trip").
+   //
+   // BUT `explode` IS EXPRESSIBLE, and this command zeroes it. codex executed that divergence
+   // (review 2, Medium 4): toggling isolate reset the live explosion while the decoded blob still
+   // said `camera.explode:0.5`. So the isolate FLAG is the only field left undisturbed, and the
+   // explosion it resets is written through like any other camera edit.
+   if (!state.scene) return {state: {...state, render: {...state.render, isolate: cmd.on, explode: 0}}};
+   if (state.scene.camera.explode === 0) {
+    return {state: {...state, render: {...state.render, isolate: cmd.on, explode: 0}}};
+   }
+   return commitScene(state, {...state.scene, camera: {...state.scene.camera, explode: 0}},
+    {...state.render, isolate: cmd.on, explode: 0});
   }
   default:
    return {state};

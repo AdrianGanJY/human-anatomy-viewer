@@ -38,6 +38,9 @@ export interface UrlState {select?:string[];visible?:SystemId[];isolate?:boolean
  mode?:'render'|'explore';focus?:string[];contextOpacity?:number}
 /** Bounds. A caption is a caption, not a document; a selection of everything is not a selection. */
 export const TITLE_MAX=80,NOTE_MAX=600,SELECT_MAX=24;
+/** Every key this contract owns in a URL. Used by the spent-hash fence, which must decide ownership
+ *  with the SAME decoding `merge()` reads with -- see `writeUrlState`. */
+const OWNED_KEYS=new Set(['scene','select','view','isolate','explode','system','lang','title','note','mode','focus','contextOpacity','snap','stage','probe']);
 const VIEWS:string[]=['three-quarter','front','back','side'];
 const SYSTEM_IDS=new Set<string>(SYSTEMS.map(s=>s.id));
 const TRUTHY=new Set(['1','true','yes','on']),FALSY=new Set(['0','false','no','off']);
@@ -184,8 +187,21 @@ export function writeUrlState(state:SceneState,selectIds:readonly string[],capti
  const query=p.toString();
  // A spent hash is dropped only when the caller asks AND the hash actually carries one of our keys
  // -- an unrelated fragment (a future anchor link) is not ours to delete.
- const OURS=/(^|[#&])(scene|select|view|isolate|explode|system|lang|title|note|mode|focus|contextOpacity|snap)=/;
- const hash=flags.clearHash&&OURS.test(location.hash)?'':location.hash;
+ //
+ // ASKED THROUGH THE PARSER, NOT A REGEX ON THE RAW STRING. `URLSearchParams` percent-DECODES key
+ // names, so `#%73cene=X` is `scene=X` to every reader in this file — and a raw-text regex does not
+ // see it. codex executed both (review 2, High 2): `#scene=X` was dropped and the edit survived a
+ // reload, while `#%73cene=X` was retained and RESTORED the removed structure. The fence has to use
+ // the same decoding as the thing it is fencing.
+ const ownsAKey=(h:string)=>{
+  try{
+   for(const key of new URLSearchParams(h.replace(/^#/,'')).keys()){
+    if(OWNED_KEYS.has(key))return true;
+   }
+  }catch{/* an opaque fragment is not ours */}
+  return false;
+ };
+ const hash=flags.clearHash&&ownsAKey(location.hash)?'':location.hash;
  const next=`${location.pathname}${query?`?${query}`:''}${hash}`;
  if(next!==`${location.pathname}${location.search}${location.hash}`)history.replaceState(history.state,'',next);
 }

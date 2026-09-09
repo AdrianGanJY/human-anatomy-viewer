@@ -178,7 +178,14 @@ export default function V2() {
   setCtl((c) => (sameIds(c.render.selected, union) ? c : {...c, render: {...c.render, selected: union}}));
  }, [atlas, basket]);
  useEffect(() => { markSelected(picks); }, [picks]);
- useEffect(() => { if (scene) markScene(sceneBlob || encodeScene(scene)); }, [scene, sceneBlob]);
+ // UNCONDITIONAL, and the `if (scene)` it replaces was a shipped defect. `markScene` writes the
+ // module-level `lastBlob` that `writeUrlState` puts back into the query verbatim — so skipping the
+ // call when the scene became NULL left the abandoned blob cached, and the next debounced write
+ // restored `scene=` to the URL. Reload then brought the cleared scene back. codex executed it
+ // (review 2, High 1): controller blob "", stale DOM marker, both structures restored on reload.
+ // `#scene=` looked fine only because `clearSceneState` calls `markScene('')` by hand — i.e. one
+ // path was patched and the Clear button and `atlas.clear()` were not. One writer, every path.
+ useEffect(() => { markScene(scene ? (sceneBlob || encodeScene(scene)) : ''); }, [scene, sceneBlob]);
  useEffect(() => { setModes(false, false); markSettled(false); markError(''); }, []);
  // `stage` and `probeMode` are passed EXPLICITLY, which is what makes them survive the debounced
  // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
@@ -275,7 +282,16 @@ export default function V2() {
  ctlRef.current = ctl;
  const dispatch = useCallback((cmd: Command): boolean => {
   const out = reduce(ctlRef.current, cmd);
-  if (out.rejected) { setRefused(out.rejected); return false; }
+  if (out.rejected) {
+   setRefused(out.rejected);
+   // AND MAKE IT VISIBLE. The alert renders inside `.v2-margin-scroll`, which is `display:none` at
+   // the phone's peek detent (v2.css) — so a refusal triggered by `window.atlas` or by a control
+   // reachable at peek would have been written to a hidden container and the promised "visible
+   // message" would not exist (codex review 2, Medium 9). Opening the margin is the cheapest thing
+   // that makes the promise true on every tier.
+   setDetent('half');
+   return false;
+  }
   setRefused('');
   ctlRef.current = out.state;
   setCtl(out.state);

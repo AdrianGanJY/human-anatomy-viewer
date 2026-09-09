@@ -8,7 +8,7 @@
  *
  * Fork-local (L30 P3).
  */
-import {UI,fmt,type Lang} from './ui';
+import {UI,fmt,type Lang} from './ui.ts';
 
 export interface Dict {
  version:number;lang:string;

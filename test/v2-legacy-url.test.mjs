@@ -105,3 +105,34 @@ test('an unknown key still returns the key, and a missing var still returns its 
   assert.equal(v2t('en', 'nope.nope'), 'nope.nope');
   assert.equal(v2t('en', 'rail.focus', {}), 'Focus {name}');
 });
+
+// ── t.alt(id, script) — the cross-script accessor (G10), required to be unit-covered ────────────
+// codex review 2 (Low) found it shipped with no test invocation at all.
+test('alt reads a named script directly, independent of the interface language', async () => {
+  const {makeT} = await import('../app/i18n/dict.ts');
+  const dicts = {
+    'zh-Hans': {concepts: {FMA7485: '胸骨'}, parts: {FJ1: '部件'}, systems: {}, ui: {}, explanations: {}},
+    'zh-Hant': {concepts: {FMA7485: '胸骨'}, parts: {}, systems: {}, ui: {}, explanations: {}},
+  };
+  // ENGLISH interface: `secondary` returns null BY DESIGN, and that is exactly the gap `alt` fills —
+  // cross-script search matches on the Chinese name in EN mode, so a result row has to be able to
+  // DISPLAY the spelling it matched on.
+  const en = makeT('en', undefined, dicts);
+  assert.equal(en.secondary('FMA7485', 'sternum'), null, 't.secondary must stay untouched');
+  assert.equal(en.alt('FMA7485', 'zh-Hans'), '胸骨');
+  assert.equal(en.alt('FMA7485', 'zh-Hant'), '胸骨');
+  // a part id resolves through the parts lane
+  assert.equal(en.alt('FJ1', 'zh-Hans'), '部件');
+  // NEVER a silent English fallback: an id the dictionary lacks is null, not the English name
+  assert.equal(en.alt('FMA9999', 'zh-Hans'), null);
+  // a script with no dictionary loaded is null, not a guess
+  assert.equal(makeT('en', undefined, {}).alt('FMA7485', 'zh-Hans'), null);
+  // English has no dictionary — names come from atlas.json, and the caller already holds them
+  assert.equal(en.alt('FMA7485', 'en'), null);
+  // and it works from a Chinese interface too, including for the OTHER script
+  const hans = makeT('zh-Hans', dicts['zh-Hans'], dicts);
+  assert.equal(hans.name('FMA7485', 'sternum'), '胸骨');
+  assert.equal(hans.alt('FMA7485', 'zh-Hant'), '胸骨');
+  // `alt(id, lang)` works even when only the active dictionary was passed
+  assert.equal(makeT('zh-Hans', dicts['zh-Hans']).alt('FMA7485', 'zh-Hans'), '胸骨');
+});

@@ -291,10 +291,18 @@ const newContext = async (vp) => {
         // requested" read 3 of 2. This lane exists solely to catch subresources with no JS call
         // behind them (the stylesheet, the module graph), so keying it on absence-from-the-other-
         // lanes is both simpler and exactly its purpose.
+        // BY REQUEST IDENTITY, NOT BY URL. Both previous guards discarded on name alone, so twenty
+        // Resource Timing entries for one endpoint still collapsed to a single row — codex executed
+        // exactly that loop and measured 20 -> 1 (review 2, High 5). An append-only array does not
+        // help if the dedupe happens BEFORE the append.
+        //
+        // A Resource Timing entry and the fetch that caused it are the same request and must not be
+        // counted twice; two entries for the same URL at different start times are two requests and
+        // must be. `startTime` is the discriminator: entries are distinct instances, and a fetch
+        // start recorded by hand sits within a few ms of its own entry.
         for (const e of l.getEntries()) {
-          if (window.__reqs.some((r) => r.name === e.name && r.via !== 'resource')) continue;
-          if (window.__reqs.some((r) => r.name === e.name && r.via === 'resource')) continue;
-          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
+          const sameInstance = window.__reqs.some((r) => r.name === e.name && Math.abs(r.at - e.startTime) < 50);
+          if (!sameInstance) window.__reqs.push({name: e.name, at: e.startTime, via: 'resource'});
         }
       }).observe({type: 'resource', buffered: true});
     } catch { /* no resource timing */ }

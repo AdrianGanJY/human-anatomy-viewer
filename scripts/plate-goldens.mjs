@@ -83,7 +83,17 @@ if (process.argv[2] === 'compare') {
     }
     if (b.hash !== a.hash) {
       const line = `${name}: PNG hash ${b.hash} -> ${a.hash}`;
-      if (GHOSTED.has(name)) notes.push(`${line}  (TOLERATED: this scene carries a ghost and its hash is not stable run to run on an unchanged build)`);
+      // BOUNDED, not blanket. codex replaced only the ghost scene's hash with an arbitrary value
+      // and the comparator still said IDENTICAL (review 2, Medium 8) — documented stochasticity
+      // justifies a tolerance, not accepting every possible image. A coverage dither perturbs
+      // individual pixels and barely moves the compressed size; a real appearance change (different
+      // structures, a moved camera, a lost ghost) moves it a lot. Camera and projected bounds are
+      // already asserted equal above, so this is the last remaining degree of freedom.
+      if (GHOSTED.has(name)) {
+        const drift = (b.bytes && a.bytes) ? Math.abs(a.bytes - b.bytes) / b.bytes : 1;
+        if (drift <= 0.02) notes.push(`${line}  (TOLERATED: ghost dither, PNG size moved ${(drift * 100).toFixed(2)}% <= 2%)`);
+        else failures.push(`${line}  — PNG size moved ${(drift * 100).toFixed(1)}%, far past the 2% a coverage dither explains`);
+      }
       else failures.push(`${line}  — camera and bounds are identical, so the PIXELS changed on their own`);
     }
   }
