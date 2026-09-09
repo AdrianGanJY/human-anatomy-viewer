@@ -282,6 +282,8 @@ export default function V2() {
   */
  const ctlRef = useRef(ctl);
  ctlRef.current = ctl;
+ /** Whether the mount arrival has run. See `seedArrival` in `dispatch`. */
+ const mounted = useRef(false);
  const dispatch = useCallback((cmd: Command): boolean => {
   const out = reduce(ctlRef.current, cmd);
   // AN ARRIVAL DOES NOT CLEAR A REFUSAL. A rejected seed has `scene:null`, so mount dispatches
@@ -290,6 +292,12 @@ export default function V2() {
   // seed, empty after mount, detent still peek). Only a user action clears it, because only a user
   // action means "I have moved on".
   const arrival = cmd.type === 'apply-scene' || cmd.type === 'apply-legacy' || cmd.type === 'clear-scene';
+  // The MOUNT arrival is the one that installs the seed's own fallback, so it must not wipe the
+  // message explaining that fallback. Every arrival AFTER it is a new link or a re-drive, and a
+  // stale "this link's view could not be applied" printed beside a scene that applied perfectly is
+  // its own defect (codex review 5, Medium 1).
+  const seedArrival = arrival && !mounted.current;
+  if (arrival) mounted.current = true;
   if (out.rejected) {
    setRefused(out.rejected);
    // AND MAKE IT VISIBLE. The alert renders inside `.v2-margin-scroll`, which is `display:none` at
@@ -300,7 +308,7 @@ export default function V2() {
    setDetent('half');
    return false;
   }
-  if (!arrival) setRefused('');
+  if (!seedArrival) setRefused('');
   ctlRef.current = out.state;
   setCtl(out.state);
   if (out.epoch) { markSceneReady(false); markSettled(false); setEpoch((n) => n + 1); }

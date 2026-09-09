@@ -204,6 +204,23 @@ const browser = await chromium.launch({
  * "a fresh EN visit fetches no Chinese dictionary" assertion would measure the previous fixture's
  * side effect instead of the entry it names.
  */
+/**
+ * THE REQUEST LEDGER LIVES HERE, on the driver, and it is attached to the context it belongs to.
+ *
+ * `context.on('request')` fires when the browser ISSUES a request — every request, with its real
+ * URL, whether or not it ever completes and whoever initiated it. That is the only vantage point
+ * from which "how many requests had STARTED by the barrier" is answerable, and four rounds of review
+ * were spent discovering that the page itself is not one (see the note in the init script).
+ *
+ * The clock is the driver's, and so is the barrier timestamp it is compared against, so the two are
+ * on the same basis by construction.
+ */
+const attachLedger = (context) => {
+  const started = [];
+  context.on('request', (r) => started.push({url: r.url(), at: Date.now(), type: r.resourceType()}));
+  return started;
+};
+
 const newContext = async (vp) => {
   const context = await browser.newContext({
     viewport: {width: vp.width, height: vp.height},
@@ -229,7 +246,7 @@ const newContext = async (vp) => {
   // The CLS observer must be installed before any page script runs, or the entry's own shifts
   // are missed and every run reports a comfortable zero.
   await context.addInitScript(() => {
-    window.__cls = 0; window.__clsSrc = [];
+    window.__cls = 0; window.__clsSrc = []; window.__completed = [];
     try {
       new PerformanceObserver((l) => {
         for (const e of l.getEntries()) {
@@ -244,47 +261,33 @@ const newContext = async (vp) => {
       }).observe({type: 'layout-shift', buffered: true});
     } catch { /* no layout-shift support */ }
 
-    // ── REQUEST STARTS, and the barrier's own timestamp ──────────────────────────────────────
-    // Resource Timing only produces an entry when a request FINISHES, so a 348 KB dictionary
-    // still in flight at the barrier is invisible to it — and that in-flight request is the
-    // entire subject of the assertion (codex-plan-review.md §C, critic gap 9). So the start is
-    // recorded at the CALL, by wrapping the two APIs that make one, and the completed-entry
-    // observer is kept as a second lane for subresources the page never fetches by hand
-    // (stylesheets, the module graph). Earliest timestamp wins per URL.
+    // ⚠️ THE REQUEST LEDGER IS NOT HERE ANY MORE — it is in the DRIVER. See `newContext` below.
+    //
+    // Four rounds of adversarial review killed the in-page version, and the last finding was fatal
+    // rather than fixable (codex review 5, High 1): a page can only observe its OWN fetch/XHR calls
+    // at their start. Every other subresource — a script, a stylesheet, an image, a preload — enters
+    // Resource Timing only when it COMPLETES, so a seventeenth request that starts before the
+    // barrier and is still pending at measurement is INVISIBLE, and a `<= 16` budget passes on a
+    // page that made seventeen. codex executed that delivery sequence: 16/pass before the delayed
+    // completion, 17/fail after. No amount of in-page bookkeeping can supply a start event the page
+    // never receives.
+    //
+    // It also mis-normalised `fetch(new URL(...))`: the wrapper read `input.url`, which a URL object
+    // does not have, so it recorded `location.href` and the real request became a second row —
+    // sixteen such fetches counted as thirty-two (review 5, Medium 2).
+    //
+    // Playwright's `request` event fires when the browser ISSUES a request, for every request, with
+    // its real URL, whether or not it ever completes. That is the measurement this row always
+    // wanted.
     // EVERY START IS ITS OWN ROW. The first version kept a Map keyed by URL, which collapses
     // repeated requests: twenty retries against one endpoint counted as ONE and could satisfy a
     // request budget while a polling regression ran underneath it (codex review, 2026-09-09,
     // High 5). An append-only ledger cannot do that, and de-duplication is left to the reader that
     // actually wants distinct URLs.
-    window.__reqs = [];
-    const noteStart = (raw, via) => {
-      try {
-        window.__reqs.push({name: new URL(String(raw), location.href).href, at: performance.now(), via});
-      } catch { /* not a URL we can attribute */ }
-    };
-    const nativeFetch = window.fetch;
-    window.fetch = function (input, init) {
-      noteStart(typeof input === 'string' ? input : (input && input.url) || '', 'fetch');
-      return nativeFetch.call(this, input, init);
-    };
-    // RECORDED AT send(), NOT open(). `open()` only configures the request — a caller that opens
-    // and never sends would otherwise be counted as network traffic that never happened.
-    const nativeOpen = XMLHttpRequest.prototype.open;
-    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-      this.__url = url;
-      return nativeOpen.call(this, method, url, ...rest);
-    };
-    const nativeSend = XMLHttpRequest.prototype.send;
-    XMLHttpRequest.prototype.send = function (...rest) {
-      noteStart(this.__url ?? '', 'xhr');
-      return nativeSend.call(this, ...rest);
-    };
     try {
       new PerformanceObserver((l) => {
-        // The second lane, for subresources the page never fetches by hand (stylesheets, the module
-        // graph). `startTime` is when the fetch began, so a late-arriving entry still reports an
-        // early start. An entry whose start is already within a millisecond of a recorded fetch/xhr
-        // start is the SAME request seen twice and is not appended again.
+        // Kept ONLY as a cross-check that the page is doing what the driver observed; nothing
+        // asserts on it. The authoritative ledger is the driver's `request` event.
         // ONLY for names the page never fetched BY HAND. A timestamp window was the first attempt
         // and it was too clever: a fetch start and its Resource Timing `startTime` can differ by
         // more than a millisecond, so the same dictionary was appended twice and "both dictionaries
@@ -310,24 +313,7 @@ const newContext = async (vp) => {
         // fetch/XHR this ledger already recorded by hand — in which case it consumes THAT ONE row
         // and is not appended — or it is a subresource with no JS call behind it, in which case it
         // is its own row. A resource row is never matched against, so two entries can never collapse.
-        // PAIRED BY INITIATOR. One-to-one consumption stopped two entries collapsing, but it did
-        // not establish IDENTITY: codex executed sixteen completed SUBRESOURCE entries plus one
-        // still-pending fetch for the same URL and the subresource consumed the fetch's row, so
-        // seventeen starts recorded as sixteen and passed the <=16 gate (review 4, High 1).
-        //
-        // `initiatorType` is the browser's own answer to "did JavaScript make this request".
-        // Only a `fetch`/`xmlhttprequest` entry can be the completion of a row this ledger recorded
-        // by hand; a `script`, `link`, `img` or `css` entry never can, so it is always its own row
-        // and can never consume someone else's. The unpaired flag still prevents one fetch row from
-        // absorbing two entries.
-        for (const e of l.getEntries()) {
-          const jsInitiated = e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest';
-          const pair = jsInitiated
-            ? window.__reqs.find((r) => r.name === e.name && r.via !== 'resource' && !r.paired)
-            : null;
-          if (pair) { pair.paired = true; continue; }
-          window.__reqs.push({name: e.name, at: e.startTime, via: 'resource', initiator: e.initiatorType});
-        }
+        for (const e of l.getEntries()) window.__completed.push({name: e.name, at: e.startTime, initiator: e.initiatorType});
       }).observe({type: 'resource', buffered: true});
     } catch { /* no resource timing */ }
 
@@ -349,6 +335,7 @@ const newContext = async (vp) => {
     // little extra in-flight work — a conservative bias for a `<=` bound and for a
     // "no dictionary was requested" assertion, so it cannot manufacture a green.
   });
+  context.__started = attachLedger(context);
   return context;
 };
 
@@ -370,7 +357,7 @@ for (const vp of SWEEP) {
       readyMs = 1;
       // Sampled HERE, in the same turn the marker resolved — see the init-script warning above
       // for why this cannot be read from inside the page's own observer.
-      barrierAt = await page.evaluate(() => performance.now());
+      barrierAt = Date.now();
     } catch { /* the marker never arrived; recorded below as a null, not as a pass */ }
     const bytes = await page.evaluate(() => {
       // PREFER THE FROZEN NUMBER. v2 stamps the byte count at the phase barrier itself; reading
@@ -414,17 +401,20 @@ for (const vp of SWEEP) {
     // ("Chinese UI already loads dictionaries on entry"). The negative half of this assertion,
     // "a fresh EN visit fetches no Chinese dictionary", is asserted on the bare EN page below,
     // because it is a claim about the EN entry and cannot be made from a zh one.
-    const reqs = await page.evaluate((at) => {
-      const rows = (window.__reqs ?? [])
-        .filter((r) => at === null || r.at <= at)
-        .map((r) => r.name.replace(location.origin, ''));
-      return {
-        at, total: rows.length,
-        nonModel: rows.filter((n) => !/\/models\/body-/.test(n)),
-        zhDicts: rows.filter((n) => /\/i18n\/zh-/.test(n)),
-        distinct: new Set(rows).size,
-      };
-    }, barrierAt);
+    const origin = new URL(base).origin;
+    const startedRows = (context.__started ?? [])
+      .filter((r) => barrierAt === null || r.at <= barrierAt)
+      .map((r) => r.url.replace(origin, ''));
+    const reqs = {
+      at: barrierAt, total: startedRows.length,
+      nonModel: startedRows.filter((n) => !/\/models\/body-/.test(n)),
+      zhDicts: startedRows.filter((n) => /\/i18n\/zh-/.test(n)),
+      // DISTINCT AMONG THE NON-MODEL ROWS, because that is the population the row beside it
+      // reports on. The first version counted distinct URLs across EVERY row and printed
+      // "9 non-model starts (23 distinct URLs)" — two numbers over different populations,
+      // side by side, which is the denominator defect this suite exists to catch.
+      distinct: new Set(startedRows.filter((n) => !/\/models\/body-/.test(n))).size,
+    };
     // The floor is the entry's own graph: the document, the module chunks, the stylesheet,
     // atlas.json, the favicon, and (in zh) the two dictionaries. 16 is that with headroom; the
     // point of the bound is to catch a NEW eager fetch, not to pin the bundler's chunking.
@@ -765,17 +755,20 @@ for (const vp of SWEEP) {
     // ⌘K overlay, so "before the palette would open" is "before any Find interaction" — which is
     // the state this page is in. The assertion is therefore exact now and stays exact when
     // v2.1b replaces the panel with the palette.
-    const bareReqs = await barePage.evaluate(() => {
+    const bareOrigin = new URL(base).origin;
+    const bareStarted = (bareCtx.__started ?? []).map((r) => r.url.replace(bareOrigin, ''));
+    const bareReqs0 = await barePage.evaluate(() => {
       // The ledger is an APPEND-ONLY ARRAY of {name, at, via} — not a Map. The first version of this
       // reader called `.keys()` on it, got integer indices, and threw `n.replace is not a function`
       // inside the evaluate, which aborted the entire bare pass: 35 rows vanished from the sweep and
       // the totals simply got smaller. Caught by comparing the row count against the previous run.
-      const rows = (window.__reqs ?? []).map((r) => r.name.replace(location.origin, ''));
-      return {
-        zh: rows.filter((n) => /\/i18n\/zh-/.test(n)),
-        lang: document.documentElement.lang, total: rows.length,
-      };
+      return {lang: document.documentElement.lang};
     });
+    const bareReqs = {
+      lang: bareReqs0.lang,
+      zh: bareStarted.filter((n) => /\/i18n\/zh-/.test(n)),
+      total: bareStarted.length,
+    };
     check(vp.name, 'a fresh EN visit requests NO Chinese dictionary before the palette opens',
       bareReqs.lang === 'en' && bareReqs.zh.length === 0,
       `lang=${bareReqs.lang}, ${bareReqs.zh.length} zh dictionary requests of ${bareReqs.total} total`, '0');
