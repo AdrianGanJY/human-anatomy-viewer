@@ -13,6 +13,11 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    // L31 v2.1a: lets `app/v2/controller.ts` import its dependencies with an explicit `.ts`
+    // extension, which is what makes it loadable by `node --test` (Node's ESM resolver requires
+    // one; Vite accepts it either way). It PERMITS the form, it does not require it, so no other
+    // file changes. The contract in that file is only testable if the module can be imported.
+    "allowImportingTsExtensions": true,
     "types": [
       "node",
       "@cloudflare/workers-types",

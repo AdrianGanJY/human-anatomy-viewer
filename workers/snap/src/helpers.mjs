@@ -58,6 +58,27 @@ export function parseSize(raw, maxW = 1600, maxH = 1200) {
 }
 
 /**
+ * THE DEFAULT VISIBLE SYSTEMS, as an EXPLICIT list, because "reset to the default" has no
+ * shorter spelling in the legacy contract.
+ *
+ * `system=''` does not reset anything: app/url-state.ts:59-63 splits on comma, filters to known
+ * ids, and only assigns `out.visible` `if(ids.length)` — so an empty value leaves the warm tab's
+ * previous systems in place, and `system=none` means the OPPOSITE of a reset (it means hide
+ * everything). The only value that restores the default is the default itself, written out.
+ *
+ * ⚠️ THIS IS A SECOND COPY of `DEFAULT_VISIBLE` (app/anatomy.ts:57) and it exists because this
+ * module is a Worker module with ZERO imports by design — the same constraint that keeps
+ * app/scene-codec.js importable from both the bundle and a Pages Function. The drift is guarded
+ * rather than tolerated: test/redrive-hash.test.mjs reads app/anatomy.ts and fails if the two
+ * lists stop matching, so adding a system in one place breaks the build instead of quietly
+ * changing what a warm re-drive resets to.
+ */
+export const DEFAULT_SYSTEMS = [
+  'cardiac', 'sensory', 'skeletal', 'muscular', 'arterial', 'venous', 'nervous', 'respiratory',
+  'digestive', 'urinary', 'lymphatic', 'endocrine', 'reproductive', 'connective',
+];
+
+/**
  * The hash that re-drives an already-loaded page.
  *
  * EVERY key is written, including the empty ones, because the app only overwrites what the
@@ -71,6 +92,26 @@ export function parseSize(raw, maxW = 1600, maxH = 1200) {
  * not this function — it is that a valid `scene=` makes the page's apply AUTHORITATIVE
  * over every field the scene owns. The three P4 aliases are new, so their empty value is
  * defined as a reset and that half does work.
+ *
+ * ══ L31 v2.1a — THE LANGUAGE AND SYSTEM LEAK (codex-app-review.md §2 row 10, R:34) ═════════════
+ * Two keys were still missing from the legacy branch, and both failed as a plausible picture at
+ * HTTP 200 — the exact failure mode the file header warns about:
+ *
+ *   `lang`   was NEVER written, in either direction. So a Hant request made on a tab that had
+ *            rendered Hans kept Hans, and — measured, not deduced — a request that DID carry
+ *            `lang=zh-Hant` did not apply it either, because the hash never mentioned it.
+ *   `system` was written only when the request had one, so a plain request after a
+ *            `system=skeletal` one rendered a skeleton it never asked for.
+ *
+ * The cache key describes the new request; the page renders the old one. Because the empty-value
+ * reset does not work for either key (see above), both are now written with an EXPLICIT DEFAULT —
+ * `lang=en` and the full default system list — which is the only spelling the legacy parser reads
+ * as "go back to the default".
+ *
+ * `canonical()` is deliberately NOT touched: cache identity for every existing URL is unchanged,
+ * and that is asserted in test/redrive-hash.test.mjs against a frozen string. What DOES change is
+ * what a warm tab draws, so `SITE_BUILD` is bumped with this repair — every PNG cached from a warm
+ * tab before it may carry the previous request's language.
  */
 export function reDriveHash(params) {
   const p = new URLSearchParams();
@@ -99,7 +140,10 @@ export function reDriveHash(params) {
   p.set('mode', params.get('mode') || '');
   p.set('focus', params.get('focus') || '');
   p.set('contextOpacity', params.get('contextOpacity') || '');
-  if (params.get('system')) p.set('system', params.get('system'));
+  // EXPLICIT DEFAULTS, both directions. `|| 'en'` and `|| DEFAULT_SYSTEMS` are what make this a
+  // RESET rather than a no-op — an empty value for either key is silently ignored by the page.
+  p.set('lang', params.get('lang') || 'en');
+  p.set('system', params.get('system') || DEFAULT_SYSTEMS.join(','));
   p.set('snap', '1');
   return `#${p.toString()}`;
 }

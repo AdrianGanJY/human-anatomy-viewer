@@ -1,0 +1,39 @@
+/**
+ * THE LEGACY URL'S CAMERA AND VISIBILITY, as a pure mapping. L31 v2.1a.
+ *
+ * codex-app-review.md §2 row 2 (R:26): a cold `?select=…&view=side&isolate=1&system=none&explode=.5`
+ * link — the P1–P3 contract, and the shape `/mcp` emitted for three releases — arrived on `/v2/` and
+ * only its PICKS were applied. `synthesize()` returns early unless `mode==='render'`
+ * (app/url-state.ts:108), so a plain legacy visit produces no scene, `applySceneState` never runs,
+ * and `baseState`'s three-quarter / not-isolated / everything-visible drew instead. Then the 200 ms
+ * debounced `writeUrlState` serialised THAT state back over the address bar, so the requested
+ * settings were gone from the URL too and a reload could not recover them. MEASURED before the fix:
+ * `?select=FMA22359&view=side&isolate=1&system=none&explode=0.5` became `?select=FMA22359`.
+ *
+ * WHY IT IS ITS OWN FILE. Two reasons, both practical rather than tidy:
+ *  1. It is a MAPPING, not a controller. C2 puts one owner above it; a temporary controller inside
+ *     the page would be a thing C2 has to unpick (codex-plan-review.md §A.2).
+ *  2. `app/v2/page.tsx` cannot be imported by `node --test` — Node strips TYPES but not JSX — so a
+ *     function that lives in the page is a function with no unit coverage. Here it has some.
+ *
+ * ABSENT IS NOT EMPTY, and that distinction is the whole reason this is written with spreads rather
+ * than with `??`: `system=none` legitimately means "nothing visible" (`visible: []`), which must not
+ * be confused with "the key was not in the URL" (leave the previous value alone). `??` and `||` both
+ * get that wrong for `[]`, `false` and `0` — and `isolate=0` and `explode=0` are real requests.
+ */
+import type {SceneState, SystemId, View} from '../anatomy';
+
+export interface LegacyUrlFields {view?: View; isolate?: boolean; explode?: number; visible?: SystemId[]}
+
+export function legacySceneState(url: LegacyUrlFields, previous: SceneState): SceneState {
+ return {
+  ...previous,
+  ...(url.view !== undefined ? {view: url.view} : {}),
+  ...(url.isolate !== undefined ? {isolate: url.isolate} : {}),
+  ...(url.explode !== undefined ? {explode: url.explode} : {}),
+  ...(url.visible !== undefined ? {visible: url.visible} : {}),
+  // The renderer's view/reset refit is keyed on `reset` (app/scene.tsx:378), so a mapping that
+  // changed `view` without bumping it would update the state and not the camera.
+  reset: previous.reset + 1,
+ };
+}

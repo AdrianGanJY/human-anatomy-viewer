@@ -32,13 +32,35 @@ interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=
   *   the whole atlas can land first, which reported 33 MB / 15 chunks for a 9 MB / 4 chunk
   *   barrier at one viewport out of four (measured 2026-09-07 — a flake, and therefore the
   *   worst kind of number to publish). */
- onSceneReady?:(armedAt:number)=>void}
-export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady}:Props){
+ onSceneReady?:(armedAt:number)=>void;
+ /** L31 v2.1a — THE SCENE GENERATION, and the ids that generation requires.
+  *
+  *  `onSceneReady` above fires ONCE, for the priority set frozen at mount. A page that re-drives
+  *  itself (`location.hash`, `window.atlas.applyScene`) then has no way to say "readiness now means
+  *  a DIFFERENT set of meshes", and codex's review found both halves of that broken
+  *  (codex-app-review.md §2 row 5, R:29): between the barrier and full load the re-drive cleared
+  *  readiness and nothing restored it, and before the first barrier the pending barrier belonged to
+  *  the superseded scene and published readiness for it.
+  *
+  *  So the barrier is re-armable. When `sceneEpoch` changes, readiness is withdrawn and re-armed
+  *  against `requiredIds` — and it is published only once every chunk those ids live in has been
+  *  merged AND a frame has been drawn. Absent (v1) means exactly the previous behaviour: one
+  *  generation, one barrier, and since v1 also passes no `onSceneReady`, none of this runs at all. */
+ sceneEpoch?:number;
+ requiredIds?:readonly string[]}
+export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady,sceneEpoch,requiredIds}:Props){
  const host=useRef<HTMLDivElement>(null),latest=useRef(state),select=useRef(onSelect);
  const priorityRef=useRef(priority),sceneReadyCb=useRef(onSceneReady);
+ const epochRef=useRef(sceneEpoch),requiredRef=useRef(requiredIds);
  latest.current=state;select.current=onSelect;priorityRef.current=priority;sceneReadyCb.current=onSceneReady;
+ epochRef.current=sceneEpoch;requiredRef.current=requiredIds;
  useEffect(()=>{
   const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,sceneReady=false,sceneReadyPending=false,sceneReadyFired=false,sceneReadyAt=0,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
+  /** Whether a barrier is OWED. The loader sets it for the first generation; an epoch change sets
+   *  it again. Distinct from `sceneReadyPending` (armed, waiting for a frame) and from
+   *  `sceneReadyFired` (published for the current generation) — three states, because "we owe a
+   *  barrier but the geometry has not arrived" is a real and previously unrepresented one. */
+  let sceneReadyWanted=false;
   let lastState:SceneState|null=null;
   // L30 P4: teaching-plate bookkeeping. `still` counts consecutive frames with nothing
   // left to draw, which is what `data-atlas-settled` means; `settled` stops us writing
@@ -209,6 +231,57 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
   };
   const mats=new Map(SYSTEMS.map(s=>[s.id,materialFor(s.id)]));
   let loaded=0;
+  /**
+   * ── L31 v2.1a: GENERATION-AWARE READINESS ────────────────────────────────────────────────────
+   *
+   * `loadedChunks` is which chunk indices are merged into the graph. `chunksFor` maps the ids a
+   * generation needs onto that set through atlas.json metadata — a CONCEPT names elements, and a
+   * part carries its chunk, so "is this scene's geometry here yet" is answerable without waiting
+   * for all 15. `armIfSatisfied` is the only place readiness is ever armed after the first barrier:
+   * it fires nothing itself, it sets `sceneReadyPending`, and the FRAME LOOP publishes it after the
+   * next `renderer.render()` — because merged is not drawn, and the marker means drawn.
+   *
+   * `lastEpoch` starts at the incoming epoch rather than at -1, so a page that never re-drives
+   * takes exactly the original path and the first barrier is still the loader's.
+   */
+  const loadedChunks=new Set<number>();
+  let lastEpoch=epochRef.current;
+  // Built ONCE. The obvious spelling of `chunksFor` is a `.find()` per element over 3,432 concepts
+  // and 2,234 parts, and it would run on every chunk completion — ~2.8M comparisons across a load
+  // for a scene the size of the heart (83 elements). Two maps make it a lookup.
+  const chunkOfPart=new Map(atlas.parts.map(p=>[p.id,p.chunk]));
+  const elementsOfConcept=new Map(atlas.concepts.map(c=>[c.id,c.elements]));
+  const chunksFor=(ids:readonly string[])=>{
+   const want=new Set<number>();
+   for(const id of ids){
+    for(const el of (elementsOfConcept.get(id)??[id])){
+     const c=chunkOfPart.get(el);
+     if(c!==undefined)want.add(c);
+    }
+   }
+   return want;
+  };
+  /** True when every chunk this generation needs is merged. An UNKNOWN id contributes no chunk, so
+   *  a scene naming a structure this atlas does not have cannot block readiness for ever. */
+  const satisfied=()=>{
+   if(ready)return true;                                   // all 15 chunks in: trivially satisfied
+   const ids=requiredRef.current??priorityRef.current??[];
+   if(!ids.length)return ready;                            // nothing named ⇒ only "everything" counts
+   for(const c of chunksFor(ids))if(!loadedChunks.has(c))return false;
+   return true;
+  };
+  const armIfSatisfied=()=>{
+   // `sceneReadyPending` IS AN EARLY RETURN, and leaving it out was a measured regression rather
+   // than a theoretical one. `armedAt` is the byte cut-off the page freezes at the barrier, so
+   // re-arming an already-armed generation pushes that timestamp forward every time another chunk
+   // lands before the frame loop gets to publish — and the loader runs three concurrent fetches,
+   // so several land between two frames. The phone's barrier reported 29,361,939 B / 13 chunks
+   // instead of 9,053,527 B / 4 (verify-ux.mjs, first post-fix run): not a slower page, a moving
+   // ruler. The first satisfied moment is the one that means anything.
+   if(disposed||!sceneReadyCb.current||sceneReadyFired||sceneReadyPending||!sceneReadyWanted)return;
+   if(!satisfied())return;
+   sceneReadyPending=true;sceneReadyAt=performance.now();dirty=true;
+  };
   const loadChunk=async(ci:number)=>{
    const chunk=atlas.chunks[ci],compressed=!!chunk.gzip&&typeof DecompressionStream!=='undefined';const response=await fetch(compressed?chunk.gzip!:chunk.url,{signal:abort.signal});const buffer=await decodeModelResponse(response,chunk.bytes,compressed);if(disposed)return;
    const groups=new Map<string,T.BufferGeometry[]>();
@@ -222,7 +295,10 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
     const list=groups.get(p.system)??[];list.push(g);groups.set(p.system,list);
    });
    groups.forEach((gs,system)=>{const geometry=mergeGeometries(gs,false);if(!geometry)throw new Error('Could not assemble anatomy geometry.');geometries.push(geometry);const mesh=new T.Mesh(geometry,mats.get(system as never));mesh.frustumCulled=false;scene.add(mesh);});
-   lastState=null;loaded++;onProgress(Math.round(loaded/atlas.chunks.length*100));dirty=true;
+   lastState=null;loaded++;loadedChunks.add(ci);onProgress(Math.round(loaded/atlas.chunks.length*100));dirty=true;
+   // A LATE CHUNK CAN COMPLETE A WAITING GENERATION. Without this, a re-drive whose meshes were
+   // still queued would arm nothing and wait forever — which is failure mode (a) of R:29.
+   armIfSatisfied();
   };
   /**
    * L31 v2 — SCENE-FIRST CHUNK ORDER WITH A PHASE BARRIER. Not streaming: `model-download.ts:6`
@@ -255,9 +331,13 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // "drawn" while firing synchronously after the merge, which also meant the byte count the
    // page freezes at the barrier was read before the last chunk's PerformanceResourceTiming
    // entry was guaranteed complete.
-   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
+   if(!disposed&&rest.length){sceneReady=true;dirty=true;sceneReadyWanted=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
    await run(rest);
-   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyPending=true;sceneReadyAt=performance.now();}}
+   if(!disposed){ready=true;dirty=true;if(!rest.length){sceneReady=true;sceneReadyWanted=true;sceneReadyPending=true;sceneReadyAt=performance.now();}
+    // EVERY CHUNK IS IN. If a generation is still owed a barrier at this point it is satisfied by
+    // definition, and this is the line that makes failure mode (a) of R:29 impossible: previously
+    // `onProgress(100)` restored `data-atlas-ready` and nothing ever restored the scene marker.
+    armIfSatisfied();}
   }catch(e){if(!disposed)onError(e instanceof Error?e.message:'Could not load the anatomy.');}})();
   // L30 P4: the camera direction per named view, extracted so the focus fit below uses the
   // SAME table `fit` does. It used to be inlined here and hard-coded there, which is why
@@ -328,6 +408,17 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
   const clock=new T.Clock();let lastExtent=-1;
   const animate=()=>{
    if(disposed)return;frame=requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),.05),s=latest.current;
+   // ── A NEW SCENE GENERATION ────────────────────────────────────────────────────────────────
+   // Checked here rather than in an effect so it cannot race the loader: the loop is the only
+   // thing that publishes the marker, so it is also the right place to withdraw it. The page has
+   // already cleared `data-atlas-scene-ready` in the DOM by the time it bumps the epoch (that is
+   // its own re-drive contract); this side clears the FIRED flag so the next satisfied generation
+   // can publish again, and re-arms immediately when the geometry is already present.
+   if(epochRef.current!==lastEpoch){
+    lastEpoch=epochRef.current;
+    sceneReadyFired=false;sceneReadyPending=false;sceneReadyWanted=true;
+    armIfSatisfied();
+   }
    // L30 P4: the new style inputs join this guard. It is REFERENCE equality by design, so
    // every one of them must be a fresh object identity when it changes and must be named
    // here -- a map mutated in place, or one left out of this line, never reaches the GPU,
@@ -440,8 +531,8 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // to later.
    if(dirty){renderer.render(scene,camera);targets=(amount>.45||s.render)?computeTargets():[];
     dirty=false;still=0;if(settled){settled=false;markSettled(false);}
-    // THE PHASE BARRIER, published only now that the priority set has been DRAWN.
-    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyCb.current?.(sceneReadyAt);}
+    // THE PHASE BARRIER, published only now that the CURRENT generation's set has been DRAWN.
+    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyWanted=false;sceneReadyCb.current?.(sceneReadyAt);}
    }
    // L30 P4: SETTLED. Three consecutive frames with nothing left to draw means the camera
    // fit has finished flying (OrbitControls damping keeps `dirty` true while it moves) and

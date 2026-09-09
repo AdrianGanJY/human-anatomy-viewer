@@ -190,6 +190,11 @@ html:lang(zh-Hans) .v2-set h2,html:lang(zh-Hant) .v2-set h2{letter-spacing:.02em
 .v2-row-name i{display:block;font-size:11px;font-style:normal;color:var(--v2-ink-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .v2-row-name em{font-style:normal;font-size:12px;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
 .v2-row-x{min-width:44px;min-height:44px;font-size:18px;color:var(--v2-ink-3)}
+/* A REFUSED EDIT. Amber rather than red: nothing broke and nothing was lost — the edit simply did
+   not fit the scene's bounds, and the previous state is intact. It sits at the top of the scrolling
+   region so it is next to the controls that produced it. */
+.v2-refused{margin:10px 0 12px;padding:10px 12px;border-radius:10px;border:1px solid #b4530033;background:#b453000f;color:#8a4200;font-size:12px;line-height:1.5}
+body[data-ground=dark] .v2-refused{border-color:#f0b46955;background:#f0b4691a;color:#f2c893}
 .v2-set-foot{display:flex;align-items:center;gap:12px;padding-top:8px;font-size:12px;color:var(--v2-ink-2)}
 .v2-set-foot label{position:relative;display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer}
 .v2-set-foot button{min-height:44px;padding:0 10px;color:var(--v2-ink-2)}
@@ -197,13 +202,30 @@ html:lang(zh-Hans) .v2-set h2,html:lang(zh-Hant) .v2-set h2{letter-spacing:.02em
 .v2-meta{display:flex;gap:16px;flex-wrap:wrap;padding-top:12px;margin-top:8px;border-top:1px solid var(--v2-line-2);font-size:11px;color:var(--v2-ink-3)}
 .v2-meta b{font-weight:500;color:var(--v2-ink-2)}
 .v2-meta a{min-height:44px;display:inline-flex;align-items:center;color:var(--v2-accent)}
-.v2-probe{margin-top:14px;padding:12px;background:var(--v2-surface-2);border-radius:10px;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:44dvh;overflow:auto}
+/* ── ?probe=1 — ITS OWN FIXED LAYER, NOT A MARGIN CHILD ──────────────────────────────────────
+   It used to be the last child of `.v2-margin-scroll` (critic gap 5, v21-design.md:900), which put
+   the ONLY real-device timing lane this project has inside the one container that is hidden at the
+   phone's peek detent and that v2.1b's shell deletes at >=768. P2c's own gate requires running
+   `?probe=1` on the iPad — a requirement that its own layout change would have made impossible.
+
+   `.v2-chrome` is a pass-through overlay: it covers the viewport so its children can be positioned
+   against it, and it takes no pointer events itself, so the canvas underneath keeps every drag.
+   Children opt back in. It is also the single surface `?stage=1` has to hide, so a future panel
+   added here is fenced by construction rather than by remembering to add it to a list. */
+.v2-chrome{position:fixed;inset:0;z-index:60;pointer-events:none}
+.v2-chrome>*{pointer-events:auto}
+.v2-probe{position:fixed;left:12px;bottom:12px;width:min(360px,calc(100vw - 24px));margin:0;padding:12px 12px 10px;background:var(--v2-surface);border:1px solid var(--v2-line);border-radius:10px;box-shadow:var(--v2-shadow);font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:44dvh;overflow:auto}
+.v2-probe-close{position:absolute;top:2px;right:2px;min-width:44px;min-height:44px;font-size:15px;color:var(--v2-ink-2);border-radius:8px}
+/* The reading is a `<pre>`; the close control must not inherit its monospace or its wrapping. */
+.v2-probe-close{font-family:var(--v2-font)}
 
 /* ── ?stage=1 — the chrome-free DISPLAY state (reserved for L32) ─────────────────────────────
    State-driven, not a second app: the same DOM, one class. No camera, no microphone, no
    WebSocket — those belong to the future display client, and this is only the surface it will
    drive. Any tap on the exit control restores the chrome. */
-body.v2-stage .v2-head,body.v2-stage .v2-rail,body.v2-stage .v2-margin{display:none}
+/* `.v2-chrome` joins the fence: the probe panel is now a chrome surface in its own right, and the
+   L32 display client's contract is that `?stage=1` shows the figure and NOTHING else. */
+body.v2-stage .v2-head,body.v2-stage .v2-rail,body.v2-stage .v2-margin,body.v2-stage .v2-chrome{display:none}
 body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template-areas:"field"}
 .v2-stage-exit{position:absolute;top:12px;right:12px;min-height:44px;min-width:44px;padding:0 14px;border-radius:10px;background:var(--v2-surface);border:1px solid var(--v2-line);font-size:12px;color:var(--v2-ink-2);opacity:.45}
 .v2-stage-exit:hover,.v2-stage-exit:focus-visible{opacity:1}
@@ -227,6 +249,16 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
  .v2-margin{max-height:none;min-height:0;border-top:0;border-left:1px solid var(--v2-line);box-shadow:none}
  .v2[data-detent=half] .v2-margin{max-height:none}
  .v2-handle{display:none}
+ /* ⚠️ THE FIRST HIGH IN codex's REVIEW (§2 row 1, R:25). `detent` is PHONE state — it starts at
+    'peek', and `.v2[data-detent=peek] .v2-margin-scroll{display:none}` (:154) had no override up
+    here, while `.v2-handle{display:none}` above removes the only control that changes it. So a
+    plain `/v2/` at any desktop width opened with Find, Systems and all four views hidden behind an
+    affordance that was not on the page, and the only way out was to select some anatomy — which
+    calls `setDetent('half')` as a side effect. Measured red at 768/1024/1366/1440/1920 before this
+    line (verify-ux.mjs, "plain entry ... reachable"); the phone tier keeps its two detents.
+    v2.1b replaces this whole region with real dock regions; until then desktop visibility must not
+    be a function of phone detent state at all. */
+ .v2[data-detent=peek] .v2-margin-scroll{display:block}
  .v2-term{padding-top:16px}
  .v2-head h1{font-size:20px}
 }
@@ -240,6 +272,11 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
  .v2{grid-template-columns:1fr var(--v2-rail) 45%;grid-template-rows:var(--v2-head) 1fr;grid-template-areas:"head head head" "field rail margin"}
  .v2-margin{max-height:none;min-height:0}
  .v2-handle{display:none}
+ /* SAME DEFECT, SAME CURE, and this tier is why the fix cannot live only in the width query: a
+    rotated 390x844 phone is 844x390, which is BELOW 768 wide and therefore never matches the block
+    above — yet it hides the handle too. A landscape phone had the identical unreachable-controls
+    bug and no oracle viewport loaded it. */
+ .v2[data-detent=peek] .v2-margin-scroll{display:block}
  .v2-note{display:none}
 }
 @media (prefers-reduced-motion:reduce){

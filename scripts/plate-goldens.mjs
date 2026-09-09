@@ -26,6 +26,60 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {encodeScene, normalizeScene} from '../app/scene-codec.js';
 
+/**
+ * ══ COMPARE MODE (L31 v2.1a) ═══════════════════════════════════════════════════════════════════
+ *   node scripts/plate-goldens.mjs compare <before.json> <after.json>
+ *
+ * Producing two artifacts and eyeballing them is not a gate. codex's plan review classified this
+ * script as a "PRINTED-ONLY artifact producer, omitted from kickoff verification"
+ * (codex-plan-review.md §C) and asked for a comparison that FAILS on missing or errored entries and
+ * on unexplained camera/bounds/image changes, tolerating the documented ghost stochasticity.
+ *
+ * The three signals are deliberately NOT equal in authority:
+ *   CAMERA and RECT are deterministic. Any change is a FAILURE — this is the framing regression the
+ *     render-path tripwire actually cares about.
+ *   THE PNG HASH is not deterministic for a scene carrying a GHOST. Measured on an UNCHANGED
+ *     deployment (worklog 2026-09-07): forward-bend hashed f6d8f9e6 → 1b7a09da → f6d8f9e6, because
+ *     alphaHash resolves transparency by a stochastic coverage dither. So for the ghost scenes a
+ *     hash change is NOISE and is reported without failing; for the others it is a failure.
+ *   A MISSING or ERRORED plate on either side is always a failure. An absent measurement reads as
+ *     "nothing changed" and that is the one reading it must never produce.
+ */
+const GHOSTED = new Set(['forward-bend']);   // the only control scene with a `ghost` role
+
+if (process.argv[2] === 'compare') {
+  const {readFileSync} = await import('node:fs');
+  const [beforePath, afterPath] = [process.argv[3], process.argv[4]];
+  if (!beforePath || !afterPath) {
+    console.error('usage: node scripts/plate-goldens.mjs compare <before.json> <after.json>');
+    process.exit(2);
+  }
+  const before = JSON.parse(readFileSync(beforePath, 'utf8'));
+  const after = JSON.parse(readFileSync(afterPath, 'utf8'));
+  const names = [...new Set([...Object.keys(before.plates), ...Object.keys(after.plates)])];
+  const failures = [], notes = [];
+  for (const name of names) {
+    const b = before.plates[name], a = after.plates[name];
+    if (!b || !a) { failures.push(`${name}: present on only one side (before=${!!b} after=${!!a})`); continue; }
+    if (b.error || a.error) { failures.push(`${name}: errored (before=${b.error ?? 'ok'} after=${a.error ?? 'ok'})`); continue; }
+    if (!b.rect || !a.rect) { failures.push(`${name}: no projected rect on one side — the subject was not drawn`); continue; }
+    if (b.rect.cam !== a.rect.cam) failures.push(`${name}: CAMERA moved\n      before ${b.rect.cam}\n      after  ${a.rect.cam}`);
+    for (const k of ['l', 'r', 't', 'b', 'w', 'h']) {
+      if (b.rect[k] !== a.rect[k]) failures.push(`${name}: projected bounds ${k} ${b.rect[k]} -> ${a.rect[k]}`);
+    }
+    if (b.hash !== a.hash) {
+      const line = `${name}: PNG hash ${b.hash} -> ${a.hash}`;
+      if (GHOSTED.has(name)) notes.push(`${line}  (TOLERATED: this scene carries a ghost and its hash is not stable run to run on an unchanged build)`);
+      else failures.push(`${line}  — camera and bounds are identical, so the PIXELS changed on their own`);
+    }
+  }
+  console.log(`plate goldens: ${names.length} control scenes\n  before ${beforePath}\n  after  ${afterPath}\n`);
+  for (const n of notes) console.log(`  note  ${n}`);
+  for (const f of failures) console.log(`  FAIL  ${f}`);
+  console.log(`\n${failures.length === 0 ? 'IDENTICAL within tolerance' : `${failures.length} DIFFERENCE(S)`} — ${notes.length} tolerated note(s)`);
+  process.exit(failures.length === 0 ? 0 : 1);
+}
+
 const base = process.argv[2] ?? 'https://anatomy.adrian.my';
 const outDir = process.argv[3] ?? 'E:/Agentic/.artifacts/L31/v2/goldens';
 const label = process.argv[4] ?? 'run';

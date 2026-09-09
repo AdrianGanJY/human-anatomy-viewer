@@ -57,6 +57,10 @@ export const V2: Record<string, Row> = {
  'view.back':      {en: 'Back', 'zh-Hans': '后视', 'zh-Hant': '後視'},
 
  'stage.exit':     {en: 'Show controls', 'zh-Hans': '显示控件', 'zh-Hant': '顯示控件'},
+ // `?probe=1` — the real-device timing lane. It has its own fixed panel as of v2.1a, so it needs
+ // a label and a dismiss control of its own rather than inheriting the margin's.
+ 'probe.aria':     {en: 'Timing probe', 'zh-Hans': '性能测量', 'zh-Hant': '效能測量'},
+ 'probe.close':    {en: 'Hide the timing probe', 'zh-Hans': '隐藏性能测量', 'zh-Hant': '隱藏效能測量'},
  'lang.aria':      {en: 'Language', 'zh-Hans': '语言', 'zh-Hant': '語言'},
  'error.load':     {en: 'The anatomy could not be loaded.', 'zh-Hans': '无法载入解剖数据。', 'zh-Hant': '無法載入解剖資料。'},
  'error.reload':   {en: 'Reload', 'zh-Hans': '重新载入', 'zh-Hant': '重新載入'},
@@ -66,11 +70,38 @@ export const V2: Record<string, Row> = {
  'v2.badge':       {en: 'v2', 'zh-Hans': 'v2', 'zh-Hant': 'v2'},
 };
 
-/** `{n}`-style placeholders, same contract as `i18n/ui.ts fmt`. */
+/**
+ * ENGLISH SINGULARS. `{n} pieces` printed "1 pieces" on the screenshot Adrian sent
+ * (v21-design.md:912) — and the design's own wireframe drew "1 piece", so the spec and the picture
+ * disagreed while the code matched neither.
+ *
+ * ENGLISH ONLY, DELIBERATELY. Chinese has no grammatical number: 个部件 is correct for one and for
+ * a thousand, so a per-language plural table would be three rows to express one rule and two of
+ * them would be identical to the base. Nothing here falls back — a key absent from this table
+ * keeps its `V2` row exactly as before.
+ *
+ * THE AUDIT (critic gap 7 asks for it explicitly). Every `{n}` string in `V2`:
+ *   `margin.pieces` — "{n} pieces" → needs a singular. Listed below.
+ *   `rail.more`     — "{n} more"   → "1 more" is already correct English. NOT listed, on purpose;
+ *                                    adding it would be a change with no defect behind it.
+ * No other row interpolates a count (`entry.bytes` takes {done}/{total}, `rail.focus` and
+ * `search.add` take {name}).
+ */
+export const V2_ONE: Record<string, string> = {
+ 'margin.pieces': '{n} piece',
+};
+
+/** `{n}`-style placeholders, same contract as `i18n/ui.ts fmt`, plus the English singular above. */
 export function v2t(lang: Lang, key: string, vars?: Record<string, string | number>): string {
  const row = V2[key];
  if (!row) return key;
- const s = row[lang] ?? row.en;
+ let s = row[lang] ?? row.en;
  if (!vars) return s;
+ // `n` reaches here already localised (`(1234).toLocaleString()` ⇒ "1,234"), so parse rather than
+ // compare: a separator makes this NaN, which is not 1, which is the plural — the right answer by
+ // the right route.
+ if (lang === 'en' && vars.n !== undefined && Number(String(vars.n).replace(/[\s,]/g, '')) === 1 && V2_ONE[key]) {
+  s = V2_ONE[key];
+ }
  return s.replace(/\{(\w+)\}/g, (whole, k) => (vars[k] === undefined ? whole : String(vars[k])));
 }

@@ -82,4 +82,28 @@ bucket_name = "human-anatomy-snaps"
 # subject rect are the evidence, and the hash is noise — recorded here so the next reader does
 # not mistake the oscillation for a regression, or trust the hash for a scene where it means
 # nothing.
-SITE_BUILD = "l31h"
+#
+# ══ BUMPED TO l31v21a (L31 v2.1a, 2026-09-09) — AND THIS ONE REALLY IS A RENDER-PATH CHANGE ══════
+# The three edits above were all argued (and measured) to be v2-path only, which is why the id sat
+# at l31h through two deploys. This one is not: `reDriveHash()`'s LEGACY branch now writes `lang`
+# and `system` with explicit defaults (workers/snap/src/helpers.mjs), so what a WARM tab draws
+# changes. Every PNG rendered on a reused tab before this bump may carry the PREVIOUS request's
+# language or system while sitting under a perfectly valid key — the silent failure the helpers
+# file's own header warns about. Those entries have to be retired, and a cache version is the only
+# mechanism that retires them.
+#
+# THE COST IS REAL AND IS NOT HIDDEN: per the note above, Browser Rendering minutes are exhausted on
+# the Adrey account, so this bump takes cached links from "a slightly older picture" to "no picture
+# until the allowance resets". That is the correct trade — a wrong picture in a vocabulary-teaching
+# tool is worse than no picture — but it is Adrian's call to reverse if it bites, and there is a
+# cheaper alternative on the shelf: salt the key per BRANCH rather than globally
+# (`${SITE_BUILD}${params.get('scene') ? '' : '-l31v21a'}` at src/index.mjs:138), which retires only
+# the legacy-branch entries this repair can affect and leaves every scene-branch PNG warm. It was
+# NOT taken here because it edits the cache-key computation — the highest-hazard line in this
+# Worker — in the same commit as six other repairs, and a blanket bump is the mechanism the whole
+# design and deploy.ps1's tripwire are built around. Recorded so the option does not have to be
+# rediscovered.
+#
+# `canonical()` is UNCHANGED, so no existing URL's key moves for any reason other than this id;
+# that is frozen in test/redrive-hash.test.mjs against a literal expected string.
+SITE_BUILD = "l31v21a"
