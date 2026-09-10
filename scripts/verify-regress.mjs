@@ -35,7 +35,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {join} from 'node:path';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
-import {attachRequestLedger} from './request-ledger.mjs';
+import {attachRequestLedger, populationCheck} from './request-ledger.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -114,10 +114,12 @@ const assert = (name, pass, measured, want, prereq = false) => {
 /** Shorthand for the assertions that only say "the case ran". */
 const prereq = (name, pass, measured, want) => assert(name, pass, measured, want, true);
 
-const browser = await chromium.launch({
-  executablePath: 'C:\\Users\\adrian\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-});
+/** Named, because CASE 12 launches a SECOND browser with two extra flags and the difference
+ *  between the two arg lists has to be readable rather than retyped. */
+const CHROME_EXE = 'C:\\Users\\adrian\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe';
+const CHROME_ARGS = ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+
+const browser = await chromium.launch({executablePath: CHROME_EXE, args: CHROME_ARGS});
 
 /** A clean profile every time. `atlas.lang` is written to localStorage on every scene apply and is
  *  SHARED with v1 (app/v2/page.tsx:255), so a reused profile makes the language cases measure the
@@ -1023,6 +1025,9 @@ if (want('plain-entry-widths')) {
 if (want('favicon-ledger')) {
   openCase('favicon-ledger', 'C1', 'the request ledger counts a start Playwright suppresses (/favicon.ico)', 'codex review 6 H1');
   const ORDINARY = 4;
+  /** Established by the interception-OFF pass against the fixture server's own log, then required
+   *  exactly by the interception-ON pass. Interception must not change what the browser ISSUES. */
+  let expectedFav = -1;
   const hits = [];
   const server = createServer((req, res) => {
     hits.push(req.url);
@@ -1065,16 +1070,33 @@ if (want('favicon-ledger')) {
         const cdpOrdinary = ledger.cdp.filter((r) => !isFav(r.url));
         const pwFav = ledger.pw.filter((r) => isFav(r.url));
 
+        const serverFav = hits.filter((u) => u === '/favicon.ico').length;
+        // EXACT, ANCHORED ON A SECOND INSTRUMENT. codex review 7, Low 2: the first version accepted
+        // any total `>= 6` while the kept green run recorded 7, so the row proved the favicon was
+        // VISIBLE without proving the count was RIGHT — and a budget is a count. With interception
+        // OFF the fixture server's own request log is ground truth and the ledger must equal it to
+        // the row (the second favicon start is the tab icon; the fixture does not need to know how
+        // many there are, only that both instruments agree). With interception ON, Playwright
+        // aborts the favicon so the server sees none — the expected count is then the one the OFF
+        // pass established on the identical fixture, which is why the two passes run in that order.
+        if (!intercept) expectedFav = cdpFav.length;
+
         prereq(`[${tag}] the fixture page loaded`, cdpOrdinary.length > 0,
           `${cdpOrdinary.length} ordinary starts`, '> 0');
-        assert(`[${tag}] the ledger counts the ordinary starts (document + ${ORDINARY} scripts)`,
-          cdpOrdinary.length === ORDINARY + 1, `${cdpOrdinary.length} ordinary starts`, String(ORDINARY + 1));
+        assert(`[${tag}] the ledger counts the ordinary starts EXACTLY (document + ${ORDINARY} scripts)`,
+          cdpOrdinary.length === ORDINARY + 1, `${cdpOrdinary.length} ordinary starts`, `exactly ${ORDINARY + 1}`);
         assert(`[${tag}] the ledger contains the /favicon.ico start`,
           cdpFav.length >= 1, `${cdpFav.length} favicon starts`, '>= 1');
-        assert(`[${tag}] the ledger totals N+1 = ${ORDINARY + 2} starts, not N`,
-          ledger.cdp.length === cdpOrdinary.length + cdpFav.length && ledger.cdp.length >= ORDINARY + 2,
+        assert(`[${tag}] the favicon count is EXACT, not merely non-zero`,
+          cdpFav.length === expectedFav,
+          intercept
+            ? `${cdpFav.length} favicon starts vs ${expectedFav} on the identical fixture without interception`
+            : `${cdpFav.length} favicon starts vs ${serverFav} hits in the fixture server's own log`,
+          `exactly ${expectedFav}`);
+        assert(`[${tag}] the ledger totals EXACTLY ordinary + favicon = ${ORDINARY + 1} + ${expectedFav}`,
+          ledger.cdp.length === (ORDINARY + 1) + expectedFav,
           `${ledger.cdp.length} total starts (${cdpOrdinary.length} ordinary + ${cdpFav.length} favicon)`,
-          `>= ${ORDINARY + 2}`);
+          `exactly ${(ORDINARY + 1) + expectedFav}`);
         // The cross-check lane, stated as an invariant that stays true whatever the driver does:
         // the protocol can only see MORE than the driver's filtered event, never less. Today the
         // difference is exactly the suppressed favicon, and that number is printed.
@@ -1085,9 +1107,9 @@ if (want('favicon-ledger')) {
         // Interception must not change the count. With it on, Playwright ABORTS the favicon — the
         // request is still ISSUED, so the protocol still has its row and the budget still bites.
         assert(`[${tag}] the browser really issued the favicon (or the driver aborted it after issuance)`,
-          cdpFav.length >= 1 && (intercept || hits.includes('/favicon.ico')),
-          `server saw ${hits.filter((u) => u === '/favicon.ico').length} favicon hits, ledger has ${cdpFav.length}`,
-          'issued');
+          cdpFav.length >= 1 && (intercept ? serverFav === 0 : serverFav === cdpFav.length),
+          `server saw ${serverFav} favicon hits, ledger has ${cdpFav.length}`,
+          intercept ? 'issued, then aborted before the wire' : 'issued and served');
         prereq(`[${tag}] every clock is the wall clock`,
           ledger.cdp.every((r) => Number.isFinite(r.at) && r.at > 1.7e12),
           `${ledger.cdp.filter((r) => !(r.at > 1.7e12)).length} rows with a non-epoch timestamp`, '0');
@@ -1095,6 +1117,130 @@ if (want('favicon-ledger')) {
       finally { await cx.close(); }
     }
   } finally { await new Promise((r) => server.close(r)); }
+}
+
+// ══ CASE 12 — THE BUDGET REFUSES A PAGE WHOSE TRAFFIC IT CANNOT SEE ══════════════════════════
+// codex review 7, High 1. `context.newCDPSession(page)` attaches to ONE target. An out-of-process
+// child frame is its own target: its `Network.requestWillBeSent` events go to ITS session
+// (crConnection.js:65 dispatches by session id, crPage.js:595 handles iframe targets separately)
+// and never reach this ledger. Sixteen page-session starts plus one child-session start is sixteen
+// rows, and `<= 16` passes — round 6's defect wearing a different hat.
+//
+// TWO REMEDIES WERE OFFERED AND THIS TAKES THE SECOND. Attaching to every child target converges on
+// nothing: OOPIFs, then dedicated workers, then shared workers, then service workers, then portals
+// and prerenders, each with its own attach-before-first-request race, each a new place for the same
+// silent omission. Naming the population and REFUSING to report a budget outside it terminates:
+// there is one gate, it is checked twice per pass, and a page that leaves the population produces a
+// red row instead of a number.
+//
+// So this case proves the gate BITES (a real out-of-process iframe makes it refuse) and that it is
+// not merely a switch welded to "no" (the app's own page passes it).
+//
+// THE FIXTURE IS GENUINELY CROSS-SITE. A second PORT is the same site to Chromium's site isolation
+// (a site is scheme + eTLD+1; the port is not part of it), so two ports on 127.0.0.1 would share a
+// process and this case would test nothing. `--host-resolver-rules=MAP *.test 127.0.0.1` gives the
+// two servers genuinely different sites (`parent.test` / `child.test`), and `--site-per-process`
+// forces the out-of-process split rather than hoping for it. BOTH FLAGS ARE FOR THIS CASE ONLY —
+// they are the difference between `CHROME_ARGS` and this launch, and the whole suite otherwise runs
+// on the same browser configuration as before.
+if (want('oopif-population')) {
+  openCase('oopif-population', 'C1', 'the request budget refuses a page with an out-of-process child frame, and accepts the app', 'codex review 7 H1');
+  const childHits = [];
+  const childSrv = createServer((req, res) => {
+    childHits.push(req.url);
+    if (req.url.startsWith('/kid-')) { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end('/* child subresource */\n'); }
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+    res.end('<!doctype html><meta charset="utf-8"><title>child</title>'
+      + '<script src="/kid-1.js"></script><script src="/kid-2.js"></script>child');
+  });
+  await new Promise((r) => childSrv.listen(0, '127.0.0.1', r));
+  const childPort = childSrv.address().port;
+  const parentSrv = createServer((req, res) => {
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+    res.end('<!doctype html><meta charset="utf-8"><title>oopif fixture</title>'
+      + `<iframe src="http://child.test:${childPort}/" width="200" height="120"></iframe>`);
+  });
+  await new Promise((r) => parentSrv.listen(0, '127.0.0.1', r));
+  const parentPort = parentSrv.address().port;
+
+  const oopifBrowser = await chromium.launch({
+    executablePath: CHROME_EXE,
+    args: [...CHROME_ARGS, '--site-per-process', `--host-resolver-rules=MAP *.test 127.0.0.1`],
+  });
+  try {
+    // ── the fixture: the gate must REFUSE ──────────────────────────────────────────────────────
+    const cx = await oopifBrowser.newContext({viewport: {width: 800, height: 600}});
+    try {
+      const page = await cx.newPage();
+      const ledger = await attachRequestLedger(cx, page);
+      await page.goto(`http://parent.test:${parentPort}/`, {waitUntil: 'load', timeout: 30000});
+      // Poll for the child's own traffic rather than sleeping: the child target attaches, and its
+      // two subresources are requested, after the parent's load event.
+      for (let i = 0; i < 60 && childHits.length < 3; i++) await page.waitForTimeout(100);
+      await page.waitForTimeout(500);
+
+      const iframeTargets = ledger.targets.filter((t) => t.type === 'iframe');
+      prereq('the cross-site child really became a SEPARATE target (an OOPIF materialised)',
+        iframeTargets.length > 0,
+        `${ledger.targets.length} attached targets: ${ledger.targets.map((t) => t.type).join(', ') || 'none'}`,
+        '>= 1 iframe target');
+      prereq('the child frame actually issued its own requests',
+        childHits.length >= 3, `${childHits.length} hits on the child origin (${childHits.join(', ')})`, '>= 3');
+
+      // THE DEFECT ITSELF, IN A REAL BROWSER. codex could only execute this at transport level
+      // ("not a browser reproduction"); here the child's requests are on the wire and simply are
+      // not in the ledger. This is WHY the gate exists — if it ever becomes false, the population
+      // can be widened, and this row is where that news arrives.
+      //
+      // BE EXACT ABOUT WHICH ROWS GO MISSING — the first version of this row asserted that ALL
+      // THREE child requests were absent and measured 1, because the iframe's DOCUMENT request is
+      // initiated by the PARENT and therefore does appear on the page session. It is the child's
+      // own SUBRESOURCES, issued from inside the child target after it exists, that vanish. Two
+      // requests on the wire, zero rows — and a `<= N` budget that cannot see them.
+      const childDoc = ledger.cdp.filter((r) => r.url === `http://child.test:${childPort}/`);
+      const childSub = ledger.cdp.filter((r) => /\/kid-\d\.js$/.test(r.url));
+      const childSubHits = childHits.filter((u) => u.startsWith('/kid-')).length;
+      assert('the child target’s SUBRESOURCES are invisible to the page-session ledger (its parent-initiated document is not)',
+        childSub.length === 0 && childDoc.length === 1 && childSubHits === 2,
+        `${childDoc.length} child document row(s), ${childSub.length} of the child’s ${childSubHits} subresource requests in the ledger`,
+        '1 document row, 0 of 2 subresource rows');
+
+      // THE GATE. This is the assertion that fails against the round-6 ledger, which had no
+      // population check at all and would have reported a budget over a page it half-measured.
+      const pop = await populationCheck(page, ledger);
+      assert('the population gate REFUSES this page', pop.ok === false,
+        pop.measured.slice(0, 200), 'refused');
+      assert('the refusal NAMES the out-of-ledger target (type and url), not just "failed"',
+        /iframe/.test(pop.measured) && pop.measured.includes('child.test'),
+        pop.measured.slice(0, 200), 'names the iframe target');
+      assert('the refusal also reports the second frame', pop.frames === 2, `${pop.frames} frames`, '2');
+    } catch (e) { prereq('the OOPIF fixture ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { await cx.close(); }
+  } finally {
+    await oopifBrowser.close();
+    await new Promise((r) => parentSrv.close(r));
+    await new Promise((r) => childSrv.close(r));
+  }
+
+  // ── the app's own page: the gate must ACCEPT ─────────────────────────────────────────────────
+  // A gate that refuses everything is not a gate. This is the control arm, on the ordinary browser
+  // and the real app, and it is the same call the acceptance suite makes before every budget row.
+  {
+    const {context, page, errors} = await fresh();
+    try {
+      const ledger = await attachRequestLedger(context, page);
+      await page.goto(`${base}/v2/`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await waitAll(page);
+      await page.waitForTimeout(SETTLE);
+      const pop = await populationCheck(page, ledger);
+      assert('the population gate ACCEPTS the app’s own page', pop.ok, pop.measured.slice(0, 200), 'inside the population');
+      assert('the app has exactly one frame and attached no child target',
+        pop.frames === 1 && pop.targets.length === 0,
+        `${pop.frames} frames, ${pop.targets.length} attached targets`, '1 frame, 0 targets');
+      prereq('no page error (control arm)', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+    } catch (e) { prereq('the control arm ran', false, String(e).slice(0, 200), 'no throw'); }
+    finally { await context.close(); }
+  }
 }
 
 await browser.close();

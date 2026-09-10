@@ -67,7 +67,7 @@ import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
-import {LEDGER_EXCLUSION, attachRequestLedger, rowsByBarrier} from './request-ledger.mjs';
+import {POPULATION, attachRequestLedger, populationCheck, rowsByBarrier} from './request-ledger.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -408,6 +408,16 @@ for (const vp of SWEEP) {
     // "a fresh EN visit fetches no Chinese dictionary", is asserted on the bare EN page below,
     // because it is a claim about the EN entry and cannot be made from a zh one.
     const origin = new URL(base).origin;
+    // ── THE POPULATION GATE, BEFORE THE SNAPSHOT IS CONSUMED ────────────────────────────────
+    // codex review 7, High 1: a page-session CDP ledger cannot see an out-of-process child
+    // frame's requests, so a page that has one reports a budget over a population it does not
+    // measure. Rather than chase every target type (iframe, then workers, then portals, each
+    // with its own attach-before-first-request race), the population is NAMED and this row
+    // REFUSES the budget when the page leaves it. Run here, and again at the end of the pass,
+    // because a child target attaching later invalidates the snapshot retroactively.
+    const popAtBarrier = await populationCheck(page, ledger);
+    check(vp.name, 'the request budget’s population holds at the barrier (1 frame, no child targets, no service workers)',
+      popAtBarrier.ok, popAtBarrier.measured, POPULATION);
     // THE ASSERTED LANE IS CDP. `pwRows` is Playwright's own `request` event over the same window,
     // printed beside it and asserted on by nothing: where the two disagree, the difference is what
     // the driver suppressed (a `/favicon.ico` start is the known member — review 6, High 1).
@@ -432,7 +442,7 @@ for (const vp of SWEEP) {
     // exactly the row Playwright's event hides, which is why the asserted lane is the protocol.
     check(vp.name, 'non-model requests before the barrier (protocol starts, not completions)',
       reqs.at !== null && reqs.nonModel.length <= 16,
-      `${reqs.nonModel.length} non-model starts via CDP [${LEDGER_EXCLUSION}] (${reqs.distinct} distinct URLs), `
+      `${reqs.nonModel.length} non-model starts via CDP [population: ${POPULATION}] (${reqs.distinct} distinct URLs), `
       + `${reqs.zhDicts.length} zh dictionaries; playwright cross-check ${pwRows.length} (unasserted)`
       + `${reqs.at === null ? ' (no barrier timestamp)' : ''}`, '<= 16');
     // DISTINCT FILES, because that is what the claim is: there are exactly two dictionaries and both
@@ -440,7 +450,9 @@ for (const vp of SWEEP) {
     // the retry is visible in the non-model start count above, which is where it belongs.
     const zhDistinct = new Set(reqs.zhDicts).size;
     check(vp.name, 'zh entry still loads BOTH dictionaries on entry (baseline preserved)',
-      zhDistinct === 2, `${zhDistinct} distinct zh dictionaries (${reqs.zhDicts.length} starts) by the barrier`, '2 distinct');
+      zhDistinct === 2,
+      `${zhDistinct} distinct zh dictionaries (${reqs.zhDicts.length} starts) by the barrier [population: ${POPULATION}]`,
+      '2 distinct');
 
     // ── 1 ORIENTATION ──────────────────────────────────────────────────────────────────────
     let titleText = '';
@@ -741,6 +753,12 @@ for (const vp of SWEEP) {
     await page.evaluate(() => { document.documentElement.lang = 'zh-Hans'; });
 
     await page.screenshot({path: join(outDir, `${label}-${vp.name}.png`)});
+    // AND AGAIN AT THE END. A child target that attaches after the barrier snapshot invalidates
+    // the budget row above retroactively — the number was taken over a population the page had
+    // already left. Checking only at the barrier would be a gate that closes before the hazard.
+    const popAtEnd = await populationCheck(page, ledger);
+    check(vp.name, 'the population still holds at the END of the pass (no child target attached later)',
+      popAtEnd.ok, popAtEnd.measured, POPULATION);
     check(vp.name, 'no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | ') || 'none', 'none');
   } catch (e) {
     check(vp.name, 'run completed', false, String(e).slice(0, 220), 'no throw');
@@ -770,6 +788,11 @@ for (const vp of SWEEP) {
     // the state this page is in. The assertion is therefore exact now and stays exact when
     // v2.1b replaces the panel with the palette.
     const bareOrigin = new URL(base).origin;
+    // The same population gate, because this pass consumes the same kind of ledger and makes a
+    // NEGATIVE claim from it ("no Chinese dictionary was requested"). An absence measured over an
+    // unknown population is the weakest reading in the suite, so it gets the gate first.
+    const barePop = await populationCheck(barePage, bareLedger);
+    check(vp.name, 'bare entry: the population holds before the ledger is read', barePop.ok, barePop.measured, POPULATION);
     // No barrier on this pass: every row so far, from the protocol ledger.
     const bareStarted = rowsByBarrier(bareLedger, null, bareOrigin);
     const barePw = (bareLedger.pw ?? []).length;
@@ -788,7 +811,7 @@ for (const vp of SWEEP) {
     check(vp.name, 'a fresh EN visit requests NO Chinese dictionary before the palette opens',
       bareReqs.lang === 'en' && bareReqs.zh.length === 0,
       `lang=${bareReqs.lang}, ${bareReqs.zh.length} zh dictionary requests of ${bareReqs.total} total CDP starts `
-      + `[${LEDGER_EXCLUSION}]; playwright cross-check ${barePw} (unasserted)`, '0');
+      + `[population: ${POPULATION}]; playwright cross-check ${barePw} (unasserted)`, '0');
 
     // ── bare framing: the DEFAULT fit, which is the picture Adrian rejected ───────────────────
     const bareFrame = await barePage.evaluate(({id, fieldSel}) => {
@@ -953,6 +976,8 @@ for (const vp of SWEEP) {
         `${bareTargets.small.length} of ${bareTargets.total} under 44px${bareTargets.small.length ? ': ' + bareTargets.small.slice(0, 5).join(', ') : ''}`, '0');
     }
 
+    const barePopEnd = await populationCheck(barePage, bareLedger);
+    check(vp.name, 'bare entry: the population still holds at the END of the pass', barePopEnd.ok, barePopEnd.measured, POPULATION);
     await barePage.screenshot({path: join(outDir, `${label}-bare-${vp.name}.png`)});
     check(vp.name, `bare entry reached readiness and logged no console error (${BARE_EN})`,
       bareReady && bareErrors.length === 0,
