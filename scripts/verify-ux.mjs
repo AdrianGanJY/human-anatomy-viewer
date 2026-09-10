@@ -44,10 +44,11 @@
  *                   answers Adrian's actual complaint ("the body is tiny in a huge window"), and
  *                   `fill` cannot see it — 72.0% fill at 1440x900 was 9.37% of area.
  *  9  REQUESTS      `bytes.requests <= 4` as its own row (it lived inside oracle 3's `measured`
- *                   string), plus NON-MODEL request STARTS before the barrier — recorded from a
- *                   PerformanceObserver, not from completed Resource Timing entries, because an
- *                   in-flight 348 KB dictionary has no entry yet and is exactly the request the
- *                   assertion is about. A fresh EN visit must not fetch a Chinese dictionary
+ *                   string), plus NON-MODEL request STARTS before the barrier — recorded from CDP
+ *                   `Network.requestWillBeSent` (scripts/request-ledger.mjs), not from completed
+ *                   Resource Timing entries and not from Playwright's own `request` event: an
+ *                   in-flight 348 KB dictionary has no timing entry yet, and the driver suppresses
+ *                   `/favicon.ico` starts outright (review 6, High 1). A fresh EN visit must not fetch a Chinese dictionary
  *                   before the palette would open; a zh visit keeps its entry load.
  * 10  SAFE RECT     EVERY intended frame member is DRAWN, and the union fits the declared safe
  *                   rectangle on all four edges rather than only at the top. The load-bearing half
@@ -66,6 +67,7 @@ import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
+import {LEDGER_EXCLUSION, attachRequestLedger, rowsByBarrier} from './request-ledger.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -205,22 +207,19 @@ const browser = await chromium.launch({
  * side effect instead of the entry it names.
  */
 /**
- * THE REQUEST LEDGER LIVES HERE, on the driver, and it is attached to the context it belongs to.
+ * THE REQUEST LEDGER LIVES IN `scripts/request-ledger.mjs`, AND IT READS THE PROTOCOL.
  *
- * `context.on('request')` fires when the browser ISSUES a request — every request, with its real
- * URL, whether or not it ever completes and whoever initiated it. That is the only vantage point
- * from which "how many requests had STARTED by the barrier" is answerable, and four rounds of review
- * were spent discovering that the page itself is not one (see the note in the init script).
+ * Round 5 moved it out of the page and onto Playwright's `context.on('request')`. Round 6 found the
+ * hole in THAT: Playwright 1.55.1 suppresses `/favicon.ico` starts before the context event exists
+ * (network.js:122 + frames.js:229), so seventeen starts arrive as sixteen rows and a `<= 16` bound
+ * passes on a page that issued seventeen — while the gate's own stated population names the
+ * favicon. `Network.requestWillBeSent` is emitted by the browser, upstream of every driver-side
+ * filter, so it sees the suppressed request; and its `wallTime` is ISSUANCE-side rather than
+ * driver-receipt-side. Playwright's lane is kept beside it as an UNASSERTED cross-check.
  *
- * The clock is the driver's, and so is the barrier timestamp it is compared against, so the two are
- * on the same basis by construction.
+ * Both clocks, the barrier's conservative lateness and the `data:`/`blob:` exclusion are documented
+ * at the top of that module. The exclusion is printed in every row that reads the ledger.
  */
-const attachLedger = (context) => {
-  const started = [];
-  context.on('request', (r) => started.push({url: r.url(), at: Date.now(), type: r.resourceType()}));
-  return started;
-};
-
 const newContext = async (vp) => {
   const context = await browser.newContext({
     viewport: {width: vp.width, height: vp.height},
@@ -335,13 +334,20 @@ const newContext = async (vp) => {
     // little extra in-flight work — a conservative bias for a `<=` bound and for a
     // "no dictionary was requested" assertion, so it cannot manufacture a green.
   });
-  context.__started = attachLedger(context);
   return context;
+};
+
+/** A page with the ledger already attached. The CDP session must be open BEFORE the first
+ *  navigation, or the document request itself is a start no ledger has. */
+const newLedgerPage = async (context) => {
+  const page = await context.newPage();
+  const ledger = await attachRequestLedger(context, page);
+  return {page, ledger};
 };
 
 for (const vp of SWEEP) {
   const context = await newContext(vp);
-  const page = await context.newPage();
+  const {page, ledger} = await newLedgerPage(context);
   const consoleErrors = [];
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 160)); });
   page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e).slice(0, 160)));
@@ -402,9 +408,13 @@ for (const vp of SWEEP) {
     // "a fresh EN visit fetches no Chinese dictionary", is asserted on the bare EN page below,
     // because it is a claim about the EN entry and cannot be made from a zh one.
     const origin = new URL(base).origin;
-    const startedRows = (context.__started ?? [])
+    // THE ASSERTED LANE IS CDP. `pwRows` is Playwright's own `request` event over the same window,
+    // printed beside it and asserted on by nothing: where the two disagree, the difference is what
+    // the driver suppressed (a `/favicon.ico` start is the known member — review 6, High 1).
+    const startedRows = rowsByBarrier(ledger, barrierAt, origin);
+    const pwRows = (ledger.pw ?? [])
       .filter((r) => barrierAt === null || r.at <= barrierAt)
-      .map((r) => r.url.replace(origin, ''));
+      .filter((r) => !/\/models\/body-/.test(r.url));
     const reqs = {
       at: barrierAt, total: startedRows.length,
       nonModel: startedRows.filter((n) => !/\/models\/body-/.test(n)),
@@ -418,9 +428,13 @@ for (const vp of SWEEP) {
     // The floor is the entry's own graph: the document, the module chunks, the stylesheet,
     // atlas.json, the favicon, and (in zh) the two dictionaries. 16 is that with headroom; the
     // point of the bound is to catch a NEW eager fetch, not to pin the bundler's chunking.
-    check(vp.name, 'non-model requests before the barrier (starts, not completions)',
+    // THE FAVICON IS IN THAT POPULATION AND IS NOW ACTUALLY OBSERVED — a `/favicon.ico` start is
+    // exactly the row Playwright's event hides, which is why the asserted lane is the protocol.
+    check(vp.name, 'non-model requests before the barrier (protocol starts, not completions)',
       reqs.at !== null && reqs.nonModel.length <= 16,
-      `${reqs.nonModel.length} non-model starts (${reqs.distinct} distinct URLs), ${reqs.zhDicts.length} zh dictionaries${reqs.at === null ? ' (no barrier timestamp)' : ''}`, '<= 16');
+      `${reqs.nonModel.length} non-model starts via CDP [${LEDGER_EXCLUSION}] (${reqs.distinct} distinct URLs), `
+      + `${reqs.zhDicts.length} zh dictionaries; playwright cross-check ${pwRows.length} (unasserted)`
+      + `${reqs.at === null ? ' (no barrier timestamp)' : ''}`, '<= 16');
     // DISTINCT FILES, because that is what the claim is: there are exactly two dictionaries and both
     // must have been asked for. Counting STARTS here would make a retry look like extra coverage —
     // the retry is visible in the non-model start count above, which is where it belongs.
@@ -740,7 +754,7 @@ for (const vp of SWEEP) {
   // (no blob ⇒ `synthesize()` returns early ⇒ no plate ⇒ distance 4), the reachability of the
   // desktop controls with NO selection, and the dictionary lane on a fresh English visit.
   const bareCtx = await newContext(vp);
-  const barePage = await bareCtx.newPage();
+  const {page: barePage, ledger: bareLedger} = await newLedgerPage(bareCtx);
   const bareErrors = [];
   barePage.on('console', (m) => { if (m.type() === 'error') bareErrors.push(m.text().slice(0, 160)); });
   barePage.on('pageerror', (e) => bareErrors.push('pageerror: ' + String(e).slice(0, 160)));
@@ -756,7 +770,9 @@ for (const vp of SWEEP) {
     // the state this page is in. The assertion is therefore exact now and stays exact when
     // v2.1b replaces the panel with the palette.
     const bareOrigin = new URL(base).origin;
-    const bareStarted = (bareCtx.__started ?? []).map((r) => r.url.replace(bareOrigin, ''));
+    // No barrier on this pass: every row so far, from the protocol ledger.
+    const bareStarted = rowsByBarrier(bareLedger, null, bareOrigin);
+    const barePw = (bareLedger.pw ?? []).length;
     const bareReqs0 = await barePage.evaluate(() => {
       // The ledger is an APPEND-ONLY ARRAY of {name, at, via} — not a Map. The first version of this
       // reader called `.keys()` on it, got integer indices, and threw `n.replace is not a function`
@@ -771,7 +787,8 @@ for (const vp of SWEEP) {
     };
     check(vp.name, 'a fresh EN visit requests NO Chinese dictionary before the palette opens',
       bareReqs.lang === 'en' && bareReqs.zh.length === 0,
-      `lang=${bareReqs.lang}, ${bareReqs.zh.length} zh dictionary requests of ${bareReqs.total} total`, '0');
+      `lang=${bareReqs.lang}, ${bareReqs.zh.length} zh dictionary requests of ${bareReqs.total} total CDP starts `
+      + `[${LEDGER_EXCLUSION}]; playwright cross-check ${barePw} (unasserted)`, '0');
 
     // ── bare framing: the DEFAULT fit, which is the picture Adrian rejected ───────────────────
     const bareFrame = await barePage.evaluate(({id, fieldSel}) => {

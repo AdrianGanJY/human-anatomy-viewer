@@ -32,8 +32,10 @@
  */
 import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules/playwright-core/index.mjs';
 import {mkdirSync, writeFileSync} from 'node:fs';
+import {createServer} from 'node:http';
 import {join} from 'node:path';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
+import {attachRequestLedger} from './request-ledger.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -811,8 +813,20 @@ if (want('review2-paths')) {
         afterClear.marker === null ? 'absent' : `data-atlas-scene="${afterClear.marker}"`, 'absent');
       await page.reload({waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForTimeout(4000);
-      const afterReload = await page.evaluate(() => window.atlas?.state?.().ids ?? null);
-      assert('a reload does NOT resurrect the cleared scene', (afterReload ?? []).length === 0,
+      // THE API MUST BE THERE FOR "EMPTY" TO MEAN ANYTHING. codex review 6, Medium: this read
+      // `window.atlas?.state?.().ids ?? null`, so a page on which the atlas never mounted returned
+      // `null`, `(null ?? []).length === 0` held, and MISSING EVIDENCE passed as an empty
+      // selection — the assertion was green in exactly the case it could not see. Absence of the
+      // API is now its own loud failure, reported separately from the emptiness claim.
+      const afterReloadState = await page.evaluate(() => ({
+        hasApi: typeof window.atlas?.state === 'function',
+        ids: typeof window.atlas?.state === 'function' ? (window.atlas.state().ids ?? null) : null,
+      }));
+      assert('the atlas API is present after the reload (so "empty" is a reading, not a silence)',
+        afterReloadState.hasApi, `window.atlas.state ${afterReloadState.hasApi ? 'present' : 'MISSING'}`, 'present');
+      const afterReload = afterReloadState.ids;
+      assert('a reload does NOT resurrect the cleared scene',
+        afterReloadState.hasApi && Array.isArray(afterReload) && afterReload.length === 0,
         `ids=${JSON.stringify(afterReload)}`, 'still empty');
       prereq('no page error (clear path)', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
     } catch (e) { prereq('the clear path ran', false, String(e).slice(0, 200), 'no throw'); }
@@ -985,6 +999,102 @@ if (want('plain-entry-widths')) {
     } catch (e) { prereq(`[${width}px] the case ran`, false, String(e).slice(0, 200), 'no throw'); }
     finally { await context.close(); }
   }
+}
+
+// ══ CASE 11 — THE REQUEST LEDGER SEES A REQUEST THE DRIVER SUPPRESSES ═════════════════════════
+// codex review 6, High 1. This is a case about the INSTRUMENT, not about the app, and it belongs
+// here because the instrument is the thing every request budget in verify-ux.mjs rests on.
+//
+// Playwright 1.55.1 flags any URL ending in `/favicon.ico` (`Request._isFavicon`,
+// playwright-core/lib/server/network.js:122) and `FrameManager.requestStarted()` returns BEFORE
+// emitting the context `request` event for it — and, with interception installed,
+// `route.abort('aborted')`s it before any custom route handler runs (frames.js:229). So the ledger
+// that round 5 moved onto `context.on('request')` records sixteen rows for seventeen starts, and a
+// `<= 16` budget passes on a page that issued seventeen — while the gate's stated population names
+// the favicon explicitly (verify-ux.mjs). An instrument that cannot see a member of the population
+// it claims to measure is an acceptance defect, whatever the app happens to do.
+//
+// THE FIXTURE IS SERVED LOCALLY, not from `base`, because the claim is about the DRIVER and must
+// not depend on what the app under test happens to link. Five ordinary starts (the document plus
+// four scripts) and one `/favicon.ico`: an honest ledger reads N+1 = 6.
+//
+// RUN TWICE — interception OFF and ON — because the two code paths differ (the second one ABORTS
+// the request), and because the review asked for both by name.
+if (want('favicon-ledger')) {
+  openCase('favicon-ledger', 'C1', 'the request ledger counts a start Playwright suppresses (/favicon.ico)', 'codex review 6 H1');
+  const ORDINARY = 4;
+  const hits = [];
+  const server = createServer((req, res) => {
+    hits.push(req.url);
+    if (req.url === '/favicon.ico') { res.writeHead(200, {'content-type': 'image/x-icon'}); return res.end(Buffer.alloc(8)); }
+    if (req.url.startsWith('/ord-')) { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end('/* ordinary */\n'); }
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+    res.end('<!doctype html><meta charset="utf-8"><title>ledger fixture</title>'
+      // An EXPLICIT element, not the browser's automatic tab icon: automatic favicon fetching is
+      // headless-mode-dependent, and a fixture whose subject may not be requested at all is not a
+      // fixture. The suppression is keyed on the URL suffix regardless of initiator, so an <img>
+      // is suppressed exactly as the tab icon would be.
+      + '<img src="/favicon.ico" width="1" height="1" alt="">'
+      + Array.from({length: ORDINARY}, (_, i) => `<script src="/ord-${i + 1}.js"></script>`).join(''));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const fixture = `http://127.0.0.1:${port}/`;
+  try {
+    for (const intercept of [false, true]) {
+      const tag = intercept ? 'interception ON' : 'interception OFF';
+      hits.length = 0;   // per-run, or the second pass reports the first pass's server hits
+      const cx = await browser.newContext({viewport: {width: 800, height: 600}});
+      try {
+        if (intercept) {
+          // The same shape verify-ux.mjs installs when CF credentials are present. It must not
+          // change the protocol-level count — that is half of what this case is here to show.
+          await cx.route('**/*', (route) => route.continue());
+        }
+        const page = await cx.newPage();
+        const ledger = await attachRequestLedger(cx, page);
+        await page.goto(fixture, {waitUntil: 'load', timeout: 30000});
+        // The favicon start is the last one to arrive; poll for it rather than sleeping, and let
+        // the timeout expire into a red assertion rather than a hang.
+        await page.waitForTimeout(200);
+        for (let i = 0; i < 40 && !ledger.cdp.some((r) => r.url.endsWith('/favicon.ico')); i++) {
+          await page.waitForTimeout(100);
+        }
+        const isFav = (u) => u.endsWith('/favicon.ico');
+        const cdpFav = ledger.cdp.filter((r) => isFav(r.url));
+        const cdpOrdinary = ledger.cdp.filter((r) => !isFav(r.url));
+        const pwFav = ledger.pw.filter((r) => isFav(r.url));
+
+        prereq(`[${tag}] the fixture page loaded`, cdpOrdinary.length > 0,
+          `${cdpOrdinary.length} ordinary starts`, '> 0');
+        assert(`[${tag}] the ledger counts the ordinary starts (document + ${ORDINARY} scripts)`,
+          cdpOrdinary.length === ORDINARY + 1, `${cdpOrdinary.length} ordinary starts`, String(ORDINARY + 1));
+        assert(`[${tag}] the ledger contains the /favicon.ico start`,
+          cdpFav.length >= 1, `${cdpFav.length} favicon starts`, '>= 1');
+        assert(`[${tag}] the ledger totals N+1 = ${ORDINARY + 2} starts, not N`,
+          ledger.cdp.length === cdpOrdinary.length + cdpFav.length && ledger.cdp.length >= ORDINARY + 2,
+          `${ledger.cdp.length} total starts (${cdpOrdinary.length} ordinary + ${cdpFav.length} favicon)`,
+          `>= ${ORDINARY + 2}`);
+        // The cross-check lane, stated as an invariant that stays true whatever the driver does:
+        // the protocol can only see MORE than the driver's filtered event, never less. Today the
+        // difference is exactly the suppressed favicon, and that number is printed.
+        assert(`[${tag}] the protocol lane sees at least as much as Playwright's lane`,
+          ledger.cdp.length >= ledger.pw.length,
+          `cdp=${ledger.cdp.length} playwright=${ledger.pw.length} (playwright favicon rows: ${pwFav.length})`,
+          'cdp >= playwright');
+        // Interception must not change the count. With it on, Playwright ABORTS the favicon — the
+        // request is still ISSUED, so the protocol still has its row and the budget still bites.
+        assert(`[${tag}] the browser really issued the favicon (or the driver aborted it after issuance)`,
+          cdpFav.length >= 1 && (intercept || hits.includes('/favicon.ico')),
+          `server saw ${hits.filter((u) => u === '/favicon.ico').length} favicon hits, ledger has ${cdpFav.length}`,
+          'issued');
+        prereq(`[${tag}] every clock is the wall clock`,
+          ledger.cdp.every((r) => Number.isFinite(r.at) && r.at > 1.7e12),
+          `${ledger.cdp.filter((r) => !(r.at > 1.7e12)).length} rows with a non-epoch timestamp`, '0');
+      } catch (e) { prereq(`[${tag}] the case ran`, false, String(e).slice(0, 200), 'no throw'); }
+      finally { await cx.close(); }
+    }
+  } finally { await new Promise((r) => server.close(r)); }
 }
 
 await browser.close();
