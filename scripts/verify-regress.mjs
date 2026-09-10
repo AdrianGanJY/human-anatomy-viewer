@@ -35,7 +35,7 @@ import {mkdirSync, writeFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {join} from 'node:path';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
-import {attachRequestLedger, populationCheck} from './request-ledger.mjs';
+import {attachRequestLedger, populationCheck, targetHistory} from './request-ledger.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -1241,6 +1241,164 @@ if (want('oopif-population')) {
     } catch (e) { prereq('the control arm ran', false, String(e).slice(0, 200), 'no throw'); }
     finally { await context.close(); }
   }
+}
+
+// ══ CASE 13 — A SHARED WORKER IS A BROWSER-LEVEL TARGET, AND THE PAGE SESSION CANNOT SEE IT ═══
+// codex review 8, H1.1. Page-session `Target.setAutoAttach` observes only targets DIRECTLY RELATED
+// to the page. A shared worker is not one of them: it is owned by the browser context, it can be
+// shared by several pages, and it never attaches to this page's session. Its fetches are real and
+// they are on nobody's ledger.
+//
+// MEASURED BEFORE IT WAS WRITTEN (2026-09-10): the fixture below produced ZERO page-session
+// attachments while its worker script fetched two files that the fixture server logged. That is
+// the counterexample codex could only execute through the transport, reproduced in a browser.
+//
+// The independent instrument is the fixture server's own request log — the assertions do not take
+// the browser's word for what the worker fetched.
+if (want('shared-worker-population')) {
+  openCase('shared-worker-population', 'C1', 'a shared worker (a browser-level target) is discovered and refused', 'codex review 8 H1.1');
+  const swHits = [];
+  const srv = createServer((req, res) => {
+    swHits.push(req.url);
+    if (req.url === '/shared-worker.js') {
+      res.writeHead(200, {'content-type': 'text/javascript'});
+      // Two fetches from INSIDE the worker: this is the traffic the page-session ledger misses.
+      return res.end("fetch('/sw-a.txt');fetch('/sw-b.txt');self.onconnect=()=>{};\n");
+    }
+    if (req.url.startsWith('/sw-')) { res.writeHead(200, {'content-type': 'text/plain'}); return res.end('x'); }
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+    res.end('<!doctype html><meta charset="utf-8"><title>shared worker fixture</title>'
+      + '<script>new SharedWorker("/shared-worker.js");</script>parent');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const cx = await browser.newContext({viewport: {width: 800, height: 600}});
+  try {
+    const page = await cx.newPage();
+    const ledger = await attachRequestLedger(cx, page);
+    await page.goto(`http://127.0.0.1:${port}/`, {waitUntil: 'load', timeout: 30000});
+    for (let i = 0; i < 80 && !(swHits.includes('/sw-a.txt') && swHits.includes('/sw-b.txt')); i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(500);
+
+    const history = targetHistory(ledger);
+    const shared = history.filter((t) => t.type === 'shared_worker');
+    const workerFetches = swHits.filter((u) => u.startsWith('/sw-')).length;
+
+    prereq('the worker really ran and fetched (the fixture server’s own log)',
+      workerFetches === 2, `${workerFetches} worker fetches logged by the server (${swHits.join(', ')})`, '2');
+    prereq('browser-level discovery reported the shared worker',
+      shared.length === 1, `${shared.length} shared_worker target(s) discovered`, '1');
+
+    // THE HOLE, MEASURED. The page-session lane — the whole of round 7's detector — sees nothing,
+    // and the worker's requests are not in the ledger either.
+    assert('the page-session attach lane is BLIND to the shared worker (why round 7 was insufficient)',
+      ledger.targets.length === 0,
+      `${ledger.targets.length} page-session attachments for a worker the browser lane saw`, '0');
+    const workerRows = ledger.cdp.filter((r) => /\/sw-[ab]\.txt$/.test(r.url));
+    assert('the worker’s two requests are absent from the page-session ledger',
+      workerRows.length === 0, `${workerRows.length} of ${workerFetches} worker requests in the ledger`, '0');
+
+    const pop = await populationCheck(page, ledger);
+    assert('the population gate REFUSES the page', pop.ok === false, pop.measured.slice(0, 220), 'refused');
+    assert('the refusal NAMES shared_worker and its url',
+      /shared_worker/.test(pop.measured) && pop.measured.includes('shared-worker.js'),
+      pop.measured.slice(0, 220), 'names shared_worker + url');
+    // LIFECYCLE HISTORY SURVIVES DESTRUCTION: the worker is gone once the page closes, but the
+    // refusal must not be. Read the history again after navigating away from the fixture.
+    await page.goto('about:blank', {waitUntil: 'load', timeout: 30000});
+    await page.waitForTimeout(1500);
+    const popAfter = await populationCheck(page, ledger);
+    assert('the refusal SURVIVES the worker’s destruction (lifecycle history, not a live snapshot)',
+      popAfter.ok === false && /shared_worker/.test(popAfter.measured),
+      popAfter.measured.slice(0, 200), 'still refused');
+  } catch (e) { prereq('the shared-worker fixture ran', false, String(e).slice(0, 200), 'no throw'); }
+  finally { await cx.close(); await new Promise((r) => srv.close(r)); }
+}
+
+// ══ CASE 14 — PRERENDER: WHAT THIS BUILD ACTUALLY DOES, NOT WHAT THE CONTRACT ASSUMES ═════════
+// codex review 8, H1.2 named `page`+subtype `prerender` as the type the round-7 allowlist let
+// through. The gate is now default-deny, so such a target WOULD be refused — but a gate nobody can
+// fire is not tested, so this case establishes empirically what a speculation rule does here.
+//
+// MEASURED (2026-09-10, this Chromium, under CDP): the browser's OWN `Preload` domain reports
+//   Preload.prerenderStatusUpdated -> status "Failure", prerenderStatus "PrerenderingDisabledByDevTools"
+// so no prerender TARGET is ever created while a debugger is attached — confirmed against
+// `Target.getTargets({filter:[{}]})`, which lists only the page and its tab. The speculation rule
+// degrades to a PREFETCH issued by the page's own loader, which lands in this ledger like any other
+// row. So `/next.html` IS fetched (the fixture server logs it) and the prerendered document never
+// runs, so `/next-res.js` is never fetched.
+//
+// THE REFUSAL BRANCH IS THEREFORE SKIPPED WITH A REASON, NOT PASSED VACUOUSLY. The case asserts the
+// reason (from the browser, not from me), asserts that the traffic which DID occur is inside the
+// ledger, and keeps the refusal assertion armed behind a condition so that the day this build
+// prerenders under CDP, the branch fires instead of silently never running.
+if (want('prerender-population')) {
+  openCase('prerender-population', 'C1', 'speculation-rules prerender: refused if it materialises, SKIPPED WITH REASON if the build cannot', 'codex review 8 H1.2');
+  const preHits = [];
+  const srv = createServer((req, res) => {
+    preHits.push(req.url);
+    if (req.url === '/next.html') {
+      res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+      return res.end('<!doctype html><meta charset="utf-8"><title>next</title><script src="/next-res.js"></script>next');
+    }
+    if (req.url === '/next-res.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end('//x\n'); }
+    res.writeHead(200, {'content-type': 'text/html; charset=utf-8'});
+    res.end('<!doctype html><meta charset="utf-8"><title>prerender fixture</title>'
+      + '<script type="speculationrules">{"prerender":[{"source":"list","urls":["/next.html"]}]}</script>parent');
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const cx = await browser.newContext({viewport: {width: 800, height: 600}});
+  try {
+    const page = await cx.newPage();
+    const ledger = await attachRequestLedger(cx, page);
+    // The browser's own account of what it did with the speculation rule — an instrument
+    // independent of both the ledger and the server log.
+    const preload = [];
+    for (const ev of ['Preload.ruleSetUpdated', 'Preload.prerenderStatusUpdated', 'Preload.prefetchStatusUpdated']) {
+      ledger.session.on(ev, (e) => preload.push({ev, status: e.status ?? '', why: e.prerenderStatus ?? e.prefetchStatus ?? ''}));
+    }
+    let preloadEnabled = true;
+    await ledger.session.send('Preload.enable').catch(() => { preloadEnabled = false; });
+    await page.goto(`http://127.0.0.1:${port}/`, {waitUntil: 'load', timeout: 30000});
+    for (let i = 0; i < 80 && !preHits.includes('/next.html'); i++) await page.waitForTimeout(100);
+    await page.waitForTimeout(2000);
+
+    const history = targetHistory(ledger);
+    const prerenderTargets = history.filter((t) => t.subtype === 'prerender' || (t.type === 'page' && t.targetId !== ledger.self?.targetId));
+    const disabled = preload.filter((p) => p.why === 'PrerenderingDisabledByDevTools');
+    const pop = await populationCheck(page, ledger);
+
+    prereq('the Preload domain answered (the browser’s own account is available)',
+      preloadEnabled && preload.length > 0, `Preload.enable=${preloadEnabled}, ${preload.length} events`, 'enabled, > 0 events');
+    prereq('the speculation rule was parsed and acted on (the fixture server saw /next.html)',
+      preHits.includes('/next.html'), `server log: ${preHits.join(', ')}`, '/next.html fetched');
+
+    if (prerenderTargets.length > 0) {
+      // THE ARMED BRANCH. If this build ever prerenders under CDP, default-deny must refuse it and
+      // name it — the exact hole review 8 identified in the round-7 allowlist.
+      assert('a prerender target materialised, and the population gate REFUSES it',
+        pop.ok === false && /prerender/.test(pop.measured), pop.measured.slice(0, 220), 'refused, named page/prerender');
+    } else {
+      // THE SKIP, WITH ITS REASON QUOTED FROM THE BROWSER. Not a pass about prerendering — a
+      // recorded finding that prerendering cannot occur while this suite is watching.
+      assert('SKIPPED WITH REASON: no prerender target can exist here — the browser reports PrerenderingDisabledByDevTools',
+        disabled.length > 0,
+        `0 prerender targets; Preload says: ${preload.map((p) => `${p.ev.replace('Preload.', '')}=${p.status}${p.why ? `/${p.why}` : ''}`).join(' | ').slice(0, 200)}`,
+        'the browser states the reason');
+      // And the traffic that DID occur is accounted for, which is the part that matters for a
+      // request budget: the degraded PREFETCH is issued by the page's own loader and is in the
+      // ledger, and the prerendered document never ran, so it fetched no subresource of its own.
+      const prefetchRows = ledger.cdp.filter((r) => r.url.endsWith('/next.html'));
+      assert('the traffic the rule DID cause (a prefetch) is inside the ledger — nothing unaccounted',
+        prefetchRows.length >= 1, `${prefetchRows.length} /next.html row(s) in the ledger, server logged ${preHits.filter((u) => u === '/next.html').length}`, '>= 1');
+      assert('the prerendered document never ran, so it issued no subresource (server log)',
+        !preHits.includes('/next-res.js'), `server log: ${preHits.join(', ')}`, 'no /next-res.js');
+      assert('the population gate still ACCEPTS this page (no target existed to refuse)',
+        pop.ok, pop.measured.slice(0, 200), 'inside the population');
+    }
+  } catch (e) { prereq('the prerender fixture ran', false, String(e).slice(0, 200), 'no throw'); }
+  finally { await cx.close(); await new Promise((r) => srv.close(r)); }
 }
 
 await browser.close();
