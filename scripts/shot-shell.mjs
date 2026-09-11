@@ -53,6 +53,12 @@ const SHOTS = [
   {name: 'tablet-1024x768-en', w: 1024, h: 768, lang: 'en', url: `/v2/?scene=${BLOB}`, coarse: true},
 ];
 
+/** Access headers for a GATED host. Scoped to the target origin only — sending them cross-origin
+ *  turns third-party loads into failed CORS preflights (the same lesson verify-ux records). */
+const headers = (process.env.CF_ID && process.env.CF_SECRET)
+  ? {'CF-Access-Client-Id': process.env.CF_ID, 'CF-Access-Client-Secret': process.env.CF_SECRET}
+  : {};
+
 const browser = await chromium.launch({
   executablePath: 'C:\\Users\\adrian\\AppData\\Local\\ms-playwright\\chromium-1234\\chrome-win64\\chrome.exe',
   args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
@@ -66,6 +72,14 @@ for (const s of SHOTS) {
     // `hasTouch` + `isMobile`; forcing the media feature directly is the reliable way.
     ...(s.coarse ? {} : {}),
   });
+  if (Object.keys(headers).length) {
+    const origin = new URL(base).origin;
+    await context.route('**/*', (route) => {
+      const r = route.request();
+      if (r.url().startsWith(origin)) return route.continue({headers: {...r.headers(), ...headers}});
+      return route.continue();
+    });
+  }
   const page = await context.newPage();
   if (s.coarse) await page.emulateMedia({forcedColors: null});
   try {
