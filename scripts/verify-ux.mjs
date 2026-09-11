@@ -569,7 +569,20 @@ for (const vp of SWEEP) {
     // percentage point. The 1920x860 and 1366x1024 numbers were GUESSED in the first draft of
     // this line and then replaced with the measurement — a guessed floor is a floor that passes
     // for the wrong reason.
-    const AREA_FLOOR = {'390x844': 0.208, '768x1024': 0.190, '1024x768': 0.113, '1440x900': 0.084, '1920x860': 0.050, '1366x1024': 0.107}[vp.name] ?? 0.05;
+    /**
+     * ── RE-BASELINED AT THE END OF S1 (kickoff item 7 / RC4's closing clause) ──────────────────
+     *
+     * A ratchet baselined against the OLD behaviour protects nothing once the behaviour improves.
+     * The studio floors were 0.084 / 0.050 / 0.107 against measurements that are now 16.27 /
+     * 12.69 / 20.91 percent — so a change that reverted S1's framing entirely would have left this
+     * row green at all three. The floor is the measured figure less one percentage point, which is
+     * the convention the v2.1a line established and the tolerance is for camera settling.
+     *
+     * The phone and tablet numbers are UNCHANGED (21.82 / 20.06 / 12.38), so their floors are
+     * unchanged too — re-deriving them from today's measurement produces the same three values.
+     */
+    const AREA_FLOOR = {'390x844': 0.208, '768x1024': 0.190, '1024x768': 0.113,
+      '1440x900': 0.153, '1920x860': 0.117, '1366x1024': 0.199}[vp.name] ?? 0.05;
     check(vp.name, 'subject area has not regressed below the v2.1a entry baseline',
       !framing.error && framing.area >= AREA_FLOOR,
       framing.error || `${(framing.area * 100).toFixed(2)}%`, `>= ${(AREA_FLOOR * 100).toFixed(1)}%`);
@@ -900,8 +913,17 @@ for (const vp of SWEEP) {
     // could shrink to nothing while still reporting a positive mesh count and an empty fit key, and
     // the suite would stay green (codex review, 2026-09-09, Medium 5). Measured on the pre-v2.1a
     // candidate: 0.34 / 0.43 / 0.19 / 0.18 / 0.12 / 0.22 percent; each floor is that, less a fifth.
+    /**
+     * ── RE-BASELINED AT THE END OF S1, and this one was the worse of the two ───────────────────
+     *
+     * The studio floors were 0.0014 / 0.0009 / 0.0017 — a fifth off the pre-v2.1a figures of
+     * 0.20 / 0.15 / 0.25 PERCENT. Today those viewports measure 33.59 / 26.20 / 43.15 percent, so
+     * the ratchet would have tolerated a COMPLETE revert of fit-to-selection, at every studio
+     * width, without going red: a ratchet holding nothing at all. Re-derived by the same rule as
+     * before (the measurement, less a fifth). Phone and tablet are unchanged and keep their floors.
+     */
     const BARE_FLOOR = {'390x844': 0.0027, '768x1024': 0.0034, '1024x768': 0.0015,
-      '1440x900': 0.0014, '1920x860': 0.0009, '1366x1024': 0.0017}[vp.name] ?? 0.0008;
+      '1440x900': 0.268, '1920x860': 0.209, '1366x1024': 0.345}[vp.name] ?? 0.0008;
     check(vp.name, 'the bare subject has not shrunk below the v2.1a entry baseline',
       !bareFrame.error && bareFrame.area >= BARE_FLOOR,
       bareFrame.error || `${(bareFrame.area * 100).toFixed(3)}%`, `>= ${(BARE_FLOOR * 100).toFixed(3)}%`);
@@ -1559,9 +1581,16 @@ if (variant === 'v2') {
           !!after && !!before && after.k !== before.k, `${before?.k} -> ${after?.k}`, 'a different pose');
         check(vp.name, `[${S1_V}] the pad key reports itself pressed while held`,
           midDown === 'true', `aria-pressed=${midDown} mid-hold`, 'true');
+        // OBSERVED, not slept past. A fixed wait here caught the phantom second press that a
+        // mouse `click` used to fire after `pointerup` and reported it as a stuck key; the cause
+        // is fixed in `shell.tsx` (keyboard-only click), and the row now waits for the condition
+        // so a slow render cannot resurrect the same false reading.
+        let releaseSeen = true;
+        await page.waitForFunction(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed') === 'false',
+          null, {timeout: 5000}).catch(() => { releaseSeen = false; });
         const released = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed'));
         check(vp.name, `[${S1_V}] and released afterwards (no key left stuck down)`,
-          released === 'false', `aria-pressed=${released}`, 'false');
+          releaseSeen && released === 'false', `aria-pressed=${released}${releaseSeen ? '' : ' after a 5 s wait'}`, 'false');
       }
       // THE PHYSICAL KEY LIGHTS THE ON-SCREEN ONE — the direction that proves they share ONE set
       // rather than merely both working.
@@ -1576,6 +1605,144 @@ if (variant === 'v2') {
         lit === 'true' && unlit === 'false', `held=${lit}, released=${unlit}`, 'true then false');
     } catch (e) {
       check(vp.name, `[${S1_V}] the pad pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ S1 ROUND-1 CORRECTIVES — one row per High, each able to go red ════════════════════════════
+   *
+   * The stand-in review found three Highs and the suite was GREEN over all three. These are the
+   * rows that would have caught them. Each is written against the DEFECT, not against the fix.
+   */
+  {
+    const vp = {name: 's1-r1-fixes', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();
+
+      // ── H1: a modified camera key is neither consumed nor held ─────────────────────────────
+      // The defect: `bindingFor` returns null for every modified event (that IS guard 5), and the
+      // hold branch read "no binding" as "hold it" — so Ctrl+A / Ctrl+S / Ctrl+D / Alt+arrow were
+      // preventDefault'd AND started the camera. Select-all, Save, Bookmark and Back/Forward were
+      // swallowed on every /v2/ page, at every width.
+      const modPose = await page.evaluate(POSE);
+      const mod = await page.evaluate(() => {
+        const out = [];
+        for (const [label, init] of [
+          ['Ctrl+A', {code: 'KeyA', key: 'a', ctrlKey: true}],
+          ['Ctrl+S', {code: 'KeyS', key: 's', ctrlKey: true}],
+          ['Ctrl+D', {code: 'KeyD', key: 'd', ctrlKey: true}],
+          ['Alt+ArrowLeft', {code: 'ArrowLeft', key: 'ArrowLeft', altKey: true}],
+          ['Meta+A', {code: 'KeyA', key: 'a', metaKey: true}],
+        ]) {
+          const ev = new KeyboardEvent('keydown', {...init, bubbles: true, cancelable: true});
+          window.dispatchEvent(ev);
+          out.push({label, prevented: ev.defaultPrevented});
+        }
+        return out;
+      });
+      await page.waitForTimeout(500);
+      const modAfter = await page.evaluate(POSE);
+      const swallowed = mod.filter((m) => m.prevented).map((m) => m.label);
+      check(vp.name, `[${S1_V}] a modified camera key (Ctrl/Cmd/Alt + WASD or arrow) is NOT consumed`,
+        swallowed.length === 0, swallowed.length ? `swallowed: ${swallowed.join(', ')}` : `${mod.length} combinations, none prevented`, 'none prevented');
+      check(vp.name, `[${S1_V}] and it does not move the camera`,
+        !!modAfter && !!modPose && modAfter.k === modPose.k && modAfter.manual === false,
+        `${modPose?.k} -> ${modAfter?.k} (manual=${modAfter?.manual})`, 'unmoved');
+      // THE CONTROL ARM: the same codes UNMODIFIED still pan, so the row above is not passing
+      // because the dispatcher is dead.
+      await page.mouse.move(vp.width / 2, vp.height / 2);
+      await page.keyboard.down('KeyA'); await page.waitForTimeout(400); await page.keyboard.up('KeyA');
+      await page.waitForTimeout(500);
+      const bareKey = await page.evaluate(POSE);
+      check(vp.name, `[${S1_V}] the same A key UNMODIFIED still pans (the control arm)`,
+        !!bareKey && bareKey.k !== modAfter.k, `${modAfter?.k} -> ${bareKey?.k}`, 'a different pose');
+
+      // ── H2: the snapshot does not leave the capture overlay painted over the field ──────────
+      // The defect: `__atlasCapture` appends a `.atlas-shot` 2D canvas over the WebGL canvas and
+      // only `__atlasCaptureRelease` removes it. Its one caller was v1. In /v2/ a single Shift+P
+      // froze the viewport: the renderer kept drawing underneath a static bitmap, and
+      // `pointer-events:none` let every gesture through, so the app was live and the picture dead.
+      const shots0 = await page.evaluate(() => document.querySelectorAll('canvas.atlas-shot').length);
+      check(vp.name, `[${S1_V}] no capture overlay before the snapshot (the premise)`,
+        shots0 === 0, `${shots0} .atlas-shot canvases`, '0');
+      // Driven through the KEYBOARD, so this covers the binding as well as the handler. The
+      // download itself is suppressed: a real `a.click()` in headless Chromium would either write a
+      // file or raise, and neither is what this row is about.
+      await page.evaluate(() => {
+        window.__shotHref = null;
+        const realClick = HTMLAnchorElement.prototype.click;
+        HTMLAnchorElement.prototype.click = function () { window.__shotHref = this.href; };
+        window.__restoreClick = () => { HTMLAnchorElement.prototype.click = realClick; };
+      });
+      await page.keyboard.down('Shift'); await page.keyboard.press('KeyP'); await page.keyboard.up('Shift');
+      await page.waitForTimeout(900);
+      const shot = await page.evaluate(() => {
+        const href = window.__shotHref;
+        window.__restoreClick?.();
+        return {overlays: document.querySelectorAll('canvas.atlas-shot').length,
+          png: typeof href === 'string' && href.startsWith('data:image/png;base64,'),
+          bytes: typeof href === 'string' ? href.length : 0};
+      });
+      check(vp.name, `[${S1_V}] Shift+P leaves NO capture overlay over the field`,
+        shot.overlays === 0, `${shot.overlays} .atlas-shot canvases after the snapshot`, '0');
+      check(vp.name, `[${S1_V}] and it produced a real PNG (not a blank read of a cleared buffer)`,
+        shot.png && shot.bytes > 20000, `data URL ${shot.png ? 'png' : 'MISSING'}, ${shot.bytes} chars`, 'a png data URL of real size');
+      // THE VIEWPORT IS STILL LIVE afterwards — the actual user-visible consequence.
+      const preMove = await page.evaluate(POSE);
+      await page.keyboard.down('KeyD'); await page.waitForTimeout(400); await page.keyboard.up('KeyD');
+      await page.waitForTimeout(500);
+      const postMove = await page.evaluate(POSE);
+      check(vp.name, `[${S1_V}] the field still answers the keyboard after a snapshot`,
+        !!postMove && !!preMove && postMove.k !== preMove.k, `${preMove?.k} -> ${postMove?.k}`, 'a different pose');
+
+      // ── M6: Escape leaves the stage ────────────────────────────────────────────────────────
+      await page.keyboard.down('Shift'); await page.keyboard.press('KeyS'); await page.keyboard.up('Shift');
+      await page.waitForTimeout(900);
+      const inStage = await page.evaluate(() => document.body.classList.contains('v2-stage'));
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(900);
+      const outStage = await page.evaluate(() => document.body.classList.contains('v2-stage'));
+      check(vp.name, `[${S1_V}] Shift+S enters the stage and Escape leaves it`,
+        inStage === true && outStage === false, `entered=${inStage}, still staged after Escape=${outStage}`,
+        'entered, then left');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the round-1 corrective pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── M5: THE CAMERA KEYS BELONG TO THE STUDIO TIER ────────────────────────────────────────────
+  // Below 1180 there is no pill, no key pad, and `manual` is never read — so W/A/S/D panned and `H`
+  // ran G3's whole-body formula on a tier it was never tuned for, after which the next resize threw
+  // the pose away. The keys did not feel absent, they felt broken.
+  for (const vp of [{name: 's1-tier-1100', width: 1100, height: 900, dpr: 1, coarse: false, studio: false},
+    {name: 's1-tier-1180', width: 1180, height: 900, dpr: 1, coarse: false, studio: true}]) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();
+      const isStudio = await page.evaluate(() => !!document.querySelector('.v2.v2-studio'));
+      check(vp.name, `[${S1_V}] the tier is what this viewport is supposed to be (the premise)`,
+        isStudio === vp.studio, `.v2-studio=${isStudio} at ${vp.width}px`, String(vp.studio));
+      const before = await page.evaluate(POSE);
+      await page.mouse.move(vp.width / 2, vp.height / 2);
+      await page.keyboard.down('KeyD'); await page.waitForTimeout(450); await page.keyboard.up('KeyD');
+      await page.keyboard.press('h');
+      await page.waitForTimeout(900);
+      const after = await page.evaluate(POSE);
+      const moved = !!after && !!before && after.k !== before.k;
+      check(vp.name, `[${S1_V}] the camera keys ${vp.studio ? 'WORK in the studio' : 'are WITHHELD below 1180'}`,
+        moved === vp.studio, `${before?.k} -> ${after?.k} (moved=${moved})`,
+        vp.studio ? 'the camera moved' : 'the camera did not move');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the tier-gate pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 

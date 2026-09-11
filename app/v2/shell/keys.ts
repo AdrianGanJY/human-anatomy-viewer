@@ -38,7 +38,7 @@ export type Command =
  // ── S1: NAVIGATION AND FRAMING. Discrete commands only — the four pans, the orbit, the dolly
  //    and the tilt are HELD keys and travel through `held`, not through `run`. ──
  | 'view-three-quarter' | 'view-front' | 'view-side' | 'view-back'
- | 'fit' | 'home' | 'reset' | 'mode-orbit' | 'mode-pan' | 'mode-toggle'
+ | 'fit' | 'home' | 'reset' | 'mode-orbit' | 'mode-pan'
  // ── declared, bound by later groups. Listed so the map is one document rather than five. ──
  | 'find' | 'settings' | 'panel-1' | 'panel-2' | 'panel-3' | 'panel-4' | 'panel-5'
  | 'side-toggle' | 'dock-toggle' | 'snapshot' | 'stage';
@@ -57,6 +57,13 @@ export type Command =
  *   orbit — Left/Right (azimuth) and Q/E (polar tilt), radians per second
  *   dolly — Up/Down, as a per-second multiplicative rate
  */
+/** The commands guard 7 withholds below the studio tier. Escape, `?`, Stage and Snapshot are NOT
+ *  in it: they are not camera operations and they work wherever the chrome does. */
+export const CAMERA_CMDS: ReadonlySet<Command> = new Set<Command>([
+ 'view-three-quarter', 'view-front', 'view-side', 'view-back',
+ 'fit', 'home', 'reset', 'mode-orbit', 'mode-pan',
+]);
+
 export interface HoldAxis {pan?: [number, number]; orbit?: [number, number]; dolly?: number}
 export const HOLD: Record<string, HoldAxis> = {
  KeyW: {pan: [0, 1]}, KeyS: {pan: [0, -1]}, KeyA: {pan: [-1, 0]}, KeyD: {pan: [1, 0]},
@@ -109,6 +116,9 @@ export interface DispatcherOptions {
   * cost on a laptop and shows up as constant main-thread work in a trace.
   */
  onHold?(n: number): void;
+ /** Guard 7. False below the studio tier: the camera commands and the held keys are withheld where
+  *  there is no pill, no key pad and no `manual` pose to preserve. Same ref rule as `run`. */
+ cameraEnabled?(): boolean;
 }
 
 const EDITOR = /^(input|textarea|select)$/i;
@@ -205,8 +215,24 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
    * same code, so it would at least stop. `Shift+P` is worse: snapshot has no matching hold, so
    * nothing would clear it. Resolving the binding first makes the rule general instead of a list
    * of exceptions.
+   *
+   * ⚠️ `!modified(ev)` IS LOAD-BEARING AND WAS MISSING (stand-in review S1 H1). `bindingFor`
+   * returns null for every modified event — that IS guard 5 — so without this clause the branch
+   * below read "no binding" as "hold it", and every Ctrl/Cmd/Alt + W A S D Q E / arrow was
+   * `preventDefault`ed AND pushed into the held set. The reviewer executed it: Ctrl+A, Ctrl+S,
+   * Ctrl+D, Alt+←/→, Cmd+A all came back `preventDefault=true held=[KeyX]`. Select-all, Save,
+   * Bookmark, Focus-address-bar and Back/Forward were swallowed on every `/v2/` page, and the
+   * camera panned while they were. Guard 5 inverted into its opposite for exactly the ten codes
+   * in `HOLD`, under a header that states "inspected-and-declined ⇒ untouched".
+   *
+   * ⚠️ `!held.has(ev.code)` closes the other half (M7). The "either/or" rule held only for a FRESH
+   * press: holding `S` to pan and then pressing Shift delivers an auto-repeat keydown that now
+   * resolves to `stage`, so the reader entered presentation mode mid-pan. A code already in the
+   * held set belongs to the hold that started it until its keyup.
    */
-  if (!cmd && holdCodes.has(ev.code) && !editor && !opts.modalOpen()) {   // guard 6
+  if (cmd && held.has(ev.code)) return;
+  if (!cmd && !modified(ev) && !held.has(ev.code) && holdCodes.has(ev.code) && !editor && !opts.modalOpen()) {   // guard 6
+   if (opts.cameraEnabled && !opts.cameraEnabled()) return;   // guard 7 — see below
    add(ev.code);
    // A HELD CAMERA KEY IS CONSUMED. Without this, ArrowUp/ArrowDown scroll the page while they
    // dolly the camera, and Space-adjacent repeats fight the browser. It is inside the branch, so
@@ -216,6 +242,17 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
   }
 
   if (!cmd) return;
+  /**
+   * GUARD 7 — THE CAMERA COMMANDS BELONG TO THE TIER THAT HAS A CAMERA CONTROL SURFACE.
+   *
+   * (stand-in review S1 M5.) The dispatcher is installed at every width, because Escape and `?`
+   * are not studio commands. The CAMERA commands are: below 1180 there is no pill and no key pad,
+   * `manual` is only read behind `studioRef`, and `H` reached `studioHome()` — G3's whole-body
+   * formula — on a tier it was never tuned for, after which the next resize discarded the pose. A
+   * half-screen 1100 px window on a desktop is an ordinary thing, and there the keys did not feel
+   * absent, they felt broken. Escape, `?` and the discrete non-camera commands stay global.
+   */
+  if (CAMERA_CMDS.has(cmd) && opts.cameraEnabled && !opts.cameraEnabled()) return;
   // guard 3 — a modal owns the keyboard, but Escape is how it is dismissed.
   if (opts.modalOpen() && cmd !== 'escape') return;
   if (opts.run(cmd, ev) === false) return;                    // declined: leave the event alone
@@ -265,17 +302,25 @@ export const KEY_MAP: KeyRow[] = [
  {keys: 'Ctrl , / ⌘,', cmd: 'keys.settings', group: 'global', owner: 'S4'},
  {keys: 'Alt 1…5', cmd: 'keys.panels', group: 'global', owner: 'S5'},
  {keys: '[  ]', cmd: 'keys.sides', group: 'global', owner: 'S6'},
- {keys: 'Shift P / Shift S', cmd: 'keys.snapStage', group: 'now'},
- // ── S1 BOUND THESE. `group: 'now'` is what the overlay reads to stop marking a row as
- //    forthcoming, so moving a key from inert copy to a live binding is one edit here. ──
- {keys: 'W A S D', cmd: 'keys.pan', group: 'now'},
- {keys: '← →', cmd: 'keys.orbit', group: 'now'},
- {keys: '↑ ↓', cmd: 'keys.dolly', group: 'now'},
- {keys: 'Q E', cmd: 'keys.tilt', group: 'now'},
- {keys: 'O P', cmd: 'keys.modes', group: 'now'},
- {keys: '1 2 3 4', cmd: 'keys.views', group: 'now'},
- {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'now'},
- {keys: 'H / R', cmd: 'keys.homeReset', group: 'now'},
+ {keys: 'Shift P / Shift S', cmd: 'keys.snapStage', group: 'global'},
+ /**
+  * ── S1 BOUND THESE ───────────────────────────────────────────────────────────────────────────
+  *
+  * ⚠️ `group` IS WHAT KIND OF COMMAND; `owner` IS WHETHER IT WORKS YET. The first version of this
+  * edit conflated them and moved all eleven camera rows to `group: 'now'` to mark them live. Two
+  * consequences, both caught by the stand-in review (S1 M1): the overlay rendered a bare "Camera"
+  * heading with nothing under it (the renderer emits an `h3` per group unconditionally), and the
+  * eleven camera bindings were flattened into one list beside Esc and `?`. Dropping `owner` is the
+  * whole edit — a row with no owner is a row that works today.
+  */
+ {keys: 'W A S D', cmd: 'keys.pan', group: 'camera'},
+ {keys: '← →', cmd: 'keys.orbit', group: 'camera'},
+ {keys: '↑ ↓', cmd: 'keys.dolly', group: 'camera'},
+ {keys: 'Q E', cmd: 'keys.tilt', group: 'camera'},
+ {keys: 'O P', cmd: 'keys.modes', group: 'camera'},
+ {keys: '1 2 3 4', cmd: 'keys.views', group: 'camera'},
+ {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'camera'},
+ {keys: 'H / R', cmd: 'keys.homeReset', group: 'camera'},
  // `+ −` and `I / Shift ⌫` were inert copy for commands v2 does not have: zoom IS the dolly
  // (↑ ↓) rather than a second pair of keys, and there is no per-structure hide until the tree's
  // eyes arrive in S3. A key map that lists a key nobody bound is the thing this file exists to

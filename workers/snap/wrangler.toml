@@ -138,9 +138,17 @@ bucket_name = "human-anatomy-snaps"
 #   · `studio` is deliberately NOT part of `SceneState`, so it cannot travel inside a scene blob.
 #   · The one unconditional change is `__atlasTargets`'s `parts` lane, which is a read-only
 #     introspection getter no render path calls.
-#   · PROVEN: six control plates captured against the live host FIVE times before the deploy
+#   · BASELINED: six control plates captured against the live host FIVE times BEFORE the deploy
 #     (.artifacts/L31/v21bc/s1/goldens/) — 60 pairwise comparisons, zero drift, and all six hashes
-#     identical to v2.1a's `goldens-after.json` from two days earlier — then re-compared after.
+#     identical to v2.1a's `goldens-after.json` from two days earlier.
+#
+# ⚠️ THE BEFORE-CAPTURES ARE OF THE UNCHANGED `l31v21a` HOST. They establish that this host renders
+# these plates deterministically; they say nothing yet about whether S1's tree renders them the
+# same. An earlier draft of this comment said "then re-compared after" while no after-capture
+# existed on disk — a claim in the future tense written in the past tense (stand-in review S1 M4).
+# The after-comparison is run POST-DEPLOY, `plate-goldens.mjs compare` against both
+# `v21a/live-after/goldens-after.json` and `s1/goldens/goldens-s1-before.json`, and the worklog
+# records the result. Until that line exists, the argument above is STRUCTURAL, not measured.
 #
 # ⚠️ THE FIRST RENDER OF EACH PLATE AFTER THIS BUMP IS COLD. Every cached PNG under the old key is
 # retired, and Browser Rendering minutes are exhausted on the Adrey account, so the cold path is

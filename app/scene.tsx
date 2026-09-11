@@ -263,10 +263,25 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
     *  frame loop recomputes the focus fit against the CURRENT selection, at its live explosion
     *  offsets, on the next frame. With nothing selected there is nothing to fit to, so it is
     *  Home — and it says so rather than doing nothing. */
+   /**
+    * ⚠️ THE PREDICATE HERE MUST BE THE FRAME LOOP'S `focusActive`, NOT A LOOKALIKE.
+    *
+    * The first version asked `(s.focus ?? s.selected).length > 0 || s.isolate` — which consults
+    * `s.selected`. The loop's gate does not: `focusActive = s.isolate || !!s.focus?.length`. A
+    * `?scene=` blob with structures and no explicit `camera.focus` is legal (scene-codec.js:75
+    * defaults it to `[]` and only emits it when non-empty), and for one of those the two
+    * predicates disagree: `has` was true, so the Home branch was skipped; `focusActive` was false,
+    * so `isolateKey` stayed `''` and `wantFit` was `'' !== ''` — false. F moved nothing, returned
+    * `'fit'` as though it had, and cleared `manual` on the way out, leaving the reader's pose
+    * exposed to the next resize (stand-in review S1 M3).
+    *
+    * So it asks the loop's own question, and when the answer is no there IS nothing to fit to —
+    * which is Home, said out loud rather than by doing nothing.
+    */
    fit:()=>{
-    const s=latest.current,has=(s.focus?.length?s.focus:s.selected).length>0||s.isolate;
+    const s=latest.current,focusActive=s.isolate||!!s.focus?.length;
     manual=false;
-    if(!has){studioHome(s.view);return 'home';}
+    if(!focusActive){studioHome(s.view);return 'home';}
     lastIsolate='';dirty=true;return 'fit';
    },
    /** `mode('pan')` swaps the left drag and the one-finger touch, exactly as the explode slider

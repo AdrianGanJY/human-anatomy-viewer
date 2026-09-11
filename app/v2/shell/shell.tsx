@@ -34,13 +34,19 @@
  * tabindex and tri-state checkboxes. (The pill and the pad were on this list at S0 and came off it
  * in S1, which is what "placeholder-first" is for.)
  */
-import {useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent} from 'react';
+import {useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
 import type {T} from '../../i18n/dict';
 import {LANGS, LANG_LABELS, type Lang} from '../../i18n/ui';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {KEY_MAP} from './keys.ts';
+/** Injected by `vite.config.ts`'s `define`. Declared rather than imported because that is what a
+ *  compile-time constant is; the fallbacks keep a bare `tsc`/test run honest. */
+declare const __ATLAS_BUILD__: string | undefined;
+declare const __ATLAS_COMMIT__: string | undefined;
+const ATLAS_BUILD = typeof __ATLAS_BUILD__ === 'string' ? __ATLAS_BUILD__ : 'dev';
+const ATLAS_COMMIT = typeof __ATLAS_COMMIT__ === 'string' ? __ATLAS_COMMIT__ : 'dev';
 import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
 import {DOCK_KEYS, type DockKey} from './store.ts';
@@ -161,9 +167,22 @@ export function StudioField(p: {
   onPointerUp: () => p.release(code),
   onPointerCancel: () => p.release(code),
   onPointerLeave: () => p.release(code),
-  // KEYBOARD-REACHABLE TOO. A pad key is a real button, so Space/Enter must do something; a
-  // click is a discrete nudge rather than a hold, which is the honest translation.
-  onClick: () => { p.press(code); setTimeout(() => p.release(code), 140); },
+  /**
+   * KEYBOARD-REACHABLE TOO. A pad key is a real button, so Space/Enter must do something; a click
+   * is a discrete nudge rather than a hold, which is the honest translation.
+   *
+   * ⚠️ `detail === 0` IS WHAT MAKES IT KEYBOARD-ONLY. A mouse gesture fires `pointerup` AND then
+   * `click`, so without this every finger press ran press → release → press → release(+140 ms):
+   * the key flickered, and a reader who let go still saw it lit for a beat. It also made the pad
+   * oracle timing-dependent — it read `aria-pressed` after the gesture and sometimes caught the
+   * click's phantom second press, which reads as "a key left stuck down". A click synthesised by
+   * the keyboard reports `detail === 0`; one that came from a pointer does not.
+   */
+  onClick: (e: ReactMouseEvent<HTMLButtonElement>) => {
+   if (e.detail !== 0) return;
+   p.press(code);
+   setTimeout(() => p.release(code), 140);
+  },
  });
  return <>
   {p.caption.title && <div className="v2-cap">
@@ -694,13 +713,21 @@ export function StudioOverlays(p: {
    <h3>{tr('about.historical')}</h3>
    <p>{tr('about.history')}</p>
    <hr/>
-   <p style={{marginTop: 12, color: 'var(--v2-ink-3)'}}>{tr('about.build', {build: 'l31v21a', commit: '07e76ee'})}</p>
+   {/* DERIVED AT BUILD TIME (vite.config.ts `define`), never typed here. The literals that used to
+       sit in this line said `l31v21a` / `07e76ee` two increments after both had moved — on the one
+       panel whose whole job is to say what the reader is looking at (stand-in review S1 L1). */}
+   <p style={{marginTop: 12, color: 'var(--v2-ink-3)'}}>{tr('about.build', {build: ATLAS_BUILD, commit: ATLAS_COMMIT})}</p>
   </div>}
  </Overlay>;
 
  // ── the key map ─────────────────────────────────────────────────────────────────────────────
+ // EMPTY GROUPS ARE NOT RENDERED. The heading was emitted per group unconditionally, so the moment
+ // S1 emptied one the overlay grew a bare "Camera" title with no rows under it — and no oracle saw
+ // it, because the S1 rows count `dt` elements and `<s>` markers and both stayed correct
+ // (stand-in review S1 M1). Belt as well as braces: the underlying grouping is fixed in `keys.ts`.
  const groups: {k: KeyGroup; rows: typeof KEY_MAP}[] = (['now', 'global', 'camera', 'tree'] as const)
-  .map((k) => ({k, rows: KEY_MAP.filter((r) => r.group === k)}));
+  .map((k) => ({k, rows: KEY_MAP.filter((r) => r.group === k)}))
+  .filter((g) => g.rows.length > 0);
  const keys = <Overlay open={p.keysOpen} onClose={() => p.onKeys(false)} sheet={p.sheet}
   title={tr('keys.title')} labelClose={tr('settings.close')}>
   <p className="v2-note-sm" style={{marginTop: 12}}>{tr('keys.scope')}</p>

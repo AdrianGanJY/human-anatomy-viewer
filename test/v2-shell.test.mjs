@@ -271,6 +271,10 @@ test('the ladder at 1920 gives D2 its two docks on an untouched profile', () => 
 // ── S1: the key layer's pure contracts ──────────────────────────────────────────────────────────
 
 test('every held code carries exactly one axis, and the map is the mock keyboard', () => {
+  // L2 from the S1 stand-in review: the title said "exactly one axis" and nothing asserted it.
+  for (const [code, axis] of Object.entries(HOLD)) {
+    assert.equal(Object.keys(axis).length, 1, `${code} carries exactly one axis`);
+  }
   // W A S D pan, arrows orbit/dolly, Q E tilt — mock/NOTES.md amendment 4, which is binding.
   assert.deepEqual(Object.keys(HOLD).sort(), HOLD_CODES.slice().sort());
   assert.deepEqual(HOLD.KeyW.pan, [0, 1]);
@@ -298,13 +302,19 @@ test('the key map lists every S1 binding and no key nobody bound', () => {
   const keys = KEY_MAP.map((r) => r.keys);
   for (const k of ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H / R', 'Shift P / Shift S']) {
     assert.ok(keys.includes(k), `${k} is in the map`);
-    assert.equal(KEY_MAP.find((r) => r.keys === k).group, 'now', `${k} is no longer marked forthcoming`);
+    // NO OWNER means "this works today". `group` is what KIND of command it is and must stay
+    // semantic — conflating the two emptied the Camera section (stand-in review S1 M1).
+    assert.equal(KEY_MAP.find((r) => r.keys === k).owner, undefined, `${k} is no longer marked forthcoming`);
+  }
+  // AND NO GROUP IS EMPTY, which is the defect that conflation produced.
+  for (const g of ['now', 'global', 'camera', 'tree']) {
+    assert.ok(KEY_MAP.some((r) => r.group === g), `the ${g} section has rows`);
   }
   // `+ −` was inert copy for a zoom command v2 does not have — zoom IS the dolly, on ↑ ↓. A map
   // that lists a key nobody will ever bind is the defect `keys.ts` exists to prevent.
   assert.ok(!keys.includes('+ −'), 'the unbindable zoom row is gone');
-  // A row that names an owner must NOT claim to work now, and vice versa.
+  // Every row in the "now" group is live by definition, so none of them may name an owner.
   for (const r of KEY_MAP) {
-    assert.equal(r.group === 'now', !r.owner, `${r.keys}: "now" and an owner are mutually exclusive`);
+    if (r.group === 'now') assert.equal(r.owner, undefined, `${r.keys}: a "now" row cannot be forthcoming`);
   }
 });

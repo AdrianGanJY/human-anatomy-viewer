@@ -148,6 +148,8 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   */
  const modalRef = useRef(false);
  modalRef.current = keysOpen || settingsOpen;
+ const studioRef = useRef(false);
+ studioRef.current = studio;
  const cmdRef = useRef<((cmd: KeyCommand) => boolean | void) | null>(null);
  const dispRef = useRef<Dispatcher | null>(null);
 
@@ -158,7 +160,13 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
    // has to close the thing on top.
    if (keysOpen) { setKeysOpen(false); return true; }
    if (settingsOpen) { setSettingsOpen(false); return true; }
-   return false;   // declined: `?stage=1`'s own exit still owns Escape (page.tsx)
+   // ⚠️ FALLS THROUGH TO THE PAGE, which leaves the stage. The comment here used to say
+   // "declined: `?stage=1`'s own exit still owns Escape (page.tsx)" and there was NO Escape
+   // handler in page.tsx — `grep -rn Escape app/v2/` found only the overlay's own trap and that
+   // sentence (stand-in review S1 M6). S1 made the stage reachable by keystroke (Shift+S), and in
+   // stage the pill and the pad are unrendered, so a reader who pressed it had one small button
+   // and an Escape key that did nothing. The comment is now true because the code is.
+   return onCommandRef.current?.('escape') ?? false;
   }
   if (cmd === 'keymap') { setKeysOpen(true); return true; }
   // ── S1's OWN COMMANDS. The camera ones are answered here because the renderer's surface is a
@@ -178,6 +186,8 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
    run: (cmd) => cmdRef.current?.(cmd) ?? false,
    holdCodes: HOLD_CODES,
    onHold: setHoldN,
+   // Guard 7, through a ref for the same reason `modalOpen` is: the dispatcher is installed once.
+   cameraEnabled: () => studioRef.current,
   });
   dispRef.current = d;
   return () => { d.destroy(); dispRef.current = null; };

@@ -568,33 +568,42 @@ export default function V2() {
  /**
   * SNAPSHOT — the field as a PNG, on this device, with no server in it.
   *
-  * `installCapture` (app/capture.ts) already paints one supersampled frame over the live canvas
-  * for the plate renderer, so the picture worth saving is the one already on screen; this reads
-  * the canvas back and hands it to the browser's own download. It deliberately does NOT go
-  * through `/api/snap`: that route is behind Access, rate-limited on this account, and would turn
-  * a local action into a network dependency for no gain.
+  * It deliberately does NOT go through `/api/snap`: that route is behind Access, rate-limited on
+  * this account, and would turn a local action into a network dependency for no gain.
   *
-  * `preserveDrawingBuffer` is NOT set on the renderer, so the buffer is only guaranteed readable
-  * inside a frame — hence the capture hook (which renders on demand) rather than a bare
-  * `toDataURL`, and hence the null check: if the scene has not mounted there is nothing to save
-  * and the command declines rather than downloading a blank rectangle.
+  * ⚠️ IT READS `__atlasCapture`'s RETURN VALUE AND THEN RELEASES THE OVERLAY. Both halves are
+  * corrections from the S1 stand-in review's H2, and each was its own defect:
+  *
+  *  1. `installCapture` (app/capture.ts:90-110) renders one supersampled frame, copies it into a
+  *     2D canvas, RETURNS that canvas as a data URL — and then appends it over the field as a
+  *     `.atlas-shot` overlay. The overlay is removed only by `releaseCaptureOverlay`, whose single
+  *     caller was v1's re-drive path (`app/page.tsx:125`). In `/v2/` nothing released it, so one
+  *     Shift+P froze the viewport permanently: the WebGL canvas kept redrawing underneath a static
+  *     bitmap, `pointer-events:none` let every gesture through, and the app was live while the
+  *     picture was dead.
+  *  2. The first version read `.v2-field canvas` — the WEBGL canvas — with `toBlob`. The renderer
+  *     is built without `preserveDrawingBuffer` (app/capture.ts:104-107 says so), so that buffer is
+  *     only valid inside the frame that drew it: the download would have been blank or stale. The
+  *     capture hook exists precisely because it does the read in the same task as the render.
+  *
+  * `scale: 2` is the real supersample. The first version passed `1`, which clamps to `MIN_SCALE`
+  * and supersamples nothing, under a comment that claimed it did.
   */
+ // The command handler is installed ONCE (the dispatcher's extension seam), so it cannot close over
+ // `stage` — it reads the live value through a ref, the same discipline `useShell` uses.
+ const stageRef = useRef(stage);
+ stageRef.current = stage;
  const snapshot = useCallback(() => {
-  const cap = (window as unknown as {__atlasCapture?: (o: {scale: number}) => void}).__atlasCapture;
-  const canvas = document.querySelector('.v2-field canvas') as HTMLCanvasElement | null;
-  if (!canvas) return false;
-  cap?.({scale: 1});
-  canvas.toBlob((blob) => {
-   if (!blob) return;
-   const url = URL.createObjectURL(blob);
-   const a = document.createElement('a');
-   a.href = url;
-   a.download = `anatomy-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.png`;
-   a.click();
-   // Revoked on the next task, not immediately: Chromium reads the blob asynchronously after the
-   // synthetic click, and revoking in the same tick produces an empty file.
-   setTimeout(() => URL.revokeObjectURL(url), 10000);
-  }, 'image/png');
+  const w = window as unknown as {__atlasCapture?: (o: {scale: number}) => string; __atlasCaptureRelease?: () => void};
+  if (!w.__atlasCapture) return false;
+  const url = w.__atlasCapture({scale: 2});
+  // ALWAYS, even on a failed capture: `installCapture` appends the overlay before this returns.
+  w.__atlasCaptureRelease?.();
+  if (!url) return false;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `anatomy-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.png`;
+  a.click();
   return true;
  }, []);
 
@@ -608,10 +617,14 @@ export default function V2() {
   const view = ({'view-three-quarter': 'three-quarter', 'view-front': 'front', 'view-side': 'side', 'view-back': 'back'} as Record<string, View>)[cmd];
   if (view) return dispatch({type: 'set-view', view});
   if (cmd === 'reset') return dispatch({type: 'reset-view'});
-  if (cmd === 'stage') { setStage(true); return true; }
+  if (cmd === 'stage') { setStage((s) => !s); return true; }
   if (cmd === 'snapshot') { snapshot(); return true; }
+  // ESCAPE LEAVES THE STAGE. `useShell` handles the overlays and hands the key on when none is
+  // open; this is the only other thing on `/v2/` that Escape can sensibly mean, and without it
+  // Shift+S was a one-way door with a single small button back (stand-in review S1 M6).
+  if (cmd === 'escape') { if (!stageRef.current) return false; setStage(false); return true; }
   return false;
- }, [dispatch]));
+ }, [dispatch, snapshot]));
 
  /**
   * ── S1 / RC3: A STUDIO `?select=` LINK OPENS FRAMED ON ITS STRUCTURE ──────────────────────────

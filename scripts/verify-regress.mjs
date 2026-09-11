@@ -758,6 +758,18 @@ if (want('edited-scene-persists')) {
   // below 1180 — at `fresh()`'s default it had been pressing the studio's `.v2-card-x` instead.
   const {context, page, errors} = await fresh(...MARGIN_TIER);
   try {
+    // WAIT ON THE WRITE, NOT ON A CLOCK — the same lesson as `stage-probe`, applied before it bit.
+    // This case asserts what the DEBOUNCED `writeUrlState` put in the URL, and did so after a flat
+    // `waitForTimeout(1500)`. It flaked on 2026-09-12 under a concurrent oracle sweep: the
+    // controller had dropped the structure and `plate()` agreed, while the URL still named it,
+    // which reads as "the edit did not persist" and was a stopwatch. `writeUrlState` ends in
+    // exactly one `history.replaceState` (app/url-state.ts), so counting that call observes the
+    // event directly.
+    await page.addInitScript(() => {
+      window.__urlWrites = 0;
+      const real = history.replaceState.bind(history);
+      history.replaceState = (...a) => { window.__urlWrites += 1; return real(...a); };
+    });
     await page.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
     await waitScene(page);
     await waitAll(page);
@@ -783,7 +795,15 @@ if (want('edited-scene-persists')) {
     }
     if (!clicked && xs.length) clicked = await clickAt(page, xs[xs.length - 1]);
     prereq('a remove control was found and pressed', clicked, `${xs.length} remove controls in the set list`, 'one pressed');
-    await page.waitForTimeout(1500);
+    const writesAtClick = await page.evaluate(() => window.__urlWrites ?? 0);
+    let editWriteSeen = true;
+    await page.waitForFunction((n) => (window.__urlWrites ?? 0) > n, writesAtClick, {timeout: 20000})
+      .catch(() => { editWriteSeen = false; });
+    if (!editWriteSeen) await page.waitForTimeout(1500);
+    prereq('the debounced URL write after the edit was OBSERVED, not slept through', editWriteSeen,
+      editWriteSeen ? `history.replaceState fired again (was ${writesAtClick})`
+        : 'no further replaceState within 20 s — fell back to the legacy 1500 ms sleep', 'observed');
+    await page.waitForTimeout(300);   // one settle beat for the commit the write came from
 
     const after = await atlasState(page);
     const plate = await page.evaluate(() => window.atlas?.plate?.() ?? null);
