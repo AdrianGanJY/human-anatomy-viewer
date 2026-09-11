@@ -75,6 +75,12 @@ export default function V2() {
  const [seed] = useState(() => initialState(url, baseState));
  const [ctl, setCtl] = useState<V2State>(seed.state);
  const {scene, blob: sceneBlob, picks, focusId, render: state} = ctl;
+ /** THE HUMAN'S SYSTEM SET, as distinct from what is currently DRAWN (`state.visible`), which a
+  *  scene's skeletal ghost may legitimately override. Every control that represents the human's
+  *  choice reads this; anything describing the picture on screen reads `state.visible`. Optional in
+  *  the controller for backward compatibility, so the fallback is stated once, here, rather than at
+  *  each call site. See `V2State.visibleIntent`. */
+ const visibleIntent = ctl.visibleIntent ?? state.visible;
  /** The caption a NON-scene page shows. In scene mode the caption lives in the scene and is derived
   *  below, so there is no second copy to fall out of step with an edit. */
  const [legacyCaption, setLegacyCaption] = useState<{title?: string; note?: string}>(() => ({title: url.title, note: url.note}));
@@ -723,9 +729,17 @@ export default function V2() {
      </ul>
     </div>}
 
+    {/* ⚠️ THIS CONTROL IS THE HUMAN'S SYSTEM SET, SO IT READS AND WRITES THE INTENT — never
+        `render.visible`, which a scene's skeletal ghost legitimately overwrites.
+        The controller-side fix alone did not close the door, and recording it as "fixed, both
+        halves" was wrong of me: this checkbox both DISPLAYED `render.visible` (so after a ghost
+        link the human's own choice read as OFF) and RECOMPUTED the next set from it (so one click
+        wrote `['skeletal', …]` straight into the intent, and the very next scene inherited the
+        ghost). The one-way door still closed — it just cost a click. Found by the S0 stand-in
+        review, H3, with an executed five-step counterexample. */}
     {panel === 'systems' && <div className="v2-systems">
-     {SYSTEMS.filter((s) => counts[s.id] > 0).map((s) => <label key={s.id} className={state.visible.includes(s.id) ? 'is-on' : ''}>
-      <input type="checkbox" checked={state.visible.includes(s.id)} onChange={() => dispatch({type: 'set-visible', visible: state.visible.includes(s.id) ? state.visible.filter((x) => x !== s.id) : [...state.visible, s.id]})}/>
+     {SYSTEMS.filter((s) => counts[s.id] > 0).map((s) => <label key={s.id} className={visibleIntent.includes(s.id) ? 'is-on' : ''}>
+      <input type="checkbox" checked={visibleIntent.includes(s.id)} onChange={() => dispatch({type: 'set-visible', visible: visibleIntent.includes(s.id) ? visibleIntent.filter((x) => x !== s.id) : [...visibleIntent, s.id]})}/>
       <span className="v2-box" aria-hidden="true"/>
       <span className="v2-dot" style={{background: s.color}}/>
       <span>{t.system(s.id, s.name)}</span>

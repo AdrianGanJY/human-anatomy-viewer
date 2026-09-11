@@ -512,3 +512,35 @@ test('system= in a legacy URL IS the human speaking, and survives a later ghost'
   const back = reduce(afterGhost, {type: 'apply-legacy', url: {select: ['FMA9611']}}).state;
   assert.deepEqual(back.visibleIntent, ['arterial'], 'a legacy apply with no system= leaves the intent alone');
 });
+
+// ── the S0 stand-in review, H3: the UI path, not just the reducer ────────────────────────────────
+// The controller-side fix alone did NOT close the one-way door. The systems checkbox displayed
+// `render.visible` and recomputed the next set from it, so after a ghost scene the human's own
+// choice read as OFF, and one click wrote the ghost straight into the intent. This is that exact
+// five-step sequence, with the UI handler reproduced as the page performs it.
+
+test('the human\u2019s system set survives a ghost scene THROUGH THE UI, not only in the reducer', () => {
+  const seeded = initialState({}, {...render, visible: ['muscular', 'nervous']});
+  const chosen = reduce(seeded.state, {type: 'set-visible', visible: ['muscular', 'nervous']}).state;
+
+  const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
+  const afterGhost = reduce(chosen, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(afterGhost.render.visible, ['skeletal'], 'the ghost drives what is DRAWN');
+
+  // WHAT THE CHECKBOX SHOWS. `app/v2/page.tsx` reads `visibleIntent`, never `render.visible` — so
+  // the human sees the boxes they ticked, not the scene's ghost.
+  const shown = (st) => st.visibleIntent ?? st.render.visible;
+  assert.deepEqual(shown(afterGhost), ['muscular', 'nervous'],
+    'the control shows the human their own choice, still ticked');
+
+  // WHAT ONE CLICK WRITES. Reproducing page.tsx's onChange verbatim: toggle 'arterial' on.
+  const cur = shown(afterGhost);
+  const next = cur.includes('arterial') ? cur.filter((x) => x !== 'arterial') : [...cur, 'arterial'];
+  const afterClick = reduce(afterGhost, {type: 'set-visible', visible: next}).state;
+  assert.deepEqual(afterClick.visibleIntent, ['muscular', 'nervous', 'arterial'],
+    'the ghost never enters the intent — this is the assertion the old UI path failed');
+
+  // AND THE NEXT SCENE INHERITS THE HUMAN, NOT THE GHOST.
+  const plain = reduce(afterClick, {type: 'apply-scene', scene: SCENE}).state;
+  assert.deepEqual(plain.render.visible, ['muscular', 'nervous', 'arterial']);
+});

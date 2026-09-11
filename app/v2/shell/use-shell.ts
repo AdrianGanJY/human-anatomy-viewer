@@ -10,7 +10,7 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
 import {installDispatcher, type Command as KeyCommand} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
-import {readDocks, writeDocks, type DockKey} from './store.ts';
+import {effectiveDocks, readDocks, writeDocks, type DockKey} from './store.ts';
 
 /** A live viewport reading. `matchMedia` rather than a resize listener: the browser coalesces the
  *  change events, and the four queries below are exactly the four boundaries that matter, so a
@@ -61,32 +61,32 @@ export function useShell(): ShellState {
  const studio = isStudio(tier);
  const wide = tier === 'studio-wide';
 
- // Read ONCE, lazily. Re-reading on every tier change would discard an in-session choice the
- // moment the window crossed 1600 — the persisted value is the SEED, not the live truth.
- const [prefs, setPrefs] = useState(() => readDocks(wide));
- // …but the DEFAULT open set does depend on the tier (G2), and a first visit at >=1600 has nothing
- // persisted to seed from. This runs only while the key is absent, so it can never overwrite a
- // choice: `readDocks` returns the defaults for an absent key, and writing them makes the set the
- // human's from then on.
- const [seeded, setSeeded] = useState(false);
- useEffect(() => {
-  if (seeded) return;
-  setSeeded(true);
-  try { if (localStorage.getItem('atlas.dock') === null) writeDocks(prefs); } catch { /* private browsing */ }
- }, [seeded, prefs]);
+ // Read ONCE, lazily. Re-reading on every tier change would discard an in-session choice the moment
+ // the window crossed 1600 — the persisted value is the SEED, not the live truth.
+ //
+ // ⚠️ NOTHING IS WRITTEN ON ENTRY. The first build seeded the tier's default into `atlas.dock` when
+ // the key was absent, which turned "we picked this for you at 1440" into "the human chose one dock"
+ // and made G2's two-panel default at >=1600 permanently unreachable for anyone whose first visit
+ // was narrower — a door no later group could reopen (stand-in review H1). So `open` stays null
+ // until a human OPENS OR CLOSES something, and `effectiveDocks` derives the set from the tier in
+ // the meantime, live, so it follows the window until there is a real choice to respect.
+ const [prefs, setPrefs] = useState(() => readDocks());
 
  const lad = useMemo(() => ladder({
-  width: vp.w, side: prefs.side, sideCollapsed: prefs.sideCollapsed, open: prefs.open,
- }), [vp.w, prefs]);
+  width: vp.w, side: prefs.side, sideCollapsed: prefs.sideCollapsed, open: effectiveDocks(prefs, wide),
+ }), [vp.w, prefs, wide]);
 
- const persist = useCallback((next: typeof prefs) => { setPrefs(next); writeDocks(next); }, []);
  const toggleDock = useCallback((k: DockKey) => {
-  setPrefs((cur) => { const next = {...cur, open: openDock(cur.open, k)}; writeDocks(next); return next; });
- }, []);
+  // The FIRST toggle is also the moment the set becomes the human's, so it starts from what they
+  // were actually looking at — the tier default — not from an empty set.
+  setPrefs((cur) => {
+   const next = {...cur, open: openDock(effectiveDocks(cur, wide), k)};
+   writeDocks(next); return next;
+  });
+ }, [wide]);
  const toggleSide = useCallback(() => {
   setPrefs((cur) => { const next = {...cur, sideCollapsed: !cur.sideCollapsed}; writeDocks(next); return next; });
  }, []);
- void persist;
 
  const [keysOpen, setKeysOpen] = useState(false);
  const [settingsOpen, setSettingsOpen] = useState(false);

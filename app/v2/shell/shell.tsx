@@ -294,6 +294,9 @@ export default function Shell(p: ShellProps) {
  </header>;
 
  // ── the tools row ───────────────────────────────────────────────────────────────────────────
+ // All four docks are LIVE at S0 — Selection, Info and Scene JSON read the controller, and Ask is
+ // the ChatGPT hand-off the kickoff permits. (An earlier version branched on a `live` flag into two
+ // identical elements; the branch was dead code claiming a distinction that does not exist.)
  const panelBtn = (k: DockKey | 'layers') => {
   if (k === 'layers') {
    return <button type="button" key="layers" className={`v2-tbtn ${!p.sideStub ? 'is-on' : ''}`}
@@ -301,14 +304,7 @@ export default function Shell(p: ShellProps) {
     <Ico d={P.layers}/>{tr('panel.layers')}
    </button>;
   }
-  const live = k === 'selection' || k === 'info' || k === 'json';
   const on = p.docks.includes(k);
-  if (!live) {
-   // Ask is reachable at S0 (the deep link is permitted by the kickoff), so it is NOT inert — it is
-   // a real dock with a real body. Only its in-app chat is S5b.
-   return <button type="button" key={k} className={`v2-tbtn ${on ? 'is-on' : ''}`} aria-pressed={on}
-    onClick={() => p.onToggleDock(k)}>{dockTitle[k]}</button>;
-  }
   return <button type="button" key={k} className={`v2-tbtn ${on ? 'is-on' : ''}`} aria-pressed={on}
    onClick={() => p.onToggleDock(k)}>{dockTitle[k]}</button>;
  };
@@ -367,6 +363,11 @@ export default function Shell(p: ShellProps) {
       able to reach one and be told which group brings it. */}
   <ul className="v2-tree">
    {ordered.map((s) => {
+    // `state.visible` DELIBERATELY, and it is not the stale-reader defect the intent field exists to
+    // end. The EYE describes what is DRAWN — the effective visibility, which a scene's skeletal
+    // ghost legitimately overrides — where the TICK would describe the human's membership choice.
+    // Two facts, two sources; the eye reads the render and says so. (The phone's system CHECKBOX is
+    // the human's choice and reads `visibleIntent`; see page.tsx.)
     const on = p.state.visible.includes(s.id);
     return <li key={s.id} className="v2-tree-row">
      <span className="v2-tw"><Ico d={P.chev} size={13}/></span>

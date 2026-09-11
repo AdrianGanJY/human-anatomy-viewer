@@ -710,7 +710,21 @@ for (const vp of SWEEP) {
     for (const script of ['zh-Hans', 'zh-Hant']) {
       const font = await page.evaluate((s) => {
         document.documentElement.lang = s;
-        const el = document.querySelector('h1, .structure-title, .v2-term b') || document.body;
+        // ⚠️ THE PROBE MUST LAND ON A REAL TEXT ROW, AND IT MUST SAY WHICH ONE.
+        //
+        // This selector was `h1, .structure-title, .v2-term b` with `|| document.body`. The studio
+        // renders neither an `h1` nor a `.v2-term` — the shell replaced both — so at 1440 / 1920 /
+        // 1366 the probe silently fell through to `body`, whose stack is set unconditionally by
+        // `v2.css` and therefore ALWAYS resolves. The tell was in the suite's own report: the
+        // measured string was BYTE-IDENTICAL at 390 and at 1920, which a tier-sensitive probe cannot
+        // produce. A guard that cannot fire is not a guard (stand-in review H2).
+        //
+        // So: the studio's own rows are in the selector, and WHICH element matched is reported and
+        // asserted. `body` is still the last resort — but reaching it is now a visible fact.
+        const SEL = 'h1, .structure-title, .v2-term b, .v2-bar-text b, .v2-tree-name, .v2-card b';
+        const el = document.querySelector(SEL) || document.body;
+        const matched = el === document.body ? 'BODY (fell through — the probe found no text row)'
+          : `${el.tagName.toLowerCase()}.${String(el.className || '').split(' ')[0] || '(no class)'}`;
         const stack = getComputedStyle(el).fontFamily;
         // TOFU PROBE — BY PIXELS, NOT BY WIDTH.
         //
@@ -739,8 +753,15 @@ for (const vp of SWEEP) {
           sigs.push(h); inked += on;
         }
         const distinct = new Set(sigs).size;
-        return {stack, text, distinct, chars: sigs.length, inked};
+        return {stack, matched, text, distinct, chars: sigs.length, inked};
       }, script);
+      // THE PROBE'S OWN LANDING SITE IS AN ASSERTION NOW. Without it the rows below measure whatever
+      // `body` happens to resolve and pass at every tier for the same reason — which is exactly what
+      // they did at the three studio viewports until the S0 stand-in review caught it (H2). The tell
+      // was a measured string that was byte-identical at 390 and at 1920.
+      check(vp.name, `${script}: the font probe landed on a real text row, not on <body>`,
+        typeof font.matched === 'string' && !font.matched.startsWith('BODY'),
+        `matched ${font.matched}`, 'a text element');
       const wantsTC = /TC\b|JhengHei|MingLiU|Traditional/i.test(font.stack);
       // The v1 defect is structural: ONE SC-only stack serves both scripts (globals.css:212), so
       // 繁體 renders in Simplified glyph variants on iOS. Assert the FORK, because that is the
@@ -1022,6 +1043,13 @@ for (const vp of SWEEP) {
  */
 if (variant === 'v2') {
   /** The five tiers and their expected `grid-template-areas`, as STRINGS the browser computed. */
+  const STUDIO_AREAS = '"bar bar bar" "tools tools tools" "side field dock" "status status status"';
+  // ⚠️ `board` IS THE CONTRACT, IN THE PASS EXPRESSION. The first version of this pass named only
+  // 390 / 1024 / 1179 / 1180 / 1920 and asserted `side === 264 && field.w >= 420` — so D1 (1440),
+  // X6 (1366 coarse) and every field HEIGHT were measured at ZERO viewports while the commit claimed
+  // "MEASURED GEOMETRY, matching mock/spec.md exactly". The numbers were right in the code and in
+  // the screenshots and absent from the instrument, which inverts this project's own failure mode:
+  // a correct picture over a suite that is not looking (stand-in review H4).
   const TIERS = [
     {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true, tier: 'phone',
       areas: '"head head" "field rail" "margin margin"'},
@@ -1031,10 +1059,19 @@ if (variant === 'v2') {
     // for its own legacy rules, and the studio's own tier query is what has to be at 1180.
     {name: '1179x900', width: 1179, height: 900, dpr: 1, coarse: false, tier: 'tablet',
       areas: '"head head head" "field rail margin"'},
-    {name: '1180x900', width: 1180, height: 900, dpr: 1, coarse: false, tier: 'studio',
-      areas: '"bar bar bar" "tools tools tools" "side field dock" "status status status"'},
-    {name: '1920x860', width: 1920, height: 860, dpr: 1, coarse: false, tier: 'studio-wide',
-      areas: '"bar bar bar" "tools tools tools" "side field dock" "status status status"'},
+    {name: '1180x900', width: 1180, height: 900, dpr: 1, coarse: false, tier: 'studio', areas: STUDIO_AREAS,
+      board: 'the 1180 floor', side: 264, field: [596, 772], dock: 320, panes: [320]},
+    // D1 — mock-spec.md: side 264, field 856x772, dock 320.
+    {name: '1440x900', width: 1440, height: 900, dpr: 1, coarse: false, tier: 'studio', areas: STUDIO_AREAS,
+      board: 'D1', side: 264, field: [856, 772], dock: 320, panes: [320]},
+    // D2 — side 264, field 1036x732, two docks 320 + 300 = 620.
+    {name: '1920x860', width: 1920, height: 860, dpr: 1, coarse: false, tier: 'studio-wide', areas: STUDIO_AREAS,
+      board: 'D2', side: 264, field: [1036, 732], dock: 620, panes: [320, 300]},
+    // X6 — the >=1180 COARSE tier: desktop structure and a 44 px target floor at once. It was the
+    // only studio board with no rows at all, in a commit that separately caught four 41x44 buttons
+    // at this exact viewport.
+    {name: '1366x1024', width: 1366, height: 1024, dpr: 2, coarse: true, tier: 'studio', areas: STUDIO_AREAS,
+      board: 'X6 (coarse)', side: 264, field: [782, 896], dock: 320, panes: [320]},
   ];
   const STUDIO_V = 'S0-studio';
 
@@ -1053,7 +1090,11 @@ if (variant === 'v2') {
           tier: el.dataset.tier,
           studio: el.classList.contains('v2-studio'),
           bar: box('.v2-bar'), tools: box('.v2-tools'), status: box('.v2-status'),
-          side: box('.v2-side'), field: box('.v2-field'),
+          side: box('.v2-side'), field: box('.v2-field'), dock: box('.v2-dock'),
+          // BOTH the column and the panes inside it. The pane rects alone re-measure a number the
+          // component itself just wrote inline, and `.v2-dock{overflow:hidden}` can clip a wrong
+          // COLUMN without moving a pane rect -- so the "every dock measured 319 px" defect this
+          // commit fixed would not have been caught by a pane-only reading.
           panes: [...document.querySelectorAll('.v2-pane')].map((n) => Math.round(n.getBoundingClientRect().width)),
           // the phone's geometry constants, read back rather than assumed
           head: box('.v2-head'), rail: box('.v2-rail'), margin: box('.v2-margin'),
@@ -1072,16 +1113,28 @@ if (variant === 'v2') {
         check(vp.name, `[${STUDIO_V}] the studio rows are 52 / 44 / 32 as rendered`,
           g.bar?.h === 52 && g.tools?.h === 44 && g.status?.h === 32,
           `bar=${g.bar?.h} tools=${g.tools?.h} status=${g.status?.h}`, '52 / 44 / 32');
-        check(vp.name, `[${STUDIO_V}] the sidebar is 264 and the field clears the 420 px floor`,
-          g.side?.w === 264 && (g.field?.w ?? 0) >= 420,
-          `side=${g.side?.w} field=${g.field?.w}x${g.field?.h}`, 'side 264, field >= 420');
-        // AT MOST TWO DOCKS, EVER, and each at its own width. "Max two, never three" is a layout
-        // invariant; a third column is what the eviction rule exists to prevent.
+        // THE BOARD, EXACTLY: side, field WIDTH **AND HEIGHT**, and the dock COLUMN. Every number
+        // here is `mock-spec.md`'s own artboard table, and the field height is what proves the three
+        // fixed rows actually consumed 52 + 44 + 32 of the viewport rather than merely rendering at
+        // those heights somewhere.
+        const want = `side ${vp.side} / field ${vp.field[0]}x${vp.field[1]} / dock ${vp.dock}`;
+        const got = `side ${g.side?.w} / field ${g.field?.w}x${g.field?.h} / dock ${g.dock?.w ?? 0}`;
+        check(vp.name, `[${STUDIO_V}] ${vp.board}: the rendered geometry IS the contract (${want})`,
+          g.side?.w === vp.side && g.field?.w === vp.field[0] && g.field?.h === vp.field[1]
+            && (g.dock?.w ?? 0) === vp.dock,
+          got, want);
+        check(vp.name, `[${STUDIO_V}] ${vp.board}: the field clears the 420 px floor`,
+          (g.field?.w ?? 0) >= 420, `field ${g.field?.w}`, '>= 420');
+        // AT MOST TWO DOCKS, EVER, each at its declared width, and the column is their sum. "Max
+        // two, never three" is a layout invariant; a third column is what the eviction rule exists
+        // to prevent.
         const total = g.panes.reduce((a, b) => a + b, 0);
-        check(vp.name, `[${STUDIO_V}] at most two right docks, at their declared widths, <= 780 combined`,
-          g.panes.length <= 2 && total <= 780 && g.panes.every((w) => [320, 300, 360].includes(w)),
-          `${g.panes.length} pane(s) [${g.panes.join(', ')}] total ${total}`, '<= 2 of 320/300/360, total <= 780');
-        check(vp.name, `[${STUDIO_V}] ${vp.tier === 'studio-wide' ? 'two docks' : 'one dock'} by default (G2)`,
+        check(vp.name, `[${STUDIO_V}] ${vp.board}: the open docks are exactly [${vp.panes.join(', ')}] and fill the column`,
+          g.panes.length === vp.panes.length && g.panes.every((w, i) => w === vp.panes[i])
+            && total === (g.dock?.w ?? 0) && total <= 780,
+          `${g.panes.length} pane(s) [${g.panes.join(', ')}] total ${total}, column ${g.dock?.w ?? 0}`,
+          `[${vp.panes.join(', ')}], column ${vp.dock}`);
+        check(vp.name, `[${STUDIO_V}] ${vp.board}: ${vp.tier === 'studio-wide' ? 'two docks' : 'one dock'} by default (G2)`,
           g.panes.length === (vp.tier === 'studio-wide' ? 2 : 1),
           `${g.panes.length} pane(s)`, vp.tier === 'studio-wide' ? '2' : '1');
         check(vp.name, `[${STUDIO_V}] the phone's head / rail / margin are GONE, not merely hidden`,
@@ -1127,8 +1180,12 @@ if (variant === 'v2') {
       await page.keyboard.press('Escape');
       await page.waitForTimeout(300);
       const closed = await page.evaluate(() => !document.querySelector('.v2-modal'));
+      // ⚠️ CONDITIONED ON IT HAVING OPENED. `!document.querySelector('.v2-modal')` is trivially true
+      // when `?` never opened anything -- so this row went GREEN in precisely the scenario where the
+      // row above had just failed (stand-in review M9).
       check(vp.name, `[${STUDIO_V}] Escape closes it (the only other binding S0 installs)`,
-        closed, closed ? 'closed' : 'still open', 'closed');
+        !!modal && closed, modal ? (closed ? 'opened, then closed' : 'opened and STAYED OPEN') : 'it never opened, so Escape proves nothing',
+        'opened, then closed');
 
       if (vp.tier.startsWith('studio')) {
         await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`)});
@@ -1178,6 +1235,156 @@ if (variant === 'v2') {
     } finally { await ctx.close(); }
   }
 
+  // ── H1 — A NARROW FIRST VISIT MUST NOT CLOSE THE >=1600 DEFAULT ───────────────────────────────
+  // The defect the S0 stand-in review executed: the shell seeded the tier's DEFAULT into
+  // `atlas.dock` on the first visit at any width, so a human whose first visit was 1440 (or a
+  // phone) had `['selection']` on disk, and every later 1920 visit read it back as a CHOICE and
+  // served one dock forever. G2's two-panel board became unreachable, permanently.
+  //
+  // THE UNIT TESTS CANNOT SEE THIS: the write lived in a React hook. So it is asserted here, in the
+  // only place the whole sequence exists — one browser profile, two visits, localStorage between
+  // them. The control arm is the SAME profile continuing to honour a REAL choice.
+  {
+    const vp = {name: 'dock-default-1920', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      // VISIT 1, narrow. This is the visit that used to write the narrow default to disk.
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const firstVisit = await page.evaluate(() => ({
+        panes: document.querySelectorAll('.v2-pane').length,
+        stored: localStorage.getItem('atlas.dock'),
+      }));
+      check(vp.name, `[${STUDIO_V}] H1: a narrow visit shows one dock and WRITES NOTHING to atlas.dock`,
+        firstVisit.panes === 1 && firstVisit.stored === null,
+        `${firstVisit.panes} pane(s), atlas.dock=${firstVisit.stored === null ? 'absent' : firstVisit.stored}`,
+        '1 pane, key absent');
+
+      // VISIT 2, wide, SAME PROFILE. Two docks, because nothing was ever chosen.
+      await page.setViewportSize({width: 1920, height: 860});
+      await page.reload({waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const wide = await page.evaluate(() => ({
+        panes: [...document.querySelectorAll('.v2-pane')].map((n) => Math.round(n.getBoundingClientRect().width)),
+        dock: Math.round(document.querySelector('.v2-dock')?.getBoundingClientRect().width ?? 0),
+      }));
+      check(vp.name, `[${STUDIO_V}] H1: the SAME profile then gets D2's two docks at 1920`,
+        wide.panes.length === 2 && wide.dock === 620,
+        `[${wide.panes.join(', ')}] column ${wide.dock}`, '[320, 300], column 620');
+
+      // THE CONTROL ARM. A real choice must still win, or the fix has simply stopped persisting.
+      const closeBtn = await page.$('.v2-pane-x');
+      if (closeBtn) { const r = await closeBtn.boundingBox(); await page.mouse.click(r.x + r.width / 2, r.y + r.height / 2); }
+      await page.waitForTimeout(500);
+      await page.reload({waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const chosen = await page.evaluate(() => ({
+        panes: document.querySelectorAll('.v2-pane').length,
+        stored: localStorage.getItem('atlas.dock'),
+      }));
+      check(vp.name, `[${STUDIO_V}] H1 control arm: an ACTUAL choice persists and beats the tier default`,
+        chosen.panes === 1 && typeof chosen.stored === 'string' && chosen.stored.includes('"open"'),
+        `${chosen.panes} pane(s) after a reload, atlas.dock=${String(chosen.stored).slice(0, 70)}`,
+        '1 pane, and the key now exists');
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the dock-default pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── H3 — THE SYSTEM CHECKBOX SHOWS THE HUMAN'S SET, NOT THE SCENE'S GHOST ─────────────────────
+  // The controller keeps the two facts apart; the UI has to READ the right one. Before the fix the
+  // phone's systems panel displayed `render.visible`, so after a ghost link the human's own choice
+  // rendered as unticked — and the handler recomputed the next set from what it displayed, writing
+  // the ghost into the intent on the first click. A reducer test cannot see any of that: the defect
+  // was in JSX. One navigation reproduces it: `system=` sets the intent, the scene's skeletal rest
+  // overrides what is DRAWN, and the two must disagree on screen in exactly one direction.
+  {
+    const vp = {name: 'systems-intent', width: 390, height: 844, dpr: 3, coarse: true};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      const ghost = encodeScene(normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}}));
+      await page.goto(`${base}${path}?system=muscular,nervous&scene=${ghost}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      // Open the margin, then the Systems panel — real pointer at a real point, never page.click.
+      const press = async (el) => { const r = await el.boundingBox(); if (!r) return false; await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2); await page.mouse.down(); await page.mouse.up(); await page.waitForTimeout(500); return true; };
+      const handle = await page.$('.v2-handle');
+      if (handle) await press(handle);
+      const sysBtn = await page.evaluateHandle(() => [...document.querySelectorAll('.v2-actions button')]
+        .find((b) => (b.textContent || '').trim() === 'Systems' || (b.textContent || '').trim() === '系统' || (b.textContent || '').trim() === '系統') ?? null);
+      const sysEl = sysBtn.asElement();
+      if (sysEl) await press(sysEl);
+      const seen = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-systems label')].map((l) => ({
+          name: (l.querySelector('span:not(.v2-box):not(.v2-dot)')?.textContent || '').trim(),
+          checked: !!l.querySelector('input')?.checked,
+        }));
+        return {rows, drawn: window.atlas?.state?.() ?? null, count: rows.length};
+      });
+      const ticked = seen.rows.filter((r) => r.checked).map((r) => r.name).sort();
+      // THE FIXTURE IS A zh-Hans SCENE, so the rows are labelled in Chinese — the first version of
+      // this row asserted the English names and failed on its own fixture while the app was right.
+      // Both spellings, because the assertion is about WHICH SYSTEMS, not about which language.
+      const isMuscle = (n) => /Muscles|肌肉/.test(n);
+      const isNerve = (n) => /Nervous system|神经系统|神經系統/.test(n);
+      check(vp.name, `[${STUDIO_V}] H3: after a GHOST scene the systems panel still shows the human's own set`,
+        seen.count > 0 && ticked.length === 2 && ticked.some(isMuscle) && ticked.some(isNerve),
+        seen.count ? `${seen.count} rows, ticked: [${ticked.join(', ')}]` : 'the systems panel never opened',
+        'exactly Muscles + Nervous system ticked');
+      check(vp.name, `[${STUDIO_V}] H3: and the SKELETON the ghost draws is NOT ticked (two facts, two sources)`,
+        seen.count > 0 && !seen.rows.some((r) => r.checked && /Skeleton|骨骼/.test(r.name)),
+        `Skeleton ticked=${seen.rows.some((r) => r.checked && /Skeleton|骨骼/.test(r.name))}`,
+        'not ticked');
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the systems-intent pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── D10 — THE MANUALLY COLLAPSED BOARD ────────────────────────────────────────────────────────
+  // `mock-spec.md` D10: side 44, field 1396x772, docks zero. The ladder's 44 px stub branch had no
+  // rendered oracle at all -- the driven ladder above seeds `sideCollapsed:false`, so the stub was
+  // reachable only through a path nothing took. D10 is also the state that proves the difference
+  // between a HUMAN collapse and an automatic one: `status.autoCollapsed` must stay SILENT here.
+  {
+    const vp = {name: 'collapsed-1440', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('atlas.dock', JSON.stringify({v: 1, open: [], side: 264, sideCollapsed: true}));
+      });
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const g = await page.evaluate(() => {
+        const r = (sel) => { const n = document.querySelector(sel); return n ? Math.round(n.getBoundingClientRect().width) : 0; };
+        return {
+          side: r('.v2-side'), field: r('.v2-field'), dock: r('.v2-dock'),
+          fieldH: Math.round(document.querySelector('.v2-field')?.getBoundingClientRect().height ?? 0),
+          stub: !!document.querySelector('.v2-side.is-stub'),
+          announced: !!document.querySelector('.v2-status .is-warn'),
+          restore: !!document.querySelector('.v2-side .v2-tbtn'),
+        };
+      });
+      check(vp.name, `[${STUDIO_V}] D10: a collapsed sidebar is 44 / field 1396x772 / no docks`,
+        g.side === 44 && g.field === 1396 && g.fieldH === 772 && g.dock === 0 && g.stub,
+        `side ${g.side} / field ${g.field}x${g.fieldH} / dock ${g.dock} / stub=${g.stub}`,
+        'side 44, field 1396x772, dock 0');
+      check(vp.name, `[${STUDIO_V}] D10: a HUMAN collapse is not announced as an automatic one`,
+        g.announced === false, `status.autoCollapsed shown=${g.announced}`, 'silent');
+      check(vp.name, `[${STUDIO_V}] D10: the stub keeps the control that restores it`,
+        g.restore, `restore control present=${g.restore}`, 'present');
+      await page.screenshot({path: join(outDir, `${label}-studio-collapsed.png`)});
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the collapsed pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
   // ── A CORRUPT PERSISTED VALUE IN EVERY KEY STILL RENDERS THE SHELL (RC12) ─────────────────────
   {
     const vp = {name: 'corrupt-prefs', width: 1440, height: 900, dpr: 1, coarse: false};
@@ -1216,6 +1423,7 @@ if (variant === 'v2') {
     const vp = {name: `probe-${w}`, width: w, height: 900, dpr: 1, coarse: false};
     const ctx = await newContext(vp);
     const page = await ctx.newPage();
+    let shownUnstaged = false;
     try {
       for (const q of ['probe=1', 'stage=1&probe=1']) {
         await page.goto(`${base}${path}?${q}&scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
@@ -1232,9 +1440,15 @@ if (variant === 'v2') {
           };
         });
         const staged = q.startsWith('stage');
-        check(vp.name, `[${STUDIO_V}] ?${q}: the probe panel is ${staged ? 'HIDDEN by the stage fence' : 'reachable at the studio tier, with its close control'}`,
-          staged ? !seen.shown : (seen.shown && seen.close),
-          `shown=${seen.shown} close=${seen.close}${seen.w ? ` w=${seen.w}` : ''}`, staged ? 'hidden' : 'shown, closable');
+        if (!staged) shownUnstaged = seen.shown && seen.close;
+        // ⚠️ THE HIDDEN CASE IS CONDITIONED ON THE SHOWN CASE. "`.v2-probe` is not visible" is
+        // satisfied by a probe that is broken, unrendered or renamed -- so the fence row would pass
+        // for reasons that have nothing to do with the fence. It only means anything once the same
+        // panel has been seen to render one navigation earlier (stand-in review M9).
+        check(vp.name, `[${STUDIO_V}] ?${q}: the probe panel is ${staged ? 'HIDDEN by the stage fence (having just been shown unstaged)' : 'reachable at the studio tier, with its close control'}`,
+          staged ? (shownUnstaged && !seen.shown) : (seen.shown && seen.close),
+          `shown=${seen.shown} close=${seen.close}${seen.w ? ` w=${seen.w}` : ''}${staged ? ` [unstaged control: ${shownUnstaged}]` : ''}`,
+          staged ? 'shown unstaged, hidden staged' : 'shown, closable');
       }
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the probe pass ran`, false, String(e).slice(0, 200), 'no throw');

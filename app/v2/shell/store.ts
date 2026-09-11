@@ -56,26 +56,45 @@ function put(key: string, value: unknown): void {
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 // ── atlas.dock — S0 ──────────────────────────────────────────────────────────────────────────────
-/** `{v:1, open:DockKey[], side:number, sideCollapsed:boolean}`.
- *  `open` is in LEAST- to MOST-recently-opened order, which is what makes both the third-dock
- *  eviction rule and the collapse ladder deterministic: both read from the same end. */
-export interface DockPrefs {v: 1; open: DockKey[]; side: number; sideCollapsed: boolean}
+/**
+ * `{v:1, open:DockKey[]|null, side:number, sideCollapsed:boolean}`.
+ *
+ * `open` is in LEAST- to MOST-recently-opened order, which is what makes both the third-dock
+ * eviction rule and the collapse ladder deterministic: both read from the same end.
+ *
+ * ⚠️ `open: null` MEANS "THE HUMAN HAS NEVER CHOSEN", and it is a different fact from "the human
+ * chose one dock". Conflating them is a one-way door: the first build seeded the DEFAULT into this
+ * key on the first visit at ANY tier — including the phone, where the shell never renders — so a
+ * human who opened the app once on a phone or at 1440 had `['selection']` on disk, and every later
+ * visit at >=1600 read it back as a CHOICE and served one dock forever. G2's two-panel default
+ * became unreachable, and no later group could repair it, because by then the key is on the machine.
+ * (Found by the S0 stand-in review, H1, with an executed counterexample: fresh @1920 → 620 px of
+ * dock; phone-seeded @1920 → 320.)
+ *
+ * So nothing is ever written here until the human OPENS OR CLOSES something. Until then the open set
+ * is derived from the tier, live, and follows the window.
+ */
+export interface DockPrefs {v: 1; open: DockKey[] | null; side: number; sideCollapsed: boolean}
 export const DOCK_KEY = 'atlas.dock';
 
 /** The default open set is TIER-DEPENDENT (G2): one dock below 1600, Selection + Info at and above
  *  it. Passed in rather than read here so this module stays free of `matchMedia`. */
 export const defaultDocks = (wide: boolean): DockKey[] => (wide ? ['selection', 'info'] : ['selection']);
+/** The open set to USE: the human's choice if there is one, otherwise the tier's default. */
+export const effectiveDocks = (p: DockPrefs, wide: boolean): DockKey[] => p.open ?? defaultDocks(wide);
 
-export function readDocks(wide: boolean): DockPrefs {
- const fallback: DockPrefs = {v: 1, open: defaultDocks(wide), side: SIDE_DEFAULT, sideCollapsed: false};
+export function readDocks(): DockPrefs {
+ const fallback: DockPrefs = {v: 1, open: null, side: SIDE_DEFAULT, sideCollapsed: false};
  const v = raw(DOCK_KEY);
  if (!isObj(v) || v.v !== 1) return fallback;
  // Unknown dock names are DROPPED rather than rejecting the whole value: a build that removes a
  // dock should not wipe the human's other choices. Duplicates are collapsed, and the set is capped
  // at two because "max two, never three" is a layout invariant and not a preference.
+ // A non-array `open` (absent, or corrupt) stays NULL — "never chosen" — rather than collapsing to
+ // a tier default that would then look like a choice on the next read.
  const open = Array.isArray(v.open)
   ? [...new Set(v.open.filter((k): k is DockKey => typeof k === 'string' && (DOCK_KEYS as string[]).includes(k)))].slice(0, 2)
-  : fallback.open;
+  : null;
  const side = typeof v.side === 'number' && Number.isFinite(v.side) ? clamp(v.side, SIDE_MIN, SIDE_MAX) : SIDE_DEFAULT;
  return {v: 1, open, side, sideCollapsed: v.sideCollapsed === true};
 }

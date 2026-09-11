@@ -61,9 +61,16 @@ const GHOSTED = new Set(['forward-bend']);   // the only control scene with a `g
  * change worth failing on — a lost ghost, a different structure, a moved subject — is a
  * REGION-level change that block averaging preserves.
  *
- * ⚠️ THE BOUNDS BELOW ARE MEASURED, NOT GUESSED — see the worklog entry that set them. They are the
- * observed same-build ghost drift with headroom, and they must be re-measured (two captures of one
- * unchanged deployment) rather than widened, if a future run starts brushing them.
+ * ⚠️ THE BOUNDS BELOW ARE AN **ESTIMATE**, NOT A MEASUREMENT — and this comment said the opposite
+ * until the S0 stand-in review (M1) checked it against the worklog that it cited, which had said
+ * ESTIMATE all along. They were chosen for headroom over a per-pixel coverage dither; nobody has yet
+ * captured the same unchanged deployment twice and read the actual cell drift.
+ *   TO EARN "MEASURED" (S1 owns this): run `plate-goldens.mjs` twice against one unchanged
+ *   deployment, `compare` the two, and set FP_MAX_CELL / FP_MEAN from the observed ghost drift with
+ *   headroom — then, and only then, change this word.
+ * Until that happens the fingerprint path is also DORMANT: every golden captured before this file
+ * existed has no `fp`, so `fpDelta` returns null and the byte proxy runs. The report says so on
+ * every such row; it does not silently present the weaker check as the stronger one.
  *
  * ⚠️ A GOLDEN FILE PRODUCED BEFORE THIS EXISTS HAS NO `fp`. When either side lacks one, the
  * comparison falls back to the old byte proxy AND SAYS SO in the report — it never silently reports

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import {isStudio, ladder, openDock, tierOf} from '../app/v2/shell/layout.ts';
 import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
-  defaultDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes,
+  defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes,
 } from '../app/v2/shell/store.ts';
 
 // ── tiers ───────────────────────────────────────────────────────────────────────────────────────
@@ -152,9 +152,9 @@ function withStorage(values, fn) {
 
 test('an ABSENT key returns the tier-appropriate defaults', () => {
   withStorage({}, () => {
-    assert.deepEqual(readDocks(false).open, ['selection']);
-    assert.deepEqual(readDocks(true).open, ['selection', 'info'], 'G2: two panels at >=1600');
-    assert.equal(readDocks(false).side, SIDE_DEFAULT);
+    assert.deepEqual(effectiveDocks(readDocks(), false), ['selection']);
+    assert.deepEqual(effectiveDocks(readDocks(), true), ['selection', 'info'], 'G2: two panels at >=1600');
+    assert.equal(readDocks().side, SIDE_DEFAULT);
     assert.equal(readPinyin().on, false);
     assert.deepEqual(readScenes().tabs, []);
     assert.equal(readOpenAi(), null);
@@ -167,8 +167,8 @@ test('a CORRUPT value in each of the four keys still yields a renderable shape',
   const junk = ['', 'null', '[]', '{}', '"a string"', '{"v":99}', '{"v":1}', 'not json at all', '0'];
   for (const bad of junk) {
     withStorage({'atlas.dock': bad, 'atlas.pinyin': bad, 'atlas.scenes': bad, 'atlas.openai': bad}, () => {
-      const d = readDocks(false);
-      assert.ok(Array.isArray(d.open) && d.open.length <= 2, bad);
+      const d = readDocks();
+      assert.ok(d.open === null || (Array.isArray(d.open) && d.open.length <= 2), bad);
       assert.ok(d.side >= SIDE_MIN && d.side <= SIDE_MAX, bad);
       assert.equal(typeof d.sideCollapsed, 'boolean', bad);
       assert.equal(typeof readPinyin().on, 'boolean', bad);
@@ -182,7 +182,7 @@ test('localStorage THROWING (private browsing) is not an exception the shell see
   const prev = globalThis.localStorage;
   globalThis.localStorage = {getItem() { throw new Error('SecurityError'); }, setItem() { throw new Error('SecurityError'); }, removeItem() { throw new Error('SecurityError'); }};
   try {
-    assert.deepEqual(readDocks(true).open, ['selection', 'info']);
+    assert.deepEqual(effectiveDocks(readDocks(), true), ['selection', 'info']);
     assert.equal(readPinyin().on, false);
     assert.deepEqual(readScenes().tabs, []);
     assert.equal(readOpenAi(), null);
@@ -191,7 +191,7 @@ test('localStorage THROWING (private browsing) is not an exception the shell see
 
 test('a persisted dock set is validated, deduplicated, capped at two and unknown names dropped', () => {
   withStorage({'atlas.dock': JSON.stringify({v: 1, open: ['ask', 'ask', 'nope', 'json', 'info'], side: 300, sideCollapsed: true})}, () => {
-    const d = readDocks(false);
+    const d = readDocks();
     assert.deepEqual(d.open, ['ask', 'json'], 'deduped, unknown dropped, capped at 2 — never three columns');
     assert.equal(d.side, 300);
     assert.equal(d.sideCollapsed, true);
@@ -221,5 +221,48 @@ test('the OpenAI key is masked to its last four and never returned whole by the 
     const k = readOpenAi();
     assert.equal(k.key, 'sk-live-xyz');
     assert.equal(k.model, '', 'an empty model is normalised, never undefined');
+  });
+});
+
+// ── the S0 stand-in review, H1: the dock seed that closed a door ────────────────────────────────
+// "open: null" means the human has never chosen; "open: []" means they closed everything. Collapsing
+// the two is what made G2's two-panel default unreachable for anyone whose first visit was narrower.
+
+test('an untouched profile follows the TIER, and a chosen one does not', () => {
+  withStorage({}, () => {
+    const fresh = readDocks();
+    assert.equal(fresh.open, null, 'absent means never chosen, NOT the narrow default');
+    assert.deepEqual(effectiveDocks(fresh, true), ['selection', 'info'], 'so >=1600 gets G2 two panels');
+    assert.deepEqual(effectiveDocks(fresh, false), ['selection'], 'and below it, one');
+  });
+  // THE COUNTEREXAMPLE THE REVIEW EXECUTED: a human whose first visit was a phone or a 1440 window.
+  // The old build had written the narrow default to disk on that visit, and every later wide visit
+  // read it back as a choice.
+  withStorage({'atlas.dock': JSON.stringify({v: 1, open: ['selection'], side: 264, sideCollapsed: false})}, () => {
+    const chosen = readDocks();
+    assert.deepEqual(chosen.open, ['selection'], 'an explicit choice IS honoured');
+    assert.deepEqual(effectiveDocks(chosen, true), ['selection'], 'and it beats the tier default, as it should');
+  });
+});
+
+test('a corrupt or absent open list stays "never chosen" rather than becoming a fake choice', () => {
+  for (const bad of ['{"v":1}', '{"v":1,"open":"selection"}', '{"v":1,"open":null}', '{"v":1,"open":7}']) {
+    withStorage({'atlas.dock': bad}, () => {
+      assert.equal(readDocks().open, null, bad);
+      assert.deepEqual(effectiveDocks(readDocks(), true), ['selection', 'info'], bad);
+    });
+  }
+  // Closing everything is a real choice and must survive as one.
+  withStorage({'atlas.dock': JSON.stringify({v: 1, open: [], side: 264, sideCollapsed: false})}, () => {
+    assert.deepEqual(readDocks().open, [], 'an empty ARRAY is "I closed them all"');
+    assert.deepEqual(effectiveDocks(readDocks(), true), [], 'which the tier must not override');
+  });
+});
+
+test('the ladder at 1920 gives D2 its two docks on an untouched profile', () => {
+  withStorage({}, () => {
+    const l = ladder({width: 1920, side: SIDE_DEFAULT, sideCollapsed: false, open: effectiveDocks(readDocks(), true)});
+    assert.equal(l.dockW, 620);
+    assert.equal(l.field, 1036, 'mock D2 — the board the seed used to make unreachable');
   });
 });
