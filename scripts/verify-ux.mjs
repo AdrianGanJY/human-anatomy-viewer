@@ -66,7 +66,7 @@
 import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules/playwright-core/index.mjs';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
+import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
 import {POPULATION, attachRequestLedger, populationCheck, rowsByBarrier} from './request-ledger.mjs';
 
 const base = process.argv[2];
@@ -714,10 +714,20 @@ for (const vp of SWEEP) {
         //
         // This selector was `h1, .structure-title, .v2-term b` with `|| document.body`. The studio
         // renders neither an `h1` nor a `.v2-term` — the shell replaced both — so at 1440 / 1920 /
-        // 1366 the probe silently fell through to `body`, whose stack is set unconditionally by
-        // `v2.css` and therefore ALWAYS resolves. The tell was in the suite's own report: the
-        // measured string was BYTE-IDENTICAL at 390 and at 1920, which a tier-sensitive probe cannot
-        // produce. A guard that cannot fire is not a guard (stand-in review H2).
+        // 1366 the probe silently fell through to `body`. A probe that measures `body` at three of
+        // six viewports is measuring the wrong ELEMENT, whatever it then concludes: the guard exists
+        // to prove the app's own text rows resolve the forked stack, and at those widths it was not
+        // looking at one (stand-in review H2).
+        //
+        // ⚠️ WHAT IT IS **NOT**: a tier-sensitivity test. `v2.css` sets `font-family` on `body` from
+        // `--v2-font-cjk`, which forks by `html:lang()` — by SCRIPT, never by width — so the measured
+        // stack is byte-identical at every viewport BOTH BEFORE AND AFTER this fix, by design. An
+        // earlier version of this comment claimed that identical reading was the tell; it was not,
+        // and reasoning from it would send the next reader looking for a width dependency that has
+        // never existed (round 2, M2 — the same species as the provenance claim round 1 found in
+        // plate-goldens.mjs). The real gain is narrower and worth having: the guard now goes red if
+        // the shell's text rows are ever renamed out from under it, instead of silently retargeting
+        // `body` and passing.
         //
         // So: the studio's own rows are in the selector, and WHICH element matched is reported and
         // asserted. `body` is still the last resort — but reaching it is now a visible fact.
@@ -756,9 +766,10 @@ for (const vp of SWEEP) {
         return {stack, matched, text, distinct, chars: sigs.length, inked};
       }, script);
       // THE PROBE'S OWN LANDING SITE IS AN ASSERTION NOW. Without it the rows below measure whatever
-      // `body` happens to resolve and pass at every tier for the same reason — which is exactly what
-      // they did at the three studio viewports until the S0 stand-in review caught it (H2). The tell
-      // was a measured string that was byte-identical at 390 and at 1920.
+      // `body` happens to resolve, at three of six viewports, while reading as though they had
+      // measured the app (stand-in review H2). This says which element they actually read.
+      // ⚠️ It does NOT make the measurement tier-sensitive — the stack forks by script, not by
+      // width, so the stack string is identical at every viewport by design. See the note above.
       check(vp.name, `${script}: the font probe landed on a real text row, not on <body>`,
         typeof font.matched === 'string' && !font.matched.startsWith('BODY'),
         `matched ${font.matched}`, 'a text element');
@@ -1287,9 +1298,9 @@ if (variant === 'v2') {
         stored: localStorage.getItem('atlas.dock'),
       }));
       check(vp.name, `[${STUDIO_V}] H1 control arm: an ACTUAL choice persists and beats the tier default`,
-        chosen.panes === 1 && typeof chosen.stored === 'string' && chosen.stored.includes('"open"'),
+        chosen.panes === 1 && typeof chosen.stored === 'string' && /"open":\s*\[/.test(chosen.stored),
         `${chosen.panes} pane(s) after a reload, atlas.dock=${String(chosen.stored).slice(0, 70)}`,
-        '1 pane, and the key now exists');
+        '1 pane, and the key now holds a real ARRAY');
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the dock-default pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
@@ -1324,7 +1335,7 @@ if (variant === 'v2') {
           name: (l.querySelector('span:not(.v2-box):not(.v2-dot)')?.textContent || '').trim(),
           checked: !!l.querySelector('input')?.checked,
         }));
-        return {rows, drawn: window.atlas?.state?.() ?? null, count: rows.length};
+        return {rows, count: rows.length, blob: window.atlas?.plate?.()?.blob ?? ''};
       });
       const ticked = seen.rows.filter((r) => r.checked).map((r) => r.name).sort();
       // THE FIXTURE IS A zh-Hans SCENE, so the rows are labelled in Chinese — the first version of
@@ -1340,6 +1351,22 @@ if (variant === 'v2') {
         seen.count > 0 && !seen.rows.some((r) => r.checked && /Skeleton|骨骼/.test(r.name)),
         `Skeleton ticked=${seen.rows.some((r) => r.checked && /Skeleton|骨骼/.test(r.name))}`,
         'not ticked');
+      // ⚠️ THE CONTROL ARM, and without it the two rows above prove nothing. They assert what the
+      // INTENT shows; if the ghost ever silently stopped applying — `normalizeScene` dropping
+      // `rest.include`, the scene failing for an unrelated reason — the two facts would be EQUAL and
+      // both rows would go green while the divergence they exist to test had disappeared. That is
+      // the fake-green shape round 1 found elsewhere, landing inside the fix for H3 (round 2, M1).
+      //
+      // The RENDER's visibility set is deliberately not on the public tool surface, so the control
+      // arm reads the SCENE the page is actually holding — through `atlas.plate()`, decoded here —
+      // and asserts it declares the skeletal rest. That is the fact `apply-scene` turns into
+      // `render.visible = ['skeletal']` (controller.ts), so proving it present proves there was
+      // something for the intent to diverge FROM.
+      const held = seen.blob ? decodeScene(seen.blob) : null;
+      check(vp.name, `[${STUDIO_V}] H3 control arm: the scene on screen really does declare the skeletal ghost`,
+        held?.rest?.include === 'skeletal',
+        `rest.include=${held?.rest?.include ?? 'no scene decoded'}`,
+        "'skeletal' — otherwise there was nothing to diverge from");
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the systems-intent pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
