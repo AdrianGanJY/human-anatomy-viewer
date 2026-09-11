@@ -596,9 +596,19 @@ export default function V2() {
  const snapshot = useCallback(() => {
   const w = window as unknown as {__atlasCapture?: (o: {scale: number}) => string; __atlasCaptureRelease?: () => void};
   if (!w.__atlasCapture) return false;
-  const url = w.__atlasCapture({scale: 2});
-  // ALWAYS, even on a failed capture: `installCapture` appends the overlay before this returns.
-  w.__atlasCaptureRelease?.();
+  /**
+   * ⚠️ THE RELEASE IS IN A `finally`, and that is not belt-and-braces. `installCapture` appends the
+   * overlay (capture.ts:109) and only THEN enters its own `finally`, which restores the pixel ratio
+   * and re-renders — the part most likely to throw on a lost context. A `release()` on the happy
+   * path alone would re-create H2 (a permanently frozen viewport) in exactly the case where the
+   * reader has no idea what went wrong. Round 2, Medium.
+   */
+  let url = '';
+  try {
+   url = w.__atlasCapture({scale: 2});
+  } finally {
+   w.__atlasCaptureRelease?.();
+  }
   if (!url) return false;
   const a = document.createElement('a');
   a.href = url;
@@ -635,8 +645,16 @@ export default function V2() {
   * "a bare legacy visit is framed by the DEFAULT fit" was asserting it as correct behaviour; RC3
   * inverts that row in the studio tier and this is what makes it true.
   *
-  * ONLY WHEN THERE IS NO SCENE — a scene's own `camera.focus` stays authoritative — and only in
-  * the studio, so the phone and the tablet keep the framing every one of their oracles measured.
+  * ⚠️ THE CONDITION IS "NO EFFECTIVE FOCUS", NOT "NO SCENE" (round 2, Medium). A scene's own
+  * `camera.focus` stays authoritative when it has one — but `scene-codec.js` defaults that field to
+  * `[]` and only serialises it when non-empty, so a blob naming five structures and no focus is
+  * legal and round-trips. For one of those, `plate.focus` is empty, the frame loop's `focusActive`
+  * is false, and pressing F fell through to Home: the key map promises "fit the selection" and the
+  * camera went to the whole body instead. Deriving the focus here closes it in the layer that
+  * already owns the rule, rather than teaching the renderer a second way to be focused.
+  *
+  * Only in the studio, so the phone and the tablet keep the framing every one of their oracles
+  * measured.
   *
   * WHY IT TRACKS THE CURRENT PICKS rather than freezing the entry set: the renderer refuses to
   * re-frame once a human has posed the camera (`manual`, app/scene.tsx), so this reads as "fit to
@@ -645,10 +663,12 @@ export default function V2() {
   * through a second command channel it cannot.
   */
  const studioFrame = useMemo(() => {
-  if (!shell.studio || scene || !basket.length) return null;
+  if (!shell.studio || !basket.length) return null;
+  // A scene that DECLARES a focus keeps it; one that does not gets the selection.
+  if (plate && plate.focus.length) return null;
   const ids = basket.flatMap((p) => p.elements);
   return ids.length ? {focus: ids, frame: ids} : null;
- }, [shell.studio, scene, basket]);
+ }, [shell.studio, plate, basket]);
 
  return <main
   className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
@@ -698,7 +718,12 @@ export default function V2() {
   <div className="v2-field" id="v2-field">
    {atlas && <AnatomyScene
     atlas={atlas}
-    state={{...state, ...(plate ?? studioFrame ?? {}), insets: FIELD_INSET}}
+    // MERGED, not `plate ?? studioFrame`. The plate carries opacity, roles, padding and background
+    // and must always win on those; `studioFrame` only ever supplies `focus`/`frame`, and only when
+    // the plate has no focus of its own — so spreading it last adds the framing without touching
+    // anything else. With `??` the fallback was unreachable the moment a scene existed, which is
+    // precisely the focus-less-scene case it was extended to cover (round 2, Medium).
+    state={{...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET}}
     // THE STUDIO-ONLY FRAMING OPTION (app/scene.tsx `studio`). A separate prop, never part of
     // `SceneState` and never `insets`: the phone supplies insets too, and SceneState is what the
     // codec serialises into a teaching blob.

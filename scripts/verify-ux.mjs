@@ -1697,10 +1697,39 @@ if (variant === 'v2') {
       await page.keyboard.down('KeyD'); await page.waitForTimeout(400); await page.keyboard.up('KeyD');
       await page.waitForTimeout(500);
       const postMove = await page.evaluate(POSE);
-      check(vp.name, `[${S1_V}] the field still answers the keyboard after a snapshot`,
+      // ⚠️ NAMED FOR WHAT IT MEASURES. It reads `__atlasNav.pose()`, which a DOM overlay cannot
+      // affect — so it passed UNDER the defect and is NOT the row that catches H2 (round 2, Medium
+      // 4). The row above it, counting `.atlas-shot` canvases, is the one that bites. This one says
+      // the command did not leave the dispatcher wedged, which is a different and smaller claim.
+      check(vp.name, `[${S1_V}] the dispatcher still answers after a snapshot (NOT a test of the overlay)`,
         !!postMove && !!preMove && postMove.k !== preMove.k, `${preMove?.k} -> ${postMove?.k}`, 'a different pose');
 
+      // ── M7: a modifier pressed while a camera key is HELD must not fire its discrete twin ────
+      // Holding `S` to pan and then pressing Shift used to enter presentation mode mid-pan. No
+      // oracle covered it in round 1 (round 2, Low e).
+      await page.keyboard.down('KeyS');
+      await page.waitForTimeout(250);
+      await page.keyboard.down('Shift');
+      await page.waitForTimeout(400);
+      const stagedMidPan = await page.evaluate(() => document.body.classList.contains('v2-stage'));
+      await page.keyboard.up('Shift');
+      await page.keyboard.up('KeyS');
+      await page.waitForTimeout(300);
+      check(vp.name, `[${S1_V}] Shift pressed while S is HELD does not enter the stage`,
+        stagedMidPan === false, `body.v2-stage=${stagedMidPan} with KeyS held`, 'false');
+
       // ── M6: Escape leaves the stage ────────────────────────────────────────────────────────
+      // ⚠️ THE HELD SET IS CLEARED FIRST, and the clear is ASSERTED. In round 2 this row failed in
+      // the H1 red build for a reason that had nothing to do with M6: the synthetic `Ctrl+S` above
+      // has no matching keyup, so under the defect it left `KeyS` stuck in `held`, and the new
+      // "a held code belongs to its hold" rule then blocked `stage`. The row was order-coupled to
+      // the sub-test above it and could not go red for M6 alone. `blur` is the product's own
+      // clearing path (guard 6), so this uses it rather than inventing a back door.
+      await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+      await page.waitForTimeout(200);
+      const padsLit = await page.evaluate(() => [...document.querySelectorAll('.v2-cap-key[aria-pressed="true"]')].length);
+      check(vp.name, `[${S1_V}] the held set is empty before the stage sub-test (no order coupling)`,
+        padsLit === 0, `${padsLit} pad keys still lit`, '0');
       await page.keyboard.down('Shift'); await page.keyboard.press('KeyS'); await page.keyboard.up('Shift');
       await page.waitForTimeout(900);
       const inStage = await page.evaluate(() => document.body.classList.contains('v2-stage'));
@@ -1741,6 +1770,32 @@ if (variant === 'v2') {
       check(vp.name, `[${S1_V}] the camera keys ${vp.studio ? 'WORK in the studio' : 'are WITHHELD below 1180'}`,
         moved === vp.studio, `${before?.k} -> ${after?.k} (moved=${moved})`,
         vp.studio ? 'the camera moved' : 'the camera did not move');
+
+      /**
+       * ⚠️ AND THE NAMED VIEWS AND RESET STILL WORK AT EVERY TIER — the row that would have caught
+       * round 2's High.
+       *
+       * Guard 7 was written for the camera KEYS (W/A/S/D, the arrows, `H`), whose only surface is
+       * the studio. The first version also withheld `1 2 3 4` and `R`, which are controller
+       * dispatches with real on-screen buttons on the phone and the tablet: they worked on every
+       * tier before S1 and were dead below 1180 for one commit. The key-map row went on passing at
+       * 390×844, because those rows carry no `owner` and therefore read as live — a green suite
+       * certifying a product claim that had just become false.
+       *
+       * `view` is read off the CONTROLLER rather than off the camera, because at a tier where the
+       * camera keys are withheld the camera is the wrong instrument for "did the command land".
+       */
+      // ⚠️ `2` (FRONT), NOT `3` (side). The §9 fixture declares `view: 'side'`, so a row that
+      // pressed 3 read "side -> side" and failed its own precondition at BOTH tiers — including the
+      // studio, where the command works. It could go red, but not for the reason it named, which is
+      // the same defect class as everything else this pass is about. Caught in the red proof.
+      const viewBefore = await page.evaluate(() => window.atlas?.state?.()?.view ?? null);
+      await page.keyboard.press('2');          // Digit2 -> front
+      await page.waitForTimeout(700);
+      const viewAfter = await page.evaluate(() => window.atlas?.state?.()?.view ?? null);
+      check(vp.name, `[${S1_V}] the named views (1 2 3 4) work at THIS tier, studio or not`,
+        viewAfter === 'front' && viewBefore !== 'front',
+        `view ${viewBefore} -> ${viewAfter}`, 'front (and it was not already)');
     } catch (e) {
       check(vp.name, `[${S1_V}] the tier-gate pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }

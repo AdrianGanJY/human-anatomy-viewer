@@ -241,6 +241,19 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
  // across a scene remount) has to be re-applied rather than assumed to have landed.
  useEffect(() => { nav()?.mode(navMode); }, [navMode, studio]);
 
+ /**
+  * LOSING THE STUDIO CLEARS THE HELD SET, and so does gaining it.
+  *
+  * A resize across 1180 unmounts `StudioField` — the on-screen pad — which means a finger that was
+  * holding a pad key never delivers its `pointerup`, `pointerleave` or `pointercancel` to a node
+  * that still exists. None of the dispatcher's own clearing paths (blur, pointercancel,
+  * visibilitychange) are window-level events here, so the code stays in `held` for ever: the rAF
+  * loop pans the camera indefinitely, and the discrete twin of that code becomes unreachable
+  * (`Shift+S` is dead while `KeyS` is stuck). Round 2, Medium 1 — found by execution, and it had
+  * already produced one red that was attributed to something else.
+  */
+ useEffect(() => { dispRef.current?.clear(); }, [studio]);
+
  // OPENING A MODAL CLEARS THE HELD SET — one of the six ways a keyup goes missing. The dispatcher
  // clears on blur / pointercancel / visibilitychange itself; a modal that takes focus within the
  // same document fires none of those.

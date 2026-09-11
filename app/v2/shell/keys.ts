@@ -57,11 +57,24 @@ export type Command =
  *   orbit — Left/Right (azimuth) and Q/E (polar tilt), radians per second
  *   dolly — Up/Down, as a per-second multiplicative rate
  */
-/** The commands guard 7 withholds below the studio tier. Escape, `?`, Stage and Snapshot are NOT
- *  in it: they are not camera operations and they work wherever the chrome does. */
+/**
+ * The commands guard 7 withholds below the studio tier — the ones whose ONLY surface is the studio.
+ *
+ * ⚠️ THE NAMED VIEWS AND RESET ARE NOT IN THIS SET, and putting them in it was an over-correction
+ * that shipped as a High in round 2 of the S1 review. Round 1's M5 was about the camera KEYS —
+ * W/A/S/D, the arrows and `H`, which reach `__atlasNav` and `studioHome()`, a formula tuned for a
+ * tier the phone is not. `1 2 3 4` and `R` are something else entirely: they are controller
+ * dispatches (`set-view`, `reset-view`) with real on-screen buttons rendered at the phone and
+ * tablet tiers (app/v2/page.tsx), and they worked on every tier before S1 touched anything. Guard 7
+ * killed them there — and the key-map oracle went on passing at 390×844, because the rows carry no
+ * `owner` and therefore read as live. A green suite certifying a product claim that had just become
+ * false, inside the round that was fixing exactly that class of defect.
+ *
+ * The rule this set encodes: withhold a command iff its SURFACE is studio-only. Escape, `?`, Stage
+ * and Snapshot are global for the same reason.
+ */
 export const CAMERA_CMDS: ReadonlySet<Command> = new Set<Command>([
- 'view-three-quarter', 'view-front', 'view-side', 'view-back',
- 'fit', 'home', 'reset', 'mode-orbit', 'mode-pan',
+ 'fit', 'home', 'mode-orbit', 'mode-pan',
 ]);
 
 export interface HoldAxis {pan?: [number, number]; orbit?: [number, number]; dolly?: number}
@@ -93,6 +106,14 @@ export interface Dispatcher {
   */
  press(code: string): void;
  release(code: string): void;
+ /**
+  * Drop every held code. The dispatcher clears itself on blur / pointercancel / visibilitychange,
+  * but those are all WINDOW events — they do not fire when the pad is unmounted out from under a
+  * finger, which is what a resize across 1180 does mid-gesture. A code stuck in `held` pans the
+  * camera for ever AND makes its discrete twin unreachable (`Shift+S` while `KeyS` is stuck), so
+  * every path that can orphan a press needs a way to say so (round 2, Medium 1).
+  */
+ clear(): void;
  destroy(): void;
 }
 
@@ -230,8 +251,20 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
    * resolves to `stage`, so the reader entered presentation mode mid-pan. A code already in the
    * held set belongs to the hold that started it until its keyup.
    */
-  if (cmd && held.has(ev.code)) return;
-  if (!cmd && !modified(ev) && !held.has(ev.code) && holdCodes.has(ev.code) && !editor && !opts.modalOpen()) {   // guard 6
+  /**
+   * A CODE ALREADY HELD BELONGS TO THE HOLD THAT STARTED IT until its keyup — so a modifier pressed
+   * mid-hold cannot fire a discrete command (M7), and an AUTO-REPEAT keydown is still consumed.
+   *
+   * ⚠️ THE `preventDefault` ON THE REPEAT PATH IS LOAD-BEARING and was missing for one commit
+   * (round 2, Medium). Holding an arrow key delivers a keydown every ~30 ms after the first; the
+   * first was consumed and every repeat fell through untouched, so the page scrolled underneath a
+   * dolly — which is the exact case the comment below says the preventDefault exists for.
+   */
+  if (held.has(ev.code)) {
+   if (!editor && !opts.modalOpen()) ev.preventDefault();
+   return;
+  }
+  if (!cmd && !modified(ev) && holdCodes.has(ev.code) && !editor && !opts.modalOpen()) {   // guard 6
    if (opts.cameraEnabled && !opts.cameraEnabled()) return;   // guard 7 — see below
    add(ev.code);
    // A HELD CAMERA KEY IS CONSUMED. Without this, ArrowUp/ArrowDown scroll the page while they
@@ -272,6 +305,7 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
   held,
   press(code) { if (holdCodes.has(code)) add(code); },
   release(code) { drop(code); },
+  clear,
   destroy() {
    window.removeEventListener('keydown', onKeyDown);
    window.removeEventListener('keyup', onKeyUp);
