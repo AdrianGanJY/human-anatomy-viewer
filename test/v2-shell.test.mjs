@@ -14,6 +14,7 @@ import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
   defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes,
 } from '../app/v2/shell/store.ts';
+import {HOLD, HOLD_CODES, KEY_MAP} from '../app/v2/shell/keys.ts';
 
 // ── tiers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -265,4 +266,45 @@ test('the ladder at 1920 gives D2 its two docks on an untouched profile', () => 
     assert.equal(l.dockW, 620);
     assert.equal(l.field, 1036, 'mock D2 — the board the seed used to make unreachable');
   });
+});
+
+// ── S1: the key layer's pure contracts ──────────────────────────────────────────────────────────
+
+test('every held code carries exactly one axis, and the map is the mock keyboard', () => {
+  // W A S D pan, arrows orbit/dolly, Q E tilt — mock/NOTES.md amendment 4, which is binding.
+  assert.deepEqual(Object.keys(HOLD).sort(), HOLD_CODES.slice().sort());
+  assert.deepEqual(HOLD.KeyW.pan, [0, 1]);
+  assert.deepEqual(HOLD.KeyS.pan, [0, -1]);
+  assert.deepEqual(HOLD.KeyA.pan, [-1, 0]);
+  assert.deepEqual(HOLD.KeyD.pan, [1, 0]);
+  // OPPOSITES MUST CANCEL. Holding A and D together has to leave the camera still; a typo in one
+  // sign gives a pad that drifts whenever two keys are down, which is invisible one key at a time.
+  for (const [a, b] of [['KeyW', 'KeyS'], ['KeyA', 'KeyD'], ['ArrowLeft', 'ArrowRight'], ['ArrowUp', 'ArrowDown'], ['KeyQ', 'KeyE']]) {
+    const ax = HOLD[a], bx = HOLD[b];
+    for (const k of ['pan', 'orbit']) {
+      if (!ax[k]) continue;
+      assert.deepEqual([ax[k][0] + bx[k][0], ax[k][1] + bx[k][1]], [0, 0], `${a} + ${b} (${k})`);
+    }
+    if (ax.dolly !== undefined) assert.equal(ax.dolly + bx.dolly, 0, `${a} + ${b} (dolly)`);
+  }
+  // PHYSICAL CODES ONLY. `event.key` changes with the layout and with Shift, so a held key matched
+  // on `key` is never released when it is modified mid-hold — guard 6's whole reason.
+  for (const c of HOLD_CODES) {
+    assert.ok(/^(Key[A-Z]|Arrow(Up|Down|Left|Right))$/.test(c), `${c} is a physical code`);
+  }
+});
+
+test('the key map lists every S1 binding and no key nobody bound', () => {
+  const keys = KEY_MAP.map((r) => r.keys);
+  for (const k of ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H / R', 'Shift P / Shift S']) {
+    assert.ok(keys.includes(k), `${k} is in the map`);
+    assert.equal(KEY_MAP.find((r) => r.keys === k).group, 'now', `${k} is no longer marked forthcoming`);
+  }
+  // `+ −` was inert copy for a zoom command v2 does not have — zoom IS the dolly, on ↑ ↓. A map
+  // that lists a key nobody will ever bind is the defect `keys.ts` exists to prevent.
+  assert.ok(!keys.includes('+ −'), 'the unbindable zoom row is gone');
+  // A row that names an owner must NOT claim to work now, and vice versa.
+  for (const r of KEY_MAP) {
+    assert.equal(r.group === 'now', !r.owner, `${r.keys}: "now" and an owner are mutually exclusive`);
+  }
 });

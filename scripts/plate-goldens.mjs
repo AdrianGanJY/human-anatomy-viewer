@@ -61,16 +61,32 @@ const GHOSTED = new Set(['forward-bend']);   // the only control scene with a `g
  * change worth failing on — a lost ghost, a different structure, a moved subject — is a
  * REGION-level change that block averaging preserves.
  *
- * ⚠️ THE BOUNDS BELOW ARE AN **ESTIMATE**, NOT A MEASUREMENT — and this comment said the opposite
- * until the S0 stand-in review (M1) checked it against the worklog that it cited, which had said
- * ESTIMATE all along. They were chosen for headroom over a per-pixel coverage dither; nobody has yet
- * captured the same unchanged deployment twice and read the actual cell drift.
- *   TO EARN "MEASURED" (S1 owns this): run `plate-goldens.mjs` twice against one unchanged
- *   deployment, `compare` the two, and set FP_MAX_CELL / FP_MEAN from the observed ghost drift with
- *   headroom — then, and only then, change this word.
- * Until that happens the fingerprint path is also DORMANT: every golden captured before this file
- * existed has no `fp`, so `fpDelta` returns null and the byte proxy runs. The report says so on
- * every such row; it does not silently present the weaker check as the stronger one.
+ * ⚠️ THE BOUNDS BELOW ARE STILL AN **ESTIMATE**, AND S1 RAN THE EXPERIMENT THAT WAS SUPPOSED TO
+ * RETIRE THAT WORD. Reporting what actually happened, because the result is the interesting part:
+ *
+ *   L31 v2.1b+c S1, 2026-09-12. FIVE full captures of ONE unchanged deployment (`anatomy.adrian.my`
+ *   at `l31v21a`, artifacts `.artifacts/L31/v21bc/s1/goldens/goldens-s1-before{,2,3,4,5}.json`),
+ *   30 plates, 60 pairwise fingerprint comparisons including the ghost scene:
+ *        worst single cell 0/255 · worst mean 0.0000/255 · hash flips 0 · PNG bytes identical.
+ *   Every one of the six scenes produced ONE distinct hash across all five runs, and each matched
+ *   `v21a/live-after/goldens-after.json` from two days earlier.
+ *
+ * THAT IS NOT A TOLERANCE OF ZERO. The dither is documented to fire — the worklog of 2026-09-07
+ * recorded `forward-bend` going f6d8f9e6 -> 1b7a09da -> f6d8f9e6 on an unchanged deployment — so
+ * the phenomenon this tolerance exists for simply DID NOT OCCUR in 60 samples, and five clean
+ * samples bound the MAGNITUDE of an event that did not happen by exactly nothing. Setting
+ * FP_MAX_CELL to 0 on this evidence would buy a tighter gate at the price of a red run, on an
+ * unchanged deployment, the next time it does fire — the reading these numbers must never produce.
+ *
+ * So: the drift is now known to be INTERMITTENT and, on this host, rare. The bounds stay an
+ * ESTIMATE. TO EARN "MEASURED", somebody has to catch the dither IN THE ACT — capture until two
+ * runs disagree, and read the cell delta of that pair.
+ *
+ * Note the fingerprint path is no longer dormant: `goldens-s1-before.json` carries `fp` on all six
+ * scenes, so an S1-and-later comparison runs the real pixel check rather than the byte proxy. A
+ * comparison against `v21a/live-after/goldens-after.json` (captured before `fp` existed) still
+ * falls back to the proxy AND SAYS SO on every such row; it does not silently present the weaker
+ * check as the stronger one.
  *
  * ⚠️ A GOLDEN FILE PRODUCED BEFORE THIS EXISTS HAS NO `fp`. When either side lacks one, the
  * comparison falls back to the old byte proxy AND SAYS SO in the report — it never silently reports
@@ -207,10 +223,30 @@ for (const [name, spec] of Object.entries(SCENES)) {
   const blob = encodeScene(scene);
   const url = `${base}/?snap=1&scene=${blob}`;
   try {
-    await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
-    // The renderer's own two waits, in its own order: all 15 chunks, then a settled camera.
-    await page.waitForSelector('html[data-atlas-ready="1"]', {timeout: 300000});
-    await page.waitForSelector('html[data-atlas-settled="1"]', {timeout: 120000});
+    /**
+     * ⚠️ RETRY, BECAUSE A TIMED-OUT SCENE IS THE ONE OUTCOME THIS SCRIPT MUST NOT PRODUCE.
+     * L31 v2.1b+c, S1. The S0 run captured 5 of 6: `hip-flexors` hit the 300 s
+     * `data-atlas-ready` wait against the live host (33 MB over the public internet, cold),
+     * the comparator correctly refused it, and the whole gate went red. From S1 on the plate
+     * comparison is THE render-path gate rather than a cross-check, so an absent measurement
+     * costs the deploy. The cure is to let the scene have another go on a warmed HTTP cache —
+     * never to shorten the inventory and never to lower the wait.
+     */
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
+        // The renderer's own two waits, in its own order: all 15 chunks, then a settled camera.
+        await page.waitForSelector('html[data-atlas-ready="1"]', {timeout: 600000});
+        await page.waitForSelector('html[data-atlas-settled="1"]', {timeout: 120000});
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        console.log(`${name}  attempt ${attempt}/3 failed: ${String(e).slice(0, 120)}`);
+      }
+    }
+    if (lastErr) throw lastErr;
     const buf = await page.screenshot({path: join(outDir, `${label}-${name}.png`)});
     const hash = createHash('sha256').update(buf).digest('hex').slice(0, 16);
     // The projected subject rect too: two renders can hash differently from one dithered pixel

@@ -3,6 +3,12 @@
  * L31 v2.1b+c, S0. Visual contract: `mock/spec.md` + artboards X5 / D1 / D2 / D7 / D9 / D10.
  *
  * ══ WHAT "PLACEHOLDER-FIRST" MEANS HERE ════════════════════════════════════════════════════════
+ * ⚠️ S1 HAS LANDED, so the paragraphs below are S0's account with S1's corrections in place: the
+ * floating pill and the on-screen key pad are now LIVE (they drive `window.__atlasNav` and the
+ * dispatcher's held set), and the inert set is down from eleven controls to the tree's ticks, eyes
+ * and filter (S3), Find (S2), pinyin (S4) and JSON edit / scene `+` (S5). Everything the section
+ * on INERT ≠ DISABLED says still holds for those.
+ *
  * The WIRING is placeholder. The SPACE is not, and neither is the copy. Adrian's complaint was
  * 感觉没有好好plan整个空间 — that the space was not planned — and you cannot react to a plan of a
  * space that is drawn in lorem and grey boxes. So every region is laid out at its final geometry,
@@ -23,19 +29,19 @@
  * chip, the scene caption, the panel toggles, the sidebar collapse and the whole collapse ladder.
  * Those are real work, not placeholder, and S1–S5 do not rebuild them.
  *
- * ══ WHAT S1–S3 WILL TEAR OUT, and it is rendered accordingly ═══════════════════════════════════
- * The pill and the key pad are PURE PRESENTATION — no state, no handlers — because S1 rewrites them
- * the moment they acquire real OrbitControls wiring, and a state-holding component with a disabled
- * flag would have to be unpicked first. The fifteen tree rows are likewise throwaway: S3 replaces
- * them with a virtualised tree with roving tabindex and tri-state checkboxes.
+ * ══ WHAT S3 WILL TEAR OUT, and it is rendered accordingly ══════════════════════════════════════
+ * The fifteen tree rows are throwaway: S3 replaces them with a virtualised tree with roving
+ * tabindex and tri-state checkboxes. (The pill and the pad were on this list at S0 and came off it
+ * in S1, which is what "placeholder-first" is for.)
  */
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent} from 'react';
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
 import type {T} from '../../i18n/dict';
 import {LANGS, LANG_LABELS, type Lang} from '../../i18n/ui';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {KEY_MAP} from './keys.ts';
+import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
 import {DOCK_KEYS, type DockKey} from './store.ts';
 
@@ -122,45 +128,85 @@ const MB = (n: number) => (n / 1048576).toFixed(1);
  *
  * This one holds no state at all — see the pill note below.
  */
+/** The pad's twelve cells, in reading order: W / A S D on the left, the arrow cluster on the
+ *  right. `null` is a SPACER, not an empty key — drawn with the key border they read as broken
+ *  buttons, which is what S0's first screenshot showed. The `code` is the PHYSICAL code the cell
+ *  presses, which is the whole reason a finger and a keyboard are the same event downstream. */
+const PAD: ({label: string; code: string} | null)[] = [
+ null, {label: 'W', code: 'KeyW'}, null, null, {label: '↑', code: 'ArrowUp'}, null,
+ {label: 'A', code: 'KeyA'}, {label: 'S', code: 'KeyS'}, {label: 'D', code: 'KeyD'},
+ {label: '←', code: 'ArrowLeft'}, {label: '↓', code: 'ArrowDown'}, {label: '→', code: 'ArrowRight'},
+];
+
 export function StudioField(p: {
  tr: ShellProps['tr']; caption: ShellProps['caption']; state: SceneState;
  dispatch: ShellProps['dispatch']; structures: number; pieces: number; onKeys(open: boolean): void;
+ navMode: NavMode; onNavMode(m: NavMode): void;
+ held: ReadonlySet<string>; press(code: string): void; release(code: string): void;
+ onFit(): void; onHome(): void; onSnapshot(): void;
 }) {
  const {tr} = p;
+ /**
+  * ⚠️ A PAD KEY MUST BE RELEASED EVEN IF THE FINGER LEAVES IT. `pointerup` fires on the element
+  * the pointer is OVER, so dragging off a key delivers the up somewhere else and the camera pans
+  * for ever — the touch twin of the held-key defect guard 6 exists for. `setPointerCapture` binds
+  * the whole gesture to the key that started it, so `pointerup`/`pointercancel` always come home.
+  */
+ const hold = (code: string) => ({
+  onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => {
+   e.preventDefault();
+   e.currentTarget.setPointerCapture?.(e.pointerId);
+   p.press(code);
+  },
+  onPointerUp: () => p.release(code),
+  onPointerCancel: () => p.release(code),
+  onPointerLeave: () => p.release(code),
+  // KEYBOARD-REACHABLE TOO. A pad key is a real button, so Space/Enter must do something; a
+  // click is a discrete nudge rather than a hold, which is the honest translation.
+  onClick: () => { p.press(code); setTimeout(() => p.release(code), 140); },
+ });
  return <>
   {p.caption.title && <div className="v2-cap">
    <s>{tr('view.this')}</s>
    <b>{p.caption.title}</b>
    {p.caption.note && <p>{p.caption.note}</p>}
   </div>}
-  {/* THE PILL AND THE PAD ARE PRESENTATION. No state, no handlers: S1 rewrites both the moment
-      they acquire OrbitControls wiring, and a state-holding component with a disabled flag is a
-      thing S1 would have to unpick first. Named views are the exception — those ARE wired today
-      through the controller, so they are real buttons. */}
+  {/* S1: EVERY CONTROL IN THIS GROUP IS LIVE. The pill, the pad and the physical keyboard are
+      three inputs to the same commands — the pill's Fit/Home call the renderer's `__atlasNav`,
+      the pad presses physical codes into the dispatcher's held set, and the named views and Reset
+      go through the controller exactly as the phone's do. */}
   <div className="v2-pill" role="group" aria-label={tr('nav.controls')}>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true"><Ico d={P.orbit}/>{tr('nav.orbit')}</span>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true"><Ico d={P.pan}/>{tr('nav.pan')}</span>
+   {(['orbit', 'pan'] as NavMode[]).map((m) => <button
+    type="button" key={m} className={`v2-pbtn ${p.navMode === m ? 'is-on' : ''}`} aria-pressed={p.navMode === m}
+    onClick={() => p.onNavMode(m)}><Ico d={m === 'pan' ? P.pan : P.orbit}/>{tr(`nav.${m}`)}</button>)}
    <span className="v2-sep"/>
    {(['three-quarter', 'front', 'side', 'back'] as View[]).map((v) => <button
     type="button" key={v} className={`v2-pbtn ${p.state.view === v ? 'is-on' : ''}`} aria-pressed={p.state.view === v}
     onClick={() => p.dispatch({type: 'set-view', view: v})}>{tr(`view.${v}`)}</button>)}
    <span className="v2-sep"/>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true" aria-label={tr('nav.fit')}><Ico d={P.fit}/></span>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true" aria-label={tr('nav.home')}><Ico d={P.home}/></span>
-   {/* LIVE, not inert: `reset-view` is a controller command the phone already exposes, so leaving
-       it out of the studio would have silently dropped a working control in the move. */}
+   <button type="button" className="v2-pbtn" aria-label={tr('nav.fit')} title={tr('nav.fit')} onClick={p.onFit}><Ico d={P.fit}/></button>
+   <button type="button" className="v2-pbtn" aria-label={tr('nav.home')} title={tr('nav.home')} onClick={p.onHome}><Ico d={P.home}/></button>
+   {/* `reset-view` is a controller command the phone already exposes, so leaving it out of the
+       studio would have silently dropped a working control in the move. */}
    <button type="button" className="v2-pbtn" aria-label={tr('view.reset')} title={tr('view.reset')}
     onClick={() => p.dispatch({type: 'reset-view'})}><Ico d={P.rotate}/></button>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true" aria-label={tr('nav.snapshot')}><Ico d={P.camera}/></span>
-   <span className="v2-pbtn v2-inert" title="S1" tabIndex={0} aria-disabled="true" aria-label={tr('nav.keypad')}><Ico d={P.keys}/></span>
+   <button type="button" className="v2-pbtn" aria-label={tr('nav.snapshot')} title={tr('nav.snapshot')} onClick={p.onSnapshot}><Ico d={P.camera}/></button>
+   <button type="button" className="v2-pbtn" aria-label={tr('nav.keypad')} title={tr('nav.keypad')} onClick={() => p.onKeys(true)}><Ico d={P.keys}/></button>
    <button type="button" className="v2-pbtn" aria-label={tr('nav.info')} onClick={() => p.onKeys(true)}><Ico d={P.info}/></button>
   </div>
-  <div className="v2-pad" aria-label={tr('nav.keypad')} role="group" title="S1">
-   {/* W / A S D on the left, the arrow cluster on the right — `spec.md`'s map and the mock's own
-       layout. Six columns, two rows; the four gaps are SPACERS, not empty keys: drawn with the key
-       border they read as broken buttons, which is what the first screenshot showed. */}
-   {['', 'W', '', '', '↑', '', 'A', 'S', 'D', '←', '↓', '→'].map((k, i) =>
-    <span key={i} className={`v2-cap-key ${k ? '' : 'is-gap'}`} aria-hidden={!k}>{k}</span>)}
+  <div className="v2-pad" aria-label={tr('nav.keypad')} role="group">
+   {PAD.map((k, i) => (k
+    ? <button
+       type="button" key={i}
+       className={`v2-cap-key ${p.held.has(k.code) ? 'is-down' : ''}`}
+       // THE PHYSICAL KEY LIGHTS THE ON-SCREEN ONE. `held` is the dispatcher's set, so pressing W
+       // on the keyboard highlights the pad's W — the cheapest proof to a reader that the two
+       // controls are one thing rather than two that happen to look alike.
+       aria-pressed={p.held.has(k.code)}
+       aria-label={k.code}
+       {...hold(k.code)}
+      >{k.label}</button>
+    : <span key={i} className="v2-cap-key is-gap" aria-hidden="true"/>))}
   </div>
   <div className="v2-legend">
    <div><span>{tr('legend.inView')}</span><b>{p.structures}</b></div>

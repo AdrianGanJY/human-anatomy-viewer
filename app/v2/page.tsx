@@ -565,7 +565,77 @@ export default function V2() {
   * WebGL teardown and a re-download of every chunk, in the middle of a resize. The regions around
   * it change; the field never does.
   */
- const shell = useShell();
+ /**
+  * SNAPSHOT — the field as a PNG, on this device, with no server in it.
+  *
+  * `installCapture` (app/capture.ts) already paints one supersampled frame over the live canvas
+  * for the plate renderer, so the picture worth saving is the one already on screen; this reads
+  * the canvas back and hands it to the browser's own download. It deliberately does NOT go
+  * through `/api/snap`: that route is behind Access, rate-limited on this account, and would turn
+  * a local action into a network dependency for no gain.
+  *
+  * `preserveDrawingBuffer` is NOT set on the renderer, so the buffer is only guaranteed readable
+  * inside a frame — hence the capture hook (which renders on demand) rather than a bare
+  * `toDataURL`, and hence the null check: if the scene has not mounted there is nothing to save
+  * and the command declines rather than downloading a blank rectangle.
+  */
+ const snapshot = useCallback(() => {
+  const cap = (window as unknown as {__atlasCapture?: (o: {scale: number}) => void}).__atlasCapture;
+  const canvas = document.querySelector('.v2-field canvas') as HTMLCanvasElement | null;
+  if (!canvas) return false;
+  cap?.({scale: 1});
+  canvas.toBlob((blob) => {
+   if (!blob) return;
+   const url = URL.createObjectURL(blob);
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = `anatomy-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.png`;
+   a.click();
+   // Revoked on the next task, not immediately: Chromium reads the blob asynchronously after the
+   // synthetic click, and revoking in the same tick produces an empty file.
+   setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }, 'image/png');
+  return true;
+ }, []);
+
+ /**
+  * THE KEYBOARD'S SCENE COMMANDS. The camera ones (`home`, `fit`, the drag mode) are answered
+  * inside `useShell`, because the renderer's navigation surface is a global; the ones that change
+  * the SCENE go through the controller here, so a named view pressed on the keyboard and one
+  * clicked on the pill are literally the same dispatch and cannot drift apart.
+  */
+ const shell = useShell(useCallback((cmd: string) => {
+  const view = ({'view-three-quarter': 'three-quarter', 'view-front': 'front', 'view-side': 'side', 'view-back': 'back'} as Record<string, View>)[cmd];
+  if (view) return dispatch({type: 'set-view', view});
+  if (cmd === 'reset') return dispatch({type: 'reset-view'});
+  if (cmd === 'stage') { setStage(true); return true; }
+  if (cmd === 'snapshot') { snapshot(); return true; }
+  return false;
+ }, [dispatch]));
+
+ /**
+  * ── S1 / RC3: A STUDIO `?select=` LINK OPENS FRAMED ON ITS STRUCTURE ──────────────────────────
+  *
+  * A bare legacy link carries no scene, so `plate` is null and the renderer falls back to its
+  * DEFAULT fit — which is how a shared `?select=FMA…` link opened with the named structure at
+  * 0.15%–0.34% of the field. That is the picture Adrian rejected, and `verify-ux.mjs`'s row
+  * "a bare legacy visit is framed by the DEFAULT fit" was asserting it as correct behaviour; RC3
+  * inverts that row in the studio tier and this is what makes it true.
+  *
+  * ONLY WHEN THERE IS NO SCENE — a scene's own `camera.focus` stays authoritative — and only in
+  * the studio, so the phone and the tablet keep the framing every one of their oracles measured.
+  *
+  * WHY IT TRACKS THE CURRENT PICKS rather than freezing the entry set: the renderer refuses to
+  * re-frame once a human has posed the camera (`manual`, app/scene.tsx), so this reads as "fit to
+  * the selection until you take the camera, then leave it alone" — which is the behaviour
+  * codex-plan-review.md §A.7 asks for, reached through the state the oracle can see rather than
+  * through a second command channel it cannot.
+  */
+ const studioFrame = useMemo(() => {
+  if (!shell.studio || scene || !basket.length) return null;
+  const ids = basket.flatMap((p) => p.elements);
+  return ids.length ? {focus: ids, frame: ids} : null;
+ }, [shell.studio, scene, basket]);
 
  return <main
   className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
@@ -615,7 +685,19 @@ export default function V2() {
   <div className="v2-field" id="v2-field">
    {atlas && <AnatomyScene
     atlas={atlas}
-    state={{...state, ...(plate ?? {}), insets: FIELD_INSET}}
+    state={{...state, ...(plate ?? studioFrame ?? {}), insets: FIELD_INSET}}
+    // THE STUDIO-ONLY FRAMING OPTION (app/scene.tsx `studio`). A separate prop, never part of
+    // `SceneState` and never `insets`: the phone supplies insets too, and SceneState is what the
+    // codec serialises into a teaching blob.
+    //
+    // ⚠️ `shell.studio` ALONE — deliberately NOT `shell.studio && !stage`, which is what this line
+    // said first. `stage` strips the CHROME; it does not change the TIER, and this prop is about
+    // the tier. With `!stage` in it, pressing Shift+S at 1440 handed the renderer back to v1's
+    // `distance = 4` and the subject visibly shrank at the exact moment the reader had asked for
+    // the biggest possible picture — a presentation mode that frames worse than the app it was
+    // launched from. `?stage=1` on a phone still gets the phone's framing, because `shell.studio`
+    // is false there.
+    studio={shell.studio}
     priority={priority}
     // THE GENERATION AND ITS REQUIREMENT. Both are read through refs assigned during RENDER
     // (app/scene.tsx), never in an effect — so when a re-drive bumps the epoch and replaces the
@@ -655,6 +737,11 @@ export default function V2() {
    {shell.studio && !stage && <StudioField
     tr={tr} caption={caption} state={state} dispatch={dispatch}
     structures={basket.length} pieces={state.selected.length} onKeys={shell.setKeysOpen}
+    navMode={shell.navMode} onNavMode={shell.setNavMode}
+    held={shell.held} press={shell.press} release={shell.release}
+    onFit={() => { (window as unknown as {__atlasNav?: {fit(): string}}).__atlasNav?.fit(); }}
+    onHome={() => { (window as unknown as {__atlasNav?: {home(): void}}).__atlasNav?.home(); }}
+    onSnapshot={snapshot}
    />}
   </div>
 

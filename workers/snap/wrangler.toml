@@ -126,4 +126,23 @@ bucket_name = "human-anatomy-snaps"
 # deploy (.artifacts/L31/v21a/live-before/goldens-before.json) and are re-rendered after it, and
 # `plate-goldens.mjs compare` now FAILS on a missing scene, an incomplete measurement, any camera or
 # projected-bounds change, and on a PNG-size drift over 2% for the one ghost-bearing scene.
-SITE_BUILD = "l31v21a"
+#
+# ══ L31 v2.1b+c, S1 — BUMPED TO l31v21bc ═══════════════════════════════════════════════════════
+# S1 edits `app/scene.tsx`, which is on `deploy.ps1`'s render-path tripwire list, so the deploy
+# refuses until this line moves. It is bumped because the guard is right to ask, NOT because a
+# plate changed — and the difference is measured rather than argued:
+#
+#   · Everything S1 touches in the renderer is behind the `studio` PROP, which only `/v2/` at
+#     >=1180 passes. `/?snap=1` is v1 and never sets it, so `STUDIO_PADDING`, the zeroed focus
+#     lean, G3's whole-body fit and the manual-pose resize rule are all unreachable from a plate.
+#   · `studio` is deliberately NOT part of `SceneState`, so it cannot travel inside a scene blob.
+#   · The one unconditional change is `__atlasTargets`'s `parts` lane, which is a read-only
+#     introspection getter no render path calls.
+#   · PROVEN: six control plates captured against the live host FIVE times before the deploy
+#     (.artifacts/L31/v21bc/s1/goldens/) — 60 pairwise comparisons, zero drift, and all six hashes
+#     identical to v2.1a's `goldens-after.json` from two days earlier — then re-compared after.
+#
+# ⚠️ THE FIRST RENDER OF EACH PLATE AFTER THIS BUMP IS COLD. Every cached PNG under the old key is
+# retired, and Browser Rendering minutes are exhausted on the Adrey account, so the cold path is
+# the local one. That is the cost of the bump and it is stated rather than discovered.
+SITE_BUILD = "l31v21bc"

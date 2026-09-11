@@ -218,7 +218,14 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 .v2-pbtn.v2-inert{border:1px dashed var(--v2-line)}
 
 .v2-pad{position:absolute;left:16px;bottom:16px;display:grid;grid-template-columns:repeat(6,40px);grid-auto-rows:40px;gap:6px;padding:10px;border-radius:var(--v2-radius);background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow)}
-.v2-cap-key{display:flex;align-items:center;justify-content:center;border-radius:var(--v2-radius-sm);border:1px dashed var(--v2-line);color:var(--v2-ink-3);font-size:var(--v2-type-sm);font-weight:500}
+/* S1: THE KEYS ARE LIVE, SO THEY STOP LOOKING INERT. A dashed border is this shell's declared
+   sign for "this is where that will be" (`.v2-inert`), and leaving it on a working button would
+   make the convention meaningless the first time a reader pressed one and it worked. Solid line,
+   real ink, a pressed state — and `touch-action:none` so a finger dragging on the pad pans the
+   camera instead of scrolling the page out from under it. */
+.v2-cap-key{display:flex;align-items:center;justify-content:center;border-radius:var(--v2-radius-sm);border:1px solid var(--v2-line-2);background:var(--v2-surface);color:var(--v2-ink-2);font-size:var(--v2-type-sm);font-weight:500;touch-action:none;-webkit-user-select:none;user-select:none}
+.v2-cap-key:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-cap-key.is-down{background:var(--v2-accent-soft);border-color:var(--v2-accent);color:var(--v2-accent);font-weight:600}
 /* A GAP IN THE PAD IS A GAP, not an empty key. The first build drew the spacers with the same
    dashed border as the keys, so the pad read as eight broken buttons instead of W / A S D and the
    arrow cluster. */

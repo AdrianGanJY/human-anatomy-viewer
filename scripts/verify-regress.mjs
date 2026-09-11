@@ -124,6 +124,37 @@ const browser = await chromium.launch({executablePath: CHROME_EXE, args: CHROME_
 /** A clean profile every time. `atlas.lang` is written to localStorage on every scene apply and is
  *  SHARED with v1 (app/v2/page.tsx:255), so a reused profile makes the language cases measure the
  *  previous case's side effect. */
+/**
+ * ⚠️ `fresh()`'s DEFAULT IS THE STUDIO TIER SINCE L31 v2.1b+c S0, and that silently changed what
+ * three of these cases test (stand-in review round 1, M8 — moved from S6 to S1 because S1 edits
+ * the very tree they accidentally stopped covering).
+ *
+ * 1440x900 used to be "a desktop, which renders the phone's tree at a wider width". Since the
+ * shell it is the STUDIO, where `.v2-rail`, `.v2-margin` and `.v2-handle` do not exist at all. The
+ * cases below that reach for a remove control or Clear had been written with dual selectors
+ * (`.v2-row-x, .v2-card-x`), so they kept passing — against the studio's Selection dock, with the
+ * phone half of every one of those selectors now unreached by any case in this file.
+ *
+ * The fix is NOT a wider selector. It is `MARGIN_TIER` — the cases whose subject is the margin tree
+ * open BELOW 1180, where that tree is what renders — and the studio's own coverage comes from
+ * `verify-ux.mjs`'s studio rows, which S0 added 44 of. A case that silently swaps which product it
+ * tests is worse than a missing case, because the report still prints the name of the thing that is
+ * no longer being checked.
+ *
+ * ⚠️ 1024x768, NOT 390x844, AND THE DIFFERENCE IS MEASURED. The stand-in's M8 says "point them at
+ * 390x844". Tried, and it fails: at 390 the margin is a two-DETENT sheet whose set list sits behind
+ * a panel button, so these cases would need a detent dance and a panel open before they could reach
+ * a remove control — new interaction code in a case whose subject is the CONTROLLER contract, not
+ * the phone's chrome. 1024x768 renders the same `.v2-margin` tree, expanded, with `.v2-row-x` and
+ * `.v2-set-foot` directly reachable: it is exactly the tree these cases exercised at 1440 before the
+ * shell existed, so the coverage is RESTORED rather than moved somewhere new.
+ *
+ * What is therefore still NOT covered here: the 390x844 detent + panel flow. That is not a gap being
+ * papered over — `verify-ux.mjs` measures 390x844 with its own rows, including the detent
+ * transitions — but no `verify-regress` case drives a control through the phone's sheet, and saying
+ * so is better than implying otherwise.
+ */
+const MARGIN_TIER = [1024, 768, true];
 const fresh = async (width = 1440, height = 900, coarse = false) => {
   const context = await browser.newContext({
     viewport: {width, height}, deviceScaleFactor: 1, hasTouch: coarse, isMobile: coarse,
@@ -332,8 +363,33 @@ if (want('stage-probe')) {
     const exit = await page.$('.v2-stage-exit');
     prereq('the stage exit control exists', !!exit, exit ? 'present' : 'absent', 'present');
     if (exit) {
+      /**
+       * ⚠️ WAIT ON THE WRITE, NOT ON A CLOCK — the OTHER HALF of codex r9's stage-probe Medium.
+       *
+       * The S0 prelude replaced the ENTRY path's `waitForTimeout(1400)` with a direct observation of
+       * `history.replaceState`, and left this one on a 1200 ms sleep. It flaked exactly as a sleep
+       * does: green alone, red on 2026-09-12 when the oracle sweep was running in another browser
+       * at the same time and the 200 ms debounce plus the React commit did not fit inside it. The
+       * failure reported "stage=1 is still in the URL", which reads as a product defect and was a
+       * stopwatch.
+       *
+       * `window.__urlWrites` is already installed by this case's init script, so the observation
+       * costs nothing: count the writes before the click, wait for one more. The fallback keeps the
+       * old sleep but RECORDS that it was taken, rather than being the silent default.
+       */
+      const writesBefore = await page.evaluate(() => window.__urlWrites ?? 0);
       await clickAt(page, exit);
-      await page.waitForTimeout(1200);
+      let exitWriteSeen = true;
+      await page.waitForFunction((n) => (window.__urlWrites ?? 0) > n, writesBefore, {timeout: 20000})
+        .catch(() => { exitWriteSeen = false; });
+      if (!exitWriteSeen) await page.waitForTimeout(1200);
+      prereq('the post-exit URL write was OBSERVED (replaceState), not slept through',
+        exitWriteSeen,
+        exitWriteSeen ? `history.replaceState fired again after the exit click (was ${writesBefore})`
+          : 'no further replaceState within 20 s — fell back to the legacy 1200 ms sleep',
+        'observed');
+      // One settle beat for the React commit the write was triggered by.
+      await page.waitForTimeout(300);
       const afterExit = await page.evaluate(() => ({
         search: location.search, stage: document.body.classList.contains('v2-stage'),
         // `.v2-head` on the phone/tablet, `.v2-bar` in the studio -- one claim, two trees.
@@ -698,7 +754,9 @@ if (want('plural')) {
 // scene, so the URL, `plate()` and a reload all describe the scene as it ARRIVED.
 if (want('edited-scene-persists')) {
   openCase('edited-scene-persists', 'C2', 'removing a structure changes the blob, the URL, plate() and a reload', 'R:27');
-  const {context, page, errors} = await fresh();
+  // M8: the MARGIN tree. The remove control this case presses is `.v2-row-x`, which exists only
+  // below 1180 — at `fresh()`'s default it had been pressing the studio's `.v2-card-x` instead.
+  const {context, page, errors} = await fresh(...MARGIN_TIER);
   try {
     await page.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
     await waitScene(page);
@@ -855,7 +913,8 @@ if (want('review2-paths')) {
   // button and `atlas.clear()` left the serializer's cached blob intact — and the next debounced
   // write put `scene=` back, so a reload resurrected the cleared scene.
   {
-    const {context, page, errors} = await fresh();
+    // M8: the MARGIN tree — `.v2-set-foot` is the margin's footer, absent in the studio.
+    const {context, page, errors} = await fresh(...MARGIN_TIER);
     try {
       await page.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await waitScene(page); await waitAll(page);
@@ -906,7 +965,8 @@ if (want('review2-paths')) {
   // in url-state — but the fence was a regex on the RAW string and did not see it. The stale hash
   // then outranked the edited query on reload and restored the removed structure.
   {
-    const {context, page, errors} = await fresh();
+    // M8: the MARGIN tree — the remove control below is `.v2-row-x`.
+    const {context, page, errors} = await fresh(...MARGIN_TIER);
     try {
       // IN THE INITIAL URL, not set afterwards. The first version assigned `location.hash` right
       // after `goto`, before the atlas had loaded — so the hashchange listener was not registered

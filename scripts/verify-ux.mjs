@@ -104,6 +104,20 @@ const FOCUS_ID = sceneFocusId(SCENE);
 /** The names the atlas will show. `sceneFocusId` picks the focused primary. */
 const EXPECTED_EN = 'left semitendinosus';
 
+/**
+ * ⚠️ SCREENSHOT TIMEOUT, RAISED FROM PLAYWRIGHT'S 30 s DEFAULT (L31 v2.1b+c, S1).
+ *
+ * `[1366x1024] bare entry run completed :: TimeoutError: page.screenshot: Timeout 30000ms exceeded`
+ * took down a whole viewport's pass on an otherwise green run. It is the instrument, not the page:
+ * 1366x1024 at dpr 2 is a 2732x2048 capture over a live WebGL canvas under SwiftShader, with
+ * several other contexts open in the same browser — the largest single image this sweep takes, at
+ * its slowest moment.
+ *
+ * Raised rather than re-rolled. A flaky row that is re-run until it passes is a row nobody trusts,
+ * and the alternative (dropping the shot) would remove the picture at the one tier whose screenshots
+ * caught a real defect in S0.
+ */
+const SHOT_MS = 120000;
 const VIEWPORTS = [
   {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true},
   {name: '768x1024', width: 768, height: 1024, dpr: 2, coarse: true},
@@ -790,7 +804,7 @@ for (const vp of SWEEP) {
     // Put the language back so the screenshot matches the link.
     await page.evaluate(() => { document.documentElement.lang = 'zh-Hans'; });
 
-    await page.screenshot({path: join(outDir, `${label}-${vp.name}.png`)});
+    await page.screenshot({path: join(outDir, `${label}-${vp.name}.png`), timeout: SHOT_MS});
     // AND AGAIN AT THE END. A child target that attaches after the barrier snapshot invalidates
     // the budget row above retroactively — the number was taken over a population the page had
     // already left. Checking only at the barrier would be a gate that closes before the hazard.
@@ -860,6 +874,11 @@ for (const vp of SWEEP) {
       if (!g) return {error: 'the selected structure is not drawn', w: r.w, h: r.h, fit: r.fit};
       const el = document.querySelector(fieldSel);
       return {
+        // WHICH TIER IS ACTUALLY RENDERING, read off the DOM rather than assumed from the width.
+        // The RC3 assertion below forks on it, so a viewport that silently stopped being the
+        // studio would otherwise fall back to the WEAKER pre-S1 assertion and pass — a fork on an
+        // unverified condition is a fork that hides the defect it was written to catch.
+        studio: !!document.querySelector('.v2.v2-studio'),
         w: r.w, h: r.h, left: g.left, right: g.right, top: g.top, bottom: g.bottom, n: g.n, fit: r.fit,
         fill: Math.max((g.right - g.left) / r.w, (g.bottom - g.top) / r.h),
         area: ((g.right - g.left) * (g.bottom - g.top)) / (r.w * r.h),
@@ -886,13 +905,44 @@ for (const vp of SWEEP) {
     check(vp.name, 'the bare subject has not shrunk below the v2.1a entry baseline',
       !bareFrame.error && bareFrame.area >= BARE_FLOOR,
       bareFrame.error || `${(bareFrame.area * 100).toFixed(3)}%`, `>= ${(BARE_FLOOR * 100).toFixed(3)}%`);
-    // WHICH FIT OWNS IT. On a bare legacy visit the DEFAULT fit must own the camera — an empty
-    // `fit.key` here is the correct reading, and asserting it makes the C3 change detectable
-    // rather than something a future run has to guess at.
-    check(vp.name, 'a bare legacy visit is framed by the DEFAULT fit (no focus fit armed)',
-      !bareFrame.error && !bareFrame.fit?.key && bareFrame.fit?.focus === 0,
-      bareFrame.error || `fit.key=${bareFrame.fit?.key ? 'set' : 'empty'} focus=${bareFrame.fit?.focus}`,
-      'an empty fit key');
+    /**
+     * WHICH FIT OWNS IT — AND THIS IS THE ONE NAMED CHECK IN THE SUITE WHOSE POLARITY CHANGES.
+     *
+     * Until S1 this row asserted that a bare legacy visit is framed by the DEFAULT fit: an EMPTY
+     * `fit.key` and `focus === 0` were the correct reading, everywhere. That was a faithful
+     * description of the product and it was also a description of the defect — the default fit's
+     * literal `distance = 4` is why a shared `?select=` link opened with its structure at 0.15% of
+     * a 1920-wide field.
+     *
+     * S1 inverts it IN THE STUDIO TIER ONLY (opus-plan-review-2.md RC3, codex-plan-review.md §C):
+     * at >=1180 a bare `?select=` now arms the focus fit against the selection, so the correct
+     * reading there is a NON-EMPTY key with `focus > 0`. v1 and the phone/tablet keep the original
+     * assertion verbatim, because their framing is unchanged and an oracle that relaxed everywhere
+     * to accommodate one tier would stop protecting the others.
+     *
+     * ⚠️ CONSEQUENCE, AND IT IS A USER-VISIBLE ONE: a bare `?select=` link opened on a desktop now
+     * arrives ZOOMED TO THE STRUCTURE rather than showing the whole standing figure. That is the
+     * point — but it is a change to what an existing link does, so it is called out in the S1
+     * #coord post rather than left for Adrian to discover.
+     */
+    const studioBare = variant === 'v2' && bareFrame.studio === true;
+    check(vp.name, studioBare
+      ? 'a bare legacy visit is framed by the FOCUS fit (studio: fit-to-selection on entry)'
+      : 'a bare legacy visit is framed by the DEFAULT fit (no focus fit armed)',
+      !bareFrame.error && (studioBare
+        ? !!bareFrame.fit?.key && bareFrame.fit?.focus > 0
+        : !bareFrame.fit?.key && bareFrame.fit?.focus === 0),
+      bareFrame.error || `tier=${bareFrame.studio ? 'studio' : 'phone/tablet'} fit.key=${bareFrame.fit?.key ? 'set' : 'empty'} focus=${bareFrame.fit?.focus}`,
+      studioBare ? 'a non-empty fit key and focus > 0' : 'an empty fit key');
+    // THE CONTROL ARM for the fork above: the tier the fork READ must be the tier this viewport
+    // IS. Without it, a studio viewport that stopped applying `.v2-studio` would quietly take the
+    // phone branch and report a pass for the wrong product.
+    if (variant === 'v2') {
+      const wantStudio = vp.width >= 1180;
+      check(vp.name, 'the bare page renders the tier this viewport is supposed to be',
+        bareFrame.studio === wantStudio, `.v2-studio=${bareFrame.studio} at ${vp.width}px`,
+        String(wantStudio));
+    }
 
     // ── DESKTOP REACHABILITY (codex-app-review.md §2 row 1, the first High) ──────────────────
     // Plain entry, no selection: Find, Systems and the four named views must be REACHABLE — a
@@ -1027,7 +1077,7 @@ for (const vp of SWEEP) {
 
     const barePopEnd = await populationCheck(barePage, bareLedger);
     check(vp.name, 'bare entry: the population still holds at the END of the pass', barePopEnd.ok, barePopEnd.measured, POPULATION);
-    await barePage.screenshot({path: join(outDir, `${label}-bare-${vp.name}.png`)});
+    await barePage.screenshot({path: join(outDir, `${label}-bare-${vp.name}.png`), timeout: SHOT_MS});
     check(vp.name, `bare entry reached readiness and logged no console error (${BARE_EN})`,
       bareReady && bareErrors.length === 0,
       `${bareReady ? 'ready' : 'READINESS MARKER NEVER APPEARED'}; ${bareErrors.slice(0, 2).join(' | ') || 'no console errors'}`, 'ready, none');
@@ -1179,12 +1229,42 @@ if (variant === 'v2') {
           handle: hr ? Math.round(hr.height) : null,
           focusInside: m.contains(document.activeElement),
           rows: document.querySelectorAll('.v2-keys dt').length,
+          // The KEYS as rendered, so the row below can assert that the map names the keys S1
+          // actually bound rather than that it is merely long enough.
+          keys: [...document.querySelectorAll('.v2-keys dt')].map((d) => d.textContent.trim()),
+          // A row whose description still carries the strikethrough "arrives in S<n>" marker is a
+          // key the map declares FORTHCOMING. Counting them is how "S1's keys stopped being
+          // promises" becomes a measurement instead of a claim.
+          pending: [...document.querySelectorAll('.v2-keys dd s')].length,
         };
       });
+      /**
+       * ⚠️ THE BOUND CHANGED FROM `>= 20` TO EXACTLY `KEY_ROWS`, AND THAT IS NOT A RETUNE TO MAKE
+       * A RED GO GREEN. S1 DELETED a row: `+ −` was inert copy for a zoom command v2 does not
+       * have and never planned to have (zoom IS the dolly, on ↑ ↓), so the map was advertising a
+       * key nobody would ever bind — the exact defect `keys.ts` exists to prevent. Nineteen rows
+       * is the whole map now, and asserting it EXACTLY also catches an accidental addition, which
+       * `>= 20` never could.
+       *
+       * The row that does the real work is the one after it: `>= N rows` is a proxy for "lists
+       * every binding" and a weak one, because it passes on nineteen rows of anything. Naming the
+       * keys S1 bound is the direct reading.
+       */
+      const KEY_ROWS = 19;
       check(vp.name, `[${STUDIO_V}] "?" opens the key map, traps focus inside it, and lists every binding`,
-        !!modal && modal.focusInside && modal.rows >= 20,
+        !!modal && modal.focusInside && modal.rows === KEY_ROWS,
         modal ? `${modal.rows} rows, focusInside=${modal.focusInside}, sheet=${modal.sheet}` : 'no overlay opened',
-        'open, focus inside, >= 20 rows');
+        `open, focus inside, exactly ${KEY_ROWS} rows`);
+      // S1's OWN BINDINGS, BY NAME, and NONE of them still marked as forthcoming. At S0 every one
+      // of these rows carried "arrives in S1"; if a later edit dropped a binding but left its row,
+      // or kept the row's owner marker after wiring it, this is what says so.
+      const S1_KEYS = ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H / R', 'Shift P / Shift S'];
+      const missingKeys = S1_KEYS.filter((k) => !(modal?.keys ?? []).includes(k));
+      check(vp.name, `[${STUDIO_V}] the key map names every camera binding S1 wired, and marks none of them forthcoming`,
+        !!modal && missingKeys.length === 0 && modal.pending === (KEY_ROWS - 2 - S1_KEYS.length),
+        modal ? `${modal.keys.length} keys${missingKeys.length ? `, MISSING: ${missingKeys.join(' / ')}` : ''}, ${modal.pending} still marked forthcoming`
+          : 'no overlay opened',
+        `all ${S1_KEYS.length} present, ${KEY_ROWS - 2 - S1_KEYS.length} forthcoming (the S2/S3/S4/S5/S6 rows)`);
       check(vp.name, `[${STUDIO_V}] it presents as a ${vp.width < 768 ? 'SHEET with a 44 px handle' : 'centred modal'}`,
         vp.width < 768 ? (modal?.sheet === true && modal?.handle === 44) : (modal?.sheet === false && modal?.handle === null),
         `sheet=${modal?.sheet} handle=${modal?.handle}`, vp.width < 768 ? 'sheet, handle 44' : 'modal, no handle');
@@ -1199,10 +1279,303 @@ if (variant === 'v2') {
         'opened, then closed');
 
       if (vp.tier.startsWith('studio')) {
-        await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`)});
+        await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`), timeout: SHOT_MS});
       }
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the studio pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ S1 — NAVIGATION AND FRAMING ═══════════════════════════════════════════════════════════════
+   *
+   * Every claim below is paired with the CONTROL ARM that would have gone red before S1. A
+   * navigation suite is unusually easy to write as a set of tautologies — "the camera did not move
+   * while we did nothing" passes on a dispatcher that was never installed — so each guard row has
+   * beside it a row proving the same key DOES fire where it should.
+   */
+  const S1_V = 'S1-nav';
+  /** Six coordinates to 4 dp — the same reading the plate goldens take. A pose is position AND
+   *  target: a check on position alone passes an orbit that silently re-centred the target. */
+  const POSE = `(() => {
+    const n = window.__atlasNav; if (!n) return null; const p = n.pose();
+    return {k: [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(','), manual: p.manual};
+  })()`;
+
+  // ── S1.1 A MANUAL POSE SURVIVES A DOCK TOGGLE ────────────────────────────────────────────────
+  // The defect this is written against: `resize()` cleared the focus key and ended in an
+  // unconditional `fit()`, so opening a dock threw away whatever the reader had set up. In the
+  // studio a dock toggle is a one-click everyday action, which is what makes it worth a row.
+  for (const vp of [{name: 's1-pose-1440', width: 1440, height: 900, dpr: 1, coarse: false},
+    {name: 's1-pose-1920', width: 1920, height: 860, dpr: 1, coarse: false}]) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      /**
+       * ⚠️ FOCUS THE PAGE BEFORE TOUCHING THE KEYBOARD, and this is an INSTRUMENT fix for a
+       * PRODUCT behaviour that is correct.
+       *
+       * This row failed intermittently in the full sweep and passed every time in isolation — at
+       * 1440 but not 1920, on one run and not the next. The cause is `keys.ts` guard 6: the held
+       * set is cleared on `blur`, because a keyup delivered while the window is not focused never
+       * reaches the page and the camera would otherwise pan for ever. In a sweep that opens a
+       * dozen browser contexts, an unfocused page receives exactly that blur mid-hold, the set
+       * clears, and the animation loop stops — the guard doing its job on a page no human is
+       * looking at.
+       *
+       * So the fix is to make the measurement resemble the situation being measured (a focused
+       * window), NOT to weaken the guard. A flake chased into the product would have cost the one
+       * protection against a stuck camera key.
+       */
+      await page.bringToFront();
+      const before = await page.evaluate(POSE);
+      check(vp.name, `[${S1_V}] the navigation surface exists`, !!before,
+        before ? 'window.__atlasNav present' : 'ABSENT', 'present');
+
+      // POSED THROUGH THE KEYS A HUMAN WOULD USE, never by writing the camera directly — a test
+      // that sets `camera.position` passes over a dispatcher that never fires.
+      await page.mouse.move(vp.width / 2, vp.height / 2);
+      await page.keyboard.down('ArrowLeft');
+      await page.waitForTimeout(500);
+      await page.keyboard.up('ArrowLeft');
+      await page.waitForTimeout(700);
+      const posed = await page.evaluate(POSE);
+      check(vp.name, `[${S1_V}] a held arrow key actually orbits the camera (the control arm)`,
+        !!posed && !!before && posed.k !== before.k && posed.manual === true,
+        `${before?.k} -> ${posed?.k} (manual=${posed?.manual})`, 'a different pose, flagged manual');
+
+      const fieldW = () => page.evaluate(() => Math.round(document.querySelector('.v2-field').getBoundingClientRect().width));
+      const w0 = await fieldW();
+      const toggled = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.v2-tools .v2-tbtn[aria-pressed]')].find((x) => x instanceof HTMLButtonElement);
+        if (!b) return null;
+        b.click();
+        return true;
+      });
+      await page.waitForTimeout(1100);
+      const after = await page.evaluate(POSE);
+      const w1 = await fieldW();
+      /**
+       * THE SECOND CONTROL ARM: the toggle must really have RESIZED THE FIELD, or "the pose
+       * survived a resize" is a claim about a resize that never happened.
+       *
+       * ⚠️ IT ASSERTS THE FIELD WIDTH, NOT `aria-pressed`, and the first version got that wrong in
+       * a way worth recording: it read the attribute back in the SAME evaluate as the click, before
+       * React had re-rendered, so it measured `true -> true` and failed while the field had in fact
+       * gone 856 -> 1076. A control arm that reads a value the framework has not written yet
+       * reports the instrument's timing as the product's behaviour.
+       */
+      check(vp.name, `[${S1_V}] the dock toggle really changed the field (the second control arm)`,
+        !!toggled && w0 !== w1, `field ${w0} -> ${w1} px`, 'a different field width');
+      check(vp.name, `[${S1_V}] a MANUAL pose survives a dock toggle, all six coordinates`,
+        !!after && !!posed && after.k === posed.k, `${posed?.k} -> ${after?.k}`, 'identical to 4 dp');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the pose pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── S1.2 THE DISPATCHER DOES NOT FIRE WHILE SOMEBODY IS TYPING ───────────────────────────────
+  // Guard 1 of `keys.ts`, measured on the product rather than on the unit. The Ask dock is seeded
+  // open through the persistence layer because it holds the only real `textarea` in the studio,
+  // and typing "was ddd" into it is exactly the case: six camera commands, or none.
+  {
+    const vp = {name: 's1-typing', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('atlas.dock', JSON.stringify({v: 1, open: ['ask'], side: 264, sideCollapsed: false}));
+      });
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();   // see the note in S1.1 — guard 6 clears held keys on blur
+      const box = await page.$('.v2-askbox');
+      check(vp.name, `[${S1_V}] the Ask box is reachable (the typing fixture exists)`, !!box,
+        box ? '.v2-askbox present' : 'ABSENT — the guard below would be vacuous', 'present');
+      if (box) {
+        const bb = await box.boundingBox();
+        await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+        await page.mouse.down(); await page.mouse.up();
+        const before = await page.evaluate(POSE);
+        await page.keyboard.type('was ddd', {delay: 60});
+        await page.waitForTimeout(700);
+        const after = await page.evaluate(POSE);
+        const typed = await page.evaluate(() => document.querySelector('.v2-askbox')?.value ?? '');
+        check(vp.name, `[${S1_V}] the text actually went into the box (the control arm)`,
+          typed === 'was ddd', `"${typed}"`, '"was ddd"');
+        check(vp.name, `[${S1_V}] typing W/A/S/D into the Ask box does NOT move the camera`,
+          !!after && !!before && after.k === before.k && after.manual === false,
+          `${before?.k} -> ${after?.k} (manual=${after?.manual})`, 'unmoved, still not manual');
+        // AND THE SAME KEY OUTSIDE THE BOX DOES. Without this the row above passes on a
+        // dispatcher that was never installed.
+        await page.evaluate(() => document.querySelector('.v2-askbox')?.blur());
+        await page.mouse.move(vp.width / 2, vp.height / 2);
+        await page.keyboard.down('KeyD');
+        await page.waitForTimeout(450);
+        await page.keyboard.up('KeyD');
+        await page.waitForTimeout(600);
+        const outside = await page.evaluate(POSE);
+        check(vp.name, `[${S1_V}] the same D key OUTSIDE the box pans (the second control arm)`,
+          !!outside && !!after && outside.k !== after.k, `${after?.k} -> ${outside?.k}`, 'a different pose');
+      }
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the typing pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── S1.3 HOME FRAMES THE WHOLE BODY ──────────────────────────────────────────────────────────
+  // G3's formula, measured at the two desktop widths Adrian actually uses. 20% is the kickoff's
+  // bar, and it is well above the 6.04% that 1920x860 opened at before S0.
+  for (const vp of [{name: 's1-home-1440', width: 1440, height: 900, dpr: 1, coarse: false},
+    {name: 's1-home-1920', width: 1920, height: 860, dpr: 1, coarse: false}]) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForSelector('html[data-atlas-ready="1"]', {timeout: 300000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();   // see the note in S1.1 — guard 6 clears held keys on blur
+      // PRESSED, not called — so this covers the binding as well as the formula.
+      await page.mouse.move(vp.width / 2, vp.height / 2);
+      await page.keyboard.press('h');
+      await page.waitForTimeout(1600);
+      /**
+       * ⚠️ MEASURED OVER EVERY DRAWN PART, NOT OVER THE SCENE'S FRAME SET — and the first version
+       * of this row got that wrong, which is worth keeping because the failure was CONVINCING. It
+       * unioned `FRAME_IDS` (the §9 scene's hamstrings and femur) and read 2.36%, then reported
+       * that Home had failed its target by a factor of eight. Home's whole job is to pull the
+       * camera OUT to the whole body, so those few structures becoming a small part of the picture
+       * is the command working, not failing. The population a framing number is taken over is the
+       * number.
+       */
+      const framed = await page.evaluate(() => {
+        const r = window.__atlasTargets([]);
+        const ps = r.parts || [];
+        if (!ps.length) return {error: 'nothing drawn'};
+        const left = Math.min(...ps.map((p) => p.left)), right = Math.max(...ps.map((p) => p.right));
+        const top = Math.min(...ps.map((p) => p.top)), bottom = Math.max(...ps.map((p) => p.bottom));
+        return {area: ((right - left) * (bottom - top)) / (r.w * r.h), touchesTop: top <= 1,
+          fill: Math.max((right - left) / r.w, (bottom - top) / r.h),
+          w: r.w, h: r.h, n: ps.length, box: `${Math.round(right - left)}x${Math.round(bottom - top)}`};
+      });
+      /**
+       * ══ THE ≥20% AREA BAR IS UNREACHABLE AT 1920x860, AND THE ARITHMETIC SAYS SO ══════════════
+       *
+       * The kickoff asks Home to reach `area >= 0.20`. A standing human is ~0.26 as wide as it is
+       * tall, and AREA is a product of both dimensions, so with the subject filling fraction `f` of
+       * the field HEIGHT (the governing term — the figure is always height-bound) the ceiling is
+       *
+       *     area_max = f^2 * 0.26 * fieldH / fieldW
+       *
+       *   1440x900 (field 856x772): f=1.0 -> 23.4%   · f=0.87 (padding 1.15) -> 17.7%
+       *   1920x860 (field 1036x732): f=1.0 -> 18.4%  · f=0.87 -> 13.9%
+       *
+       * At 1920x860 the ceiling is 18.4% WITH THE BODY TOUCHING ALL FOUR EDGES — i.e. below the
+       * target before any padding exists at all, and reaching even that would require clipping,
+       * which the safe-rectangle oracle forbids for good reason. The bar is not tight, it is
+       * geometrically impossible at that field aspect, and no value of the studio padding constant
+       * reaches it.
+       *
+       * SO THE ROW IS REPORTED, NOT RETUNED AND NOT DELETED: it runs, prints its measurement, and
+       * is DEFERRED to Adrian with the ceiling named, exactly as the §9 and bare rows were before
+       * S1 closed them. The LIVE gate beside it is `fill` — the suite's own aspect-independent
+       * reading (oracle 2's "critic's rule"), which is what "Home frames the body" actually means
+       * and which the geometry can satisfy.
+       */
+      const CEIL = (0.26 * framed.h / framed.w * 100);
+      check(vp.name, `[${S1_V}] Home (H) frames the whole drawn body at >= 20% of the field`,
+        !framed.error && framed.area >= 0.20,
+        framed.error || `${(framed.area * 100).toFixed(2)}% of a ${framed.w}x${framed.h} field `
+          + `(subject ${framed.box} px over ${framed.n} drawn parts; this field's ceiling at f=1.0 is ${CEIL.toFixed(1)}%)`,
+        '>= 20%', 'ESCALATED to Adrian — a ~0.26-aspect subject cannot reach 20% of AREA in this field');
+      check(vp.name, `[${S1_V}] Home fills >= 80% of the field's governing dimension`,
+        !framed.error && framed.fill >= 0.80,
+        framed.error || `${(framed.fill * 100).toFixed(1)}% (area ${(framed.area * 100).toFixed(2)}%)`, '>= 80%');
+      check(vp.name, `[${S1_V}] Home does not clip the top of the subject`,
+        !framed.error && framed.touchesTop === false,
+        framed.error || `touchesTop=${framed.touchesTop}`, 'false');
+
+      // ── ?stage=1 KEEPS THE STUDIO'S FRAMING ────────────────────────────────────────────────
+      // `stage` strips the CHROME; it does not change the TIER. The first version of the `studio`
+      // prop read `shell.studio && !stage`, which handed the renderer back to v1's `distance = 4`
+      // at the exact moment the reader asked for the biggest possible picture — a presentation
+      // mode that framed WORSE than the app it was launched from. Measured on the transition, not
+      // asserted about the flag, because the flag is not what anybody sees.
+      await page.keyboard.down('Shift'); await page.keyboard.press('KeyS'); await page.keyboard.up('Shift');
+      await page.waitForTimeout(1600);
+      const staged = await page.evaluate(() => {
+        const r = window.__atlasTargets([]);
+        const ps = r.parts || [];
+        if (!ps.length) return {error: 'nothing drawn'};
+        const left = Math.min(...ps.map((p) => p.left)), right = Math.max(...ps.map((p) => p.right));
+        const top = Math.min(...ps.map((p) => p.top)), bottom = Math.max(...ps.map((p) => p.bottom));
+        return {fill: Math.max((right - left) / r.w, (bottom - top) / r.h),
+          staged: document.body.classList.contains('v2-stage'), w: r.w, h: r.h};
+      });
+      check(vp.name, `[${S1_V}] Shift+S really enters the stage (the control arm)`,
+        staged.staged === true, `body.v2-stage=${staged.staged}, field ${staged.w}x${staged.h}`, 'staged');
+      check(vp.name, `[${S1_V}] ?stage=1 keeps the studio framing (the subject does not shrink)`,
+        !staged.error && staged.staged === true && staged.fill >= 0.80,
+        staged.error || `${(staged.fill * 100).toFixed(1)}% fill staged, against ${(framed.fill * 100).toFixed(1)}% unstaged`,
+        '>= 80%');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the Home pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── S1.4 THE ON-SCREEN PAD AND THE PHYSICAL KEY ARE ONE CONTROL ──────────────────────────────
+  // `spec.md`'s requirement, and the reason the pad presses a physical CODE into the dispatcher
+  // rather than calling the navigation surface itself. Read in BOTH directions: a finger on the
+  // pad moves the camera, and a physical key lights the pad.
+  {
+    const vp = {name: 's1-pad', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();   // see the note in S1.1 — guard 6 clears held keys on blur
+      const before = await page.evaluate(POSE);
+      const key = await page.$('.v2-cap-key[aria-label="KeyD"]');
+      check(vp.name, `[${S1_V}] the pad's D key is a real control`, !!key,
+        key ? 'present, labelled by its physical code' : 'ABSENT', 'present');
+      if (key) {
+        // MOUSE AT COORDINATES, never page.click — this suite's own standing lesson.
+        const b = await key.boundingBox();
+        await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+        await page.mouse.down();
+        await page.waitForTimeout(450);
+        const midDown = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed'));
+        await page.mouse.up();
+        await page.waitForTimeout(600);
+        const after = await page.evaluate(POSE);
+        check(vp.name, `[${S1_V}] holding the pad's D pans the camera`,
+          !!after && !!before && after.k !== before.k, `${before?.k} -> ${after?.k}`, 'a different pose');
+        check(vp.name, `[${S1_V}] the pad key reports itself pressed while held`,
+          midDown === 'true', `aria-pressed=${midDown} mid-hold`, 'true');
+        const released = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed'));
+        check(vp.name, `[${S1_V}] and released afterwards (no key left stuck down)`,
+          released === 'false', `aria-pressed=${released}`, 'false');
+      }
+      // THE PHYSICAL KEY LIGHTS THE ON-SCREEN ONE — the direction that proves they share ONE set
+      // rather than merely both working.
+      await page.mouse.move(vp.width / 2, vp.height / 2);
+      await page.keyboard.down('KeyW');
+      await page.waitForTimeout(300);
+      const lit = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyW"]')?.getAttribute('aria-pressed'));
+      await page.keyboard.up('KeyW');
+      await page.waitForTimeout(300);
+      const unlit = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyW"]')?.getAttribute('aria-pressed'));
+      check(vp.name, `[${S1_V}] a PHYSICAL W lights the on-screen W, and goes out on release`,
+        lit === 'true' && unlit === 'false', `held=${lit}, released=${unlit}`, 'true then false');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the pad pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 
@@ -1406,7 +1779,7 @@ if (variant === 'v2') {
         g.announced === false, `status.autoCollapsed shown=${g.announced}`, 'silent');
       check(vp.name, `[${STUDIO_V}] D10: the stub keeps the control that restores it`,
         g.restore, `restore control present=${g.restore}`, 'present');
-      await page.screenshot({path: join(outDir, `${label}-studio-collapsed.png`)});
+      await page.screenshot({path: join(outDir, `${label}-studio-collapsed.png`), timeout: SHOT_MS});
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the collapsed pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }

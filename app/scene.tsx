@@ -47,13 +47,31 @@ interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=
   *  merged AND a frame has been drawn. Absent (v1) means exactly the previous behaviour: one
   *  generation, one barrier, and since v1 also passes no `onSceneReady`, none of this runs at all. */
  sceneEpoch?:number;
- requiredIds?:readonly string[]}
-export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady,sceneEpoch,requiredIds}:Props){
+ requiredIds?:readonly string[];
+ /** ── L31 v2.1b+c, S1: THE STUDIO-ONLY RENDERER OPTION ────────────────────────────────────────
+  *
+  *  A SEPARATE PROP, and NOT `state.insets`, on codex's explicit instruction (codex-plan-review.md
+  *  §A.7): phone v2 supplies `insets` too, so keying the studio's framing off it would have moved
+  *  the phone's camera as a side effect of a desktop change — the one thing this increment is not
+  *  allowed to do. It is also NOT part of `SceneState`, which is what `scene-codec.js` serialises:
+  *  a serialised flag would travel in a scene blob and change a teaching PLATE, and the plate
+  *  goldens are the render-path gate.
+  *
+  *  `true` ONLY at >=1180 in `/v2/`. Everything it gates is framing:
+  *    · the default fit becomes G3's whole-body formula instead of the literal `distance = 4`;
+  *    · the focus fit centres on the FRAME box (`FOCUS_CENTER_BIAS` 0) instead of leaning .2
+  *      toward the focus centre;
+  *    · the focus fit's padding is this file's own STUDIO_PADDING, never `scene.camera.padding`
+  *      (which the plate reads and must keep);
+  *    · a resize updates the PROJECTION and leaves a manual pose alone.
+  *  v1 passes nothing, so every one of those reads exactly as it did before. */
+ studio?:boolean}
+export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,priority,onSceneReady,sceneEpoch,requiredIds,studio}:Props){
  const host=useRef<HTMLDivElement>(null),latest=useRef(state),select=useRef(onSelect);
  const priorityRef=useRef(priority),sceneReadyCb=useRef(onSceneReady);
- const epochRef=useRef(sceneEpoch),requiredRef=useRef(requiredIds);
+ const epochRef=useRef(sceneEpoch),requiredRef=useRef(requiredIds),studioRef=useRef(studio);
  latest.current=state;select.current=onSelect;priorityRef.current=priority;sceneReadyCb.current=onSceneReady;
- epochRef.current=sceneEpoch;requiredRef.current=requiredIds;
+ epochRef.current=sceneEpoch;requiredRef.current=requiredIds;studioRef.current=studio;
  useEffect(()=>{
   const el=host.current!;let disposed=false,frame=0,dirty=true,ready=false,sceneReady=false,sceneReadyPending=false,sceneReadyFired=false,sceneReadyAt=0,lastView='',lastReset=-1,lastIsolate='',layoutKey='',amount=0;
   /** Whether a barrier is OWED. The loader sets it for the first generation; an epoch change sets
@@ -142,7 +160,23 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // the assembled explorer would be pure cost). The EXPLORER is now under test too, so the
    // getter projects on demand when the loop has not -- read-only, and the frame loop is
    // untouched.
-   const drawn=new Map((targets.length?targets:computeTargets()).map(t=>[atlas.parts[t.index].id,t]));
+   /**
+    * ONE PROJECTION, BOTH LANES. L31 v2.1b+c S1.
+    *
+    * `groups` has been computed on demand since L30 P4a.1 — the frame loop only projects when the
+    * body is exploded or a plate is drawing, so without it the getter answered "structure absent"
+    * in the assembled explorer. The `parts` lane below was left reading the frame loop's CACHE,
+    * so in that same mode it returned an EMPTY array while `groups` returned the truth: two lanes
+    * of one getter disagreeing about whether anything is on screen.
+    *
+    * codex caught the consequence in 2026-09-09 review Medium 3 — an assertion that read "nothing
+    * else is drawn" off an empty lane — and it was patched at the CALL SITE, by requiring a
+    * non-empty lane there. That left the getter still lying in every mode but the exploded one,
+    * and S1's Home oracle walked straight into it: `parts` came back empty at rest and the row
+    * reported "nothing drawn" for a fully drawn body. Fixed where it belongs.
+    */
+   const live=targets.length?targets:computeTargets();
+   const drawn=new Map(live.map(t=>[atlas.parts[t.index].id,t]));
    const groups:Record<string,{left:number;right:number;top:number;bottom:number;n:number;a:number}>={};
    for(const id of ids??[]){
     const members=atlas.concepts.find(c=>c.id===id)?.elements??(drawn.has(id)?[id]:[]);
@@ -165,8 +199,87 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
     // own change key: empty means it is not active.
     fit:{key:lastIsolate,focus:(latest.current.focus??[]).length,frame:(latest.current.frame??[]).length,isolate:!!latest.current.isolate},
     groups,
-    parts:targets.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom,a:selectedData[t.index*4+1]/255})),
+    parts:live.map(t=>({id:atlas.parts[t.index].id,concept:atlas.parts[t.index].conceptId,x:t.x,y:t.y,left:t.left,right:t.right,top:t.top,bottom:t.bottom,a:selectedData[t.index*4+1]/255})),
    };
+  };
+  /**
+   * ══ L31 v2.1b+c, S1: `window.__atlasNav` — ONE NAVIGATION SURFACE ═══════════════════════════
+   *
+   * The floating pill, the on-screen key pad and the physical keyboard are three inputs to the
+   * SAME commands, which is `spec.md`'s requirement and the only way the `?` key map can be a
+   * specification rather than a leaflet. Three separate implementations would be three separate
+   * pan speeds.
+   *
+   * IT DRIVES OrbitControls THROUGH ITS r159 PUBLIC SURFACE — `controls.target`,
+   * `camera.position`, `controls.update()`, `minDistance`/`maxDistance`/`maxPolarAngle` — and
+   * never a `_`-prefixed internal. r159 exposes no `rotateLeft`/`panLeft`; the supported way to
+   * move the camera is to move it and call `update()`, which is what this does, with the spherical
+   * arithmetic written out rather than reached for inside the library.
+   *
+   * Every motion command sets `manual`: a human has now posed this camera, so a resize keeps it.
+   * The two framing commands clear it, because that is exactly what "put it back" means.
+   *
+   * Installed at EVERY width and in v1 too, like `__atlasTargets` beside it. Nothing calls it
+   * outside the studio, and a surface that exists only in one tier is a surface no oracle can
+   * reach from the other to prove it is absent.
+   */
+  const sph=new T.Spherical(),navOff=new T.Vector3(),navRight=new T.Vector3(),navUp=new T.Vector3();
+  const EPS=1e-4;
+  const navOrbit=(dTheta:number,dPhi:number)=>{
+   navOff.copy(camera.position).sub(controls.target);sph.setFromVector3(navOff);
+   sph.theta-=dTheta;
+   sph.phi=Math.max(EPS,Math.min(controls.maxPolarAngle-EPS,sph.phi-dPhi));
+   camera.position.copy(controls.target).add(navOff.setFromSpherical(sph));
+   controls.update();manual=true;dirty=true;
+  };
+  const navDolly=(factor:number)=>{
+   navOff.copy(camera.position).sub(controls.target);
+   const len=Math.max(controls.minDistance,Math.min(controls.maxDistance,navOff.length()*factor));
+   camera.position.copy(controls.target).add(navOff.setLength(len));
+   controls.update();manual=true;dirty=true;
+  };
+  /** `dx`/`dy` are FRACTIONS OF THE FIELD, so one key press moves the same proportion of the
+   *  picture at every viewport and at every distance. Camera and target move together — a pan,
+   *  not an orbit — which is what keeps W/A/S/D from slowly tumbling the subject. */
+  const navPan=(dx:number,dy:number)=>{
+   const dist=camera.position.distanceTo(controls.target);
+   const worldH=2*dist*Math.tan(T.MathUtils.degToRad(camera.fov/2));
+   // THE CAMERA MOVES THE WAY THE KEY POINTS: A moves it left, W moves it up. (The SUBJECT then
+   // appears to move the other way, which is what every 3D tool does and what the on-screen pad's
+   // arrows have to mean for the pad and the keyboard to agree.)
+   navRight.setFromMatrixColumn(camera.matrix,0).multiplyScalar(dx*worldH*camera.aspect);
+   navUp.setFromMatrixColumn(camera.matrix,1).multiplyScalar(dy*worldH);
+   navRight.add(navUp);
+   camera.position.add(navRight);controls.target.add(navRight);
+   controls.update();manual=true;dirty=true;
+  };
+  (window as unknown as {__atlasNav?:unknown}).__atlasNav={
+   orbit:navOrbit,dolly:navDolly,pan:navPan,
+   tilt:(d:number)=>navOrbit(0,d),
+   /** HOME — the whole body, and it POSES the camera (`manual`), because "show me everything" is a
+    *  decision, not a default the next selection change may overwrite. */
+   home:()=>{studioHome(latest.current.view);manual=true;},
+   /** FIT — re-frame on what is selected. Clears `manual` and invalidates the focus key, so the
+    *  frame loop recomputes the focus fit against the CURRENT selection, at its live explosion
+    *  offsets, on the next frame. With nothing selected there is nothing to fit to, so it is
+    *  Home — and it says so rather than doing nothing. */
+   fit:()=>{
+    const s=latest.current,has=(s.focus?.length?s.focus:s.selected).length>0||s.isolate;
+    manual=false;
+    if(!has){studioHome(s.view);return 'home';}
+    lastIsolate='';dirty=true;return 'fit';
+   },
+   /** `mode('pan')` swaps the left drag and the one-finger touch, exactly as the explode slider
+    *  already does above 0.8 — the same two OrbitControls fields, so there is one behaviour. */
+   mode:(m:string)=>{
+    const pan=m==='pan';
+    controls.mouseButtons.LEFT=pan?T.MOUSE.PAN:T.MOUSE.ROTATE;
+    controls.touches.ONE=pan?T.TOUCH.PAN:T.TOUCH.ROTATE;
+    return pan?'pan':'orbit';
+   },
+   /** Read-only, for the oracle: the pose, and whether a human set it. */
+   pose:()=>({x:camera.position.x,y:camera.position.y,z:camera.position.z,
+    tx:controls.target.x,ty:controls.target.y,tz:controls.target.z,manual}),
   };
   // L30 P4a.1: `window.__atlasCapture({scale})` — one supersampled frame, area-averaged
   // down, painted over the live canvas so the renderer's screenshot (which is what carries
@@ -376,8 +489,121 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
   // 9.7 cm. .2 keeps the orbit pivot and the composition near the taught structure at a cost
   // small enough to be worth it. Set it to 0 for the tightest possible fit.
   const FOCUS_CENTER_BIAS=.2;
+  /**
+   * ── L31 v2.1b+c, S1: THE TWO STUDIO FRAMING CONSTANTS ────────────────────────────────────────
+   *
+   * `STUDIO_PADDING` REPLACES `scene.camera.padding` in the studio, it does not read it. That is
+   * codex's ruling (opus-plan-review-2.md RC4) and the reason is the plate: `camera.padding` is
+   * serialised into every teaching blob, `/api/snap` renders off it, and the six plate goldens are
+   * the render-path gate for this whole increment. A lever that touched it would move pictures
+   * that are cached in R2 for 24 hours. This constant is invisible to `scene-codec.js`.
+   *
+   * MEASURED TWICE, and the second measurement is the one that set the number.
+   *
+   * The §9 fixture at 1920x860 read 7.87% of the field after S0's shell against a 12% target, with
+   * the distance formula's HEIGHT term governing. Two multiplicative levers exist, both
+   * studio-only: dropping the focus lean to 0 (~1.117x in area on this scene) and the padding
+   * ratio (1.35/p)^2. p = 1.12 predicted ~12.8% and MEASURED 13.45%.
+   *
+   * ⚠️ AND AT 1.12 THREE VIEWPORTS FAILED THE SAFE-RECTANGLE ORACLE — `FMA16580` projected to
+   * y = 12..13 px against the declared 14 px inset at 1440, 1920 and 1366. That is not noise, it
+   * is a MODEL ERROR this formula has always had: the distance is derived from the AABB's extent
+   * measured at the box CENTRE, but perspective magnifies the box's NEAR FACE, so the drawn
+   * subject is always slightly larger than the arithmetic says. At 1.35 the slack absorbed it; at
+   * 1.12 it did not. (The analytically clean repair is a `+ size.z/2` depth term, which was
+   * computed and rejected here: on this scene it costs ~5.7% of distance and would leave 1920 at
+   * ~12.0% area — inside the target by a rounding error, which is not a margin.)
+   *
+   * So the constant is the middle of the window where BOTH constraints hold at the tightest
+   * viewport. At 1920x860 the window is roughly p in [1.13, 1.186]: below it a frame member
+   * leaves the safe rectangle, above it the subject drops under 12% of the field.
+   *   p = 1.15  ->  measured 12.76% area at 1920, and 22 px of top margin against a 14 px inset.
+   * The declared floor is 1.0 (the AABB exactly filling the rect) and this is nowhere near it —
+   * but the WINDOW is narrow, at one viewport, and that is reported to Adrian rather than left in
+   * a comment. A deeper scene could reopen the overshoot; the safe-rectangle oracle is what would
+   * catch it, and it just did.
+   */
+  const STUDIO_PADDING=1.15;
+  /** G3's whole-body multiplier (v21-design.md, critic gap 3), quoted verbatim: 1.12. */
+  const STUDIO_HOME_PAD=1.12;
+  /**
+   * ── HAS A HUMAN POSED THIS CAMERA? ───────────────────────────────────────────────────────────
+   *
+   * `manual` is the difference between "the window changed size" and "the window changed size and
+   * threw away what you were looking at". codex-plan-review.md §A.7: *a resize updates the
+   * projection without replacing a manual pose; Fit / Home / reset are explicit commands.* Without
+   * it, opening a dock re-runs the fit — and in the studio a dock toggle is a one-click, everyday
+   * action, so every look you set up would survive exactly until you opened the Info panel.
+   *
+   * It is set by a real gesture (OrbitControls' own `start`, which fires on pointerdown and wheel)
+   * and by every navigation command, and it is CLEARED by the explicit framing commands only.
+   */
+  let manual=false;
+  controls.addEventListener('start',()=>{manual=true;});
+  /**
+   * THE UNION OF WHAT IS ACTUALLY DRAWN - the box Home frames and the box the studio default fit
+   * uses.
+   *
+   * (!) "DRAWN", NOT "IN A VISIBLE SYSTEM", and the difference IS the behaviour. The first version
+   * unioned every part whose SYSTEM was visible, which on a teaching scene is thousands of
+   * structures spanning the full 1.75 m figure while seventeen are actually on screen - so Home
+   * reserved the whole body's height for a pair of hamstrings and left them at 2.7% of the field.
+   * MEASURED at 1440x900: subject 58x311 px in an 856x772 field. It read as a framing bug and it
+   * was a POPULATION bug - the box was correct about a population nobody could see.
+   *
+   * The part texture's visibility lane (`data[i*4+3]`) is the GPU's own answer to "is this drawn",
+   * maintained every frame by the loop below, so this reads that rather than re-deriving a
+   * predicate that could drift from it. Integumentary is dropped whenever solids are present,
+   * matching `computeTargets` exactly - otherwise the translucent skin envelope silently decides
+   * the framing of every scene that leaves it on, and the oracle (which excludes it for the same
+   * reason) would be measuring a different subject from the one the camera framed.
+   *
+   * NOT CACHED, deliberately: it is called on an explicit fit or a resize, never per frame, and a
+   * cache key over "the drawn set" is the kind of key that is wrong exactly once.
+   */
+  const bodyBox=new T.Box3(),bodyOff=new T.Vector3();
+  const wholeBody=()=>{
+   bodyBox.makeEmpty();
+   const hasSolid=atlas.parts.some((p,i)=>p.system!=='integumentary'&&data[i*4+3]>.5);
+   atlas.parts.forEach((p,i)=>{
+    if(data[i*4+3]<.5||(hasSolid&&p.system==='integumentary'))return;
+    bodyOff.set(data[i*4],data[i*4+1],data[i*4+2]);
+    bodyBox.union(bounds[i].clone().translate(bodyOff));
+   });
+   // BEFORE THE FIRST STATE APPLICATION nothing is marked drawn yet, and a degenerate box would
+   // put the camera inside the subject. The whole atlas is the honest fallback for "we do not yet
+   // know what will be shown".
+   if(bodyBox.isEmpty())atlas.parts.forEach((_,i)=>bodyBox.union(bounds[i]));
+   return bodyBox;
+  };
+  /**
+   * G3's WHOLE-BODY FIT — the studio's default framing and the Home command, one implementation.
+   * `distance = max(size.y*h/availH, size.x*w/availW/aspect, size.z) / (2 tan(fov/2)) * 1.12`,
+   * quoted from v21-design.md critic gap 3 and applied against the body's own AABB (atlas
+   * metadata, so it is correct in frame one, before any chunk has arrived).
+   */
+  const studioHome=(view:string)=>{
+   const insets=latest.current.insets;
+   const box=wholeBody(),size=box.getSize(new T.Vector3()),center=box.getCenter(new T.Vector3());
+   const w=el.clientWidth,h=el.clientHeight;
+   const availW=Math.max(120,w-(insets?insets.left+insets.right:0)),availH=Math.max(120,h-(insets?insets.top+insets.bottom:0));
+   const d=Math.max(size.y*h/availH,size.x*w/availW/camera.aspect,size.z)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*STUDIO_HOME_PAD;
+   camera.clearViewOffset();camera.updateProjectionMatrix();
+   controls.target.copy(center);camera.position.copy(center).addScaledVector(dirFor(view),Math.max(.2,d));
+   controls.update();dirty=true;
+  };
   const fit=(view:string,extent=0)=>{
    const insets=latest.current.insets;
+   /**
+    * THE STUDIO'S DEFAULT FIT — G3, and the answer to Adrian's actual desktop complaint.
+    *
+    * v1's assembled default is the literal `normalDistance = 4` below: a constant that knows
+    * nothing about the field's aspect, nothing about the subject and nothing about the 264 px
+    * sidebar and 320 px dock now taking a third of the width. That is why a 1920-wide studio
+    * framed the body at 6% and a 390-wide phone framed it at 22%. This branch derives the
+    * distance from the body's own AABB against the space that is actually free.
+    */
+   if(studioRef.current&&extent<=.001){studioHome(view);return;}
    const reserve=insets?insets.top+insets.bottom:(el.clientWidth<768?350:270);
    const aspect=camera.aspect,mobile=el.clientWidth<768,normalDistance=mobile?Math.max(4.5,1.8*el.clientHeight/Math.max(160,el.clientHeight-reserve)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))):4;
    // L31 v2: with a static inset the field IS the free space, so the reservation is the
@@ -408,7 +634,52 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    * keyboard on a `focus=` link silently dropped the scene's framing — the reason it was never
    * noticed is that v1's layout never resizes the canvas, so nothing after mount triggered it.
    */
+  /**
+   * THE FOCUS FIT'S CHANGE KEY, as ONE function. It used to be built inline in the frame loop
+   * only; S1 needs it in `resize()` too (to absorb an aspect change without refitting), and two
+   * copies of a change key is a defect that presents as "the camera refits at random" — the copy
+   * that drifts is the one that decides. Every field that can change the framing is in it.
+   */
+  const isolateKeyFor=(s:SceneState)=>{
+   const fIds=s.focus?.length?s.focus:s.selected,frIds=s.frame?.length?s.frame:fIds;
+   return fIds.join(',')+'|'+frIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':'')
+    // L31 v2: the detent moves the band, so the band must be part of the key or the camera
+    // keeps the framing it computed for the previous one.
+    +':'+(s.insets?`${s.insets.top},${s.insets.right},${s.insets.bottom},${s.insets.left}`:'');
+  };
+  /** The focus fit's frustum shift, recomputed for the CURRENT field size. Factored out of the
+   *  focus block so a resize can refresh it WITHOUT re-deriving the camera — which is precisely
+   *  the difference between "update the projection" and "replace the pose". */
+  const reapplyViewOffset=()=>{
+   const ins=latest.current.insets,w=el.clientWidth,h=el.clientHeight;
+   if(!ins)return;
+   const left=ins.left,right=w-ins.right,top=ins.top,bottom=h-ins.bottom;
+   camera.setViewOffset(w,h,w/2-(left+right)/2,h/2-(top+bottom)/2,w,h);camera.updateProjectionMatrix();
+  };
   const resize=()=>{layoutKey='';lastState=null;
+   /**
+    * L31 v2.1b+c S1: A STUDIO RESIZE WITH A HUMAN'S POSE ON THE CAMERA UPDATES THE PROJECTION AND
+    * STOPS THERE. Below, the v2 path clears `lastIsolate` so the focus fit recomputes against the
+    * new aspect, and the function ends in an unconditional `fit()` — two separate pose-replacers.
+    * Both are right when nobody has posed the camera (a dock toggle should then re-frame) and both
+    * are wrong the moment somebody has: in the studio a dock toggle is a one-click action, so
+    * every look a reader set up would survive until they opened the Info panel.
+    */
+   const studioManual=!!studioRef.current&&manual;
+   if(studioManual){
+    const s0=latest.current;
+    renderer.setPixelRatio(s0.render&&s0.ss?2:Math.min(devicePixelRatio,el.clientWidth<768||el.clientHeight<600?1.5:2));
+    camera.aspect=el.clientWidth/el.clientHeight;camera.updateProjectionMatrix();renderer.setSize(el.clientWidth,el.clientHeight);
+    // The frustum shift is the one part of the framing that is a function of the FIELD rather than
+    // of the subject, so it is the one part a resize must redo. `lastIsolate` non-empty means a
+    // focus fit set an offset; otherwise there is none to refresh.
+    if(lastIsolate)reapplyViewOffset();
+    // ABSORB THE KEY WITHOUT MOVING. The key carries `camera.aspect`, so leaving it stale would
+    // make the very next frame decide the framing is out of date and refit — reintroducing the
+    // defect one frame later, which is the shape a fix like this fails in.
+    if(lastIsolate)lastIsolate=isolateKeyFor(latest.current);
+    dirty=true;return;
+   }
    // SCOPED TO v2. Adversarial review (claude-opus-4-6-thinking, 2026-09-07) refuted the first
    // version of this line: it cleared the key unconditionally, and v1 DOES resize on a desktop
    // window drag, so "v1 is unchanged in behaviour" would have been false. The clear is the fix
@@ -490,7 +761,10 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // untouched -- only a teaching scene that names supporting structure sends a frame set.
    const frameIds=s.frame?.length?s.frame:focusIds;
    const focusActive=s.isolate||!!s.focus?.length;
-   if(s.view!==lastView||s.reset!==lastReset){if(!focusActive)fit(s.view,amount);lastView=s.view;lastReset=s.reset;}
+   // A NAMED VIEW OR A RESET IS AN EXPLICIT FRAMING COMMAND, so it takes the camera back from the
+   // human — that is what `manual=false` means here, and it is why the pill's view buttons and
+   // Reset keep working after somebody has orbited (codex-plan-review.md §A.7).
+   if(s.view!==lastView||s.reset!==lastReset){manual=false;if(!focusActive)fit(s.view,amount);lastView=s.view;lastReset=s.reset;}
    if(moving&&!focusActive)fit(amount>.5?'front':s.view,Math.max(0,(amount-.3)/.7));
    // L30 P4: FOCUS FRAMING (PRD section 4). This block was already a focus fit in all but
    // name -- it unions per-structure AABBs at their LIVE explosion offsets, measures the
@@ -503,11 +777,22 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    // (3) IS A PRE-EXISTING DEFECT, NOT A NEW FEATURE: `view` has been ignored whenever
    // isolate is true -- which is what the MCP server defaults to -- because the direction
    // was hard-coded here and `s.view` was absent from the key below. Recorded as such.
-   const isolateKey=focusActive?focusIds.join(',')+'|'+frameIds.join(',')+':'+(s.focusPadding??1.35)+':'+s.view+':'+s.reset+':'+s.inspectorOpen+':'+camera.aspect+':'+(s.render?'r':'')
-    // L31 v2: the detent moves the band, so the band must be part of the key or the camera
-    // keeps the framing it computed for the previous one.
-    +':'+(s.insets?`${s.insets.top},${s.insets.right},${s.insets.bottom},${s.insets.left}`:''):'';
-   if(isolateKey!==lastIsolate||(focusActive&&moving)){
+   const isolateKey=focusActive?isolateKeyFor(s):'';
+   /**
+    * L31 v2.1b+c S1: A POSED STUDIO CAMERA IS NOT REFRAMED BY A CHANGE OF SELECTION.
+    *
+    * The key changes for several reasons, and only some of them are a human asking to be
+    * re-framed. On ENTRY `manual` is false, so a `?select=` link opens framed on its structure
+    * (the RC3 inversion) and a dock toggle re-frames; once somebody has orbited, clicking another
+    * structure updates the panels and leaves the camera where they put it. Fit / Home / a named
+    * view / Reset are the explicit ways back, and each clears `manual` itself.
+    *
+    * The key is ABSORBED rather than ignored: leaving it stale would refit on the next unrelated
+    * change instead of never, which is worse than either behaviour on its own.
+    */
+   const wantFit=isolateKey!==lastIsolate||(focusActive&&moving);
+   if(wantFit&&studioRef.current&&manual&&focusActive){lastIsolate=isolateKey;}
+   else if(wantFit){
     if(focusActive){const box=new T.Box3(),focusBox=new T.Box3(),want=new Set(frameIds),wantFocus=new Set(focusIds);
      atlas.parts.forEach((p,i)=>{const inFrame=want.has(p.id),inFocus=wantFocus.has(p.id);if(!inFrame&&!inFocus)return;
       const b=bounds[i].clone().translate(new T.Vector3(data[i*4],data[i*4+1],data[i*4+2]));if(inFrame)box.union(b);if(inFocus)focusBox.union(b);});
@@ -519,7 +804,12 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
      // makes containment survive the nudge. Taking box.getSize() after moving the centre is
      // the bug that would look right and clip anyway.
      if(!box.isEmpty()){const frameCenter=box.getCenter(new T.Vector3()),focusCenter=focusBox.isEmpty()?frameCenter:focusBox.getCenter(new T.Vector3());
-      const center=frameCenter.clone().lerp(focusCenter,FOCUS_CENTER_BIAS);
+      // L31 v2.1b+c S1: THE LEAN IS ZERO IN THE STUDIO. The lean is a composition choice that
+      // costs frame height symmetrically (see FOCUS_CENTER_BIAS's own note: .2 buys 9.7 cm of
+      // pivot for +5.7% height on the forward-bend scene). On a phone, where the subject already
+      // fills a fifth of the field, that trade is worth it; in a 1920-wide studio, where the
+      // subject was at 6%, it is not. Studio-only, so the phone's composition is untouched.
+      const center=frameCenter.clone().lerp(focusCenter,studioRef.current?0:FOCUS_CENTER_BIAS);
       const size=new T.Vector3(Math.max(center.x-box.min.x,box.max.x-center.x),Math.max(center.y-box.min.y,box.max.y-center.y),Math.max(center.z-box.min.z,box.max.z-center.z)).multiplyScalar(2);
       const w=el.clientWidth,h=el.clientHeight,mobile=w<768,landscape=w>h&&h<=600;let left=20,right=w-20,top=mobile?175:110,bottom=h-170;
       // L30 P4: on a teaching plate there is NO chrome to measure, so the reservation is
@@ -541,7 +831,13 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
      // writes 1.25 as if it were a percentage; it is mapped 1:1 onto this and the tool
      // schema says so, because a naive reinterpretation moves framing the wrong way and
      // reads as a bug in auto-focus itself.
-     const padding=Math.min(3,Math.max(1,s.focusPadding??1.35));const distance=Math.max(.07,Math.max(size.y*h/availableHeight,size.x*w/availableWidth/camera.aspect,size.z)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*padding);controls.maxDistance=Math.max(40,distance*2);controls.target.copy(center);camera.position.copy(center).addScaledVector(dirFor(s.view).normalize(),distance);controls.update();dirty=true;}
+     // L31 v2.1b+c S1: IN THE STUDIO THE PADDING IS THIS FILE'S CONSTANT, NOT THE SCENE'S.
+     // `s.focusPadding` is `scene.camera.padding` (app/v2/page.tsx `plate`), which the teaching
+     // plate reads and the goldens gate — so the studio overrides it rather than editing it, and
+     // a plate rendered from the same blob keeps the framing it has always had. `s.render` is
+     // belt to the studio flag's braces: a plate is never the studio, and saying so twice costs
+     // nothing next to a cached-for-24-hours wrong picture.
+     const padding=(studioRef.current&&!s.render)?STUDIO_PADDING:Math.min(3,Math.max(1,s.focusPadding??1.35));const distance=Math.max(.07,Math.max(size.y*h/availableHeight,size.x*w/availableWidth/camera.aspect,size.z)/(2*Math.tan(T.MathUtils.degToRad(camera.fov/2)))*padding);controls.maxDistance=Math.max(40,distance*2);controls.target.copy(center);camera.position.copy(center).addScaledVector(dirFor(s.view).normalize(),distance);controls.update();dirty=true;}
     }else if(lastIsolate){camera.clearViewOffset();fit(s.view,amount);}
     lastIsolate=isolateKey;
    }
@@ -567,7 +863,7 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
 
   };animate();
   const contextLost=(e:Event)=>{e.preventDefault();onError('The 3D session was paused by your device. Reload to continue.');};renderer.domElement.addEventListener('webglcontextlost',contextLost);
-  return()=>{disposed=true;abort.abort();cancelAnimationFrame(frame);observer.disconnect();uninstallCapture();delete (window as unknown as {__atlasTargets?:()=>unknown}).__atlasTargets;controls.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());scene.traverse(o=>{if(o instanceof T.Mesh&&!geometries.includes(o.geometry)){o.geometry.dispose();const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>m.dispose());}});env.dispose();partTexture.dispose();selectionTexture.dispose();markerGeometry.dispose();markerMaterial.dispose();hover.remove();renderer.dispose();renderer.domElement.remove();};
+  return()=>{disposed=true;abort.abort();cancelAnimationFrame(frame);observer.disconnect();uninstallCapture();delete (window as unknown as {__atlasTargets?:()=>unknown}).__atlasTargets;delete (window as unknown as {__atlasNav?:unknown}).__atlasNav;controls.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());scene.traverse(o=>{if(o instanceof T.Mesh&&!geometries.includes(o.geometry)){o.geometry.dispose();const ms=Array.isArray(o.material)?o.material:[o.material];ms.forEach(m=>m.dispose());}});env.dispose();partTexture.dispose();selectionTexture.dispose();markerGeometry.dispose();markerMaterial.dispose();hover.remove();renderer.dispose();renderer.domElement.remove();};
  },[atlas]);
  return <div className="scene" ref={host}/>;
 }
