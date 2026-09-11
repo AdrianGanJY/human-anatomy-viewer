@@ -441,3 +441,74 @@ test('the cold seed bounds a bare legacy selection too', () => {
   assert.deepEqual(fine.state.picks, ids.slice(0, 3));
   assert.equal(fine.state.render.view, 'back');
 });
+
+// ── codex r9 MEDIUM 1: the camera/system round-trip (the S0 prelude) ─────────────────────────────
+// Two halves of one defect: a command that changes a camera fact live must write that fact into the
+// blob, and a SCENE must not consume a fact the HUMAN owns.
+
+const rotating = () => {
+  const scene = normalizeScene({...SCENE, camera: {...SCENE.camera, rotate: true}});
+  return {scene, blob: encodeScene(scene), picks: scene.structures.map((s) => s.id).sort(),
+    focusId: 'FMA22359', render: {...render, rotate: true}};
+};
+
+test('replace stops the turntable IN THE BLOB, not only on screen', () => {
+  const before = rotating();
+  assert.equal(decodeScene(before.blob).camera.rotate, true, 'the fixture must actually be rotating');
+  const {state, rejected} = reduce(before, {type: 'replace', ids: ['FMA22359', 'FMA9611']});
+  assert.equal(rejected, undefined);
+  assert.equal(state.render.rotate, false, 'the live turntable stops');
+  assert.equal(state.scene.camera.rotate, false, 'and the scene agrees');
+  assert.equal(decodeScene(state.blob).camera.rotate, false, 'so a copied link opens still, not spinning');
+});
+
+test('focusing a MEMBER stops the turntable in the blob too', () => {
+  const {state, rejected} = reduce(rotating(), {type: 'focus', id: 'FMA9611'});
+  assert.equal(rejected, undefined);
+  assert.equal(state.focusId, 'FMA9611');
+  assert.deepEqual(state.scene.camera.focus, ['FMA9611']);
+  assert.equal(decodeScene(state.blob).camera.rotate, false);
+});
+
+test('focusing a NON-MEMBER stops it as well — and re-encodes only when it has to', () => {
+  // A pick that is not a scene structure: membership is unchanged, the camera fact is not.
+  const spinning = rotating();
+  const withPick = {...spinning, picks: [...spinning.picks, 'FMA7487']};
+  const {state, rejected} = reduce(withPick, {type: 'focus', id: 'FMA7487'});
+  assert.equal(rejected, undefined);
+  assert.equal(state.focusId, 'FMA7487', 'the UI focus moves');
+  assert.deepEqual(state.scene.camera.focus, ['FMA22359'], 'the DECLARED focus does not');
+  assert.equal(decodeScene(state.blob).camera.rotate, false, 'but the stopped turntable is serialised');
+  // And when there was nothing to correct, the scene is left exactly as it was — no churn, no epoch.
+  const still = {...withScene(), picks: [...withScene().picks, 'FMA7487']};
+  const out2 = reduce(still, {type: 'focus', id: 'FMA7487'});
+  assert.equal(out2.state.blob, still.blob, 'an already-stopped scene is not re-encoded');
+  assert.equal(out2.epoch, undefined);
+});
+
+test('a GHOST scene does not consume the system set the human chose', () => {
+  // The human picks two systems, then opens a link whose rest is a skeletal ghost.
+  const seeded = initialState({}, {...render, visible: ['muscular', 'nervous']});
+  const chosen = reduce(seeded.state, {type: 'set-visible', visible: ['muscular', 'nervous']}).state;
+  assert.deepEqual(chosen.visibleIntent, ['muscular', 'nervous']);
+
+  const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
+  const afterGhost = reduce(chosen, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(afterGhost.render.visible, ['skeletal'], 'the ghost still drives what is drawn');
+  assert.deepEqual(afterGhost.visibleIntent, ['muscular', 'nervous'], 'and the human choice survives it');
+
+  // THE DEFECT, in one assertion: the NEXT scene used to inherit ['skeletal'] as if it were asked for.
+  const plain = reduce(afterGhost, {type: 'apply-scene', scene: SCENE}).state;
+  assert.deepEqual(plain.render.visible, ['muscular', 'nervous'],
+    'a non-ghost scene restores the human set — it does not inherit the ghost');
+});
+
+test('system= in a legacy URL IS the human speaking, and survives a later ghost', () => {
+  const seeded = initialState({select: ['FMA9611'], visible: ['arterial']}, {...render}).state;
+  assert.deepEqual(seeded.visibleIntent, ['arterial']);
+  const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
+  const afterGhost = reduce(seeded, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(afterGhost.render.visible, ['skeletal']);
+  const back = reduce(afterGhost, {type: 'apply-legacy', url: {select: ['FMA9611']}}).state;
+  assert.deepEqual(back.visibleIntent, ['arterial'], 'a legacy apply with no system= leaves the intent alone');
+});

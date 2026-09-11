@@ -258,9 +258,33 @@ if (want('stage-probe')) {
   openCase('stage-probe', 'C1', '?stage=1 and ?probe=1 survive entry, debounce, reload and exit', 'R:31, R:110');
   const {context, page, errors} = await fresh();
   try {
+    // WAIT ON THE WRITE, NOT ON A CLOCK (codex r9, the stage-probe Medium). The old line here was
+    // `waitForTimeout(1400)` — "past the 200 ms debounce with room to spare" — which is a guess
+    // about someone else's timing, and a guess is a flake with a grace period. `writeUrlState` ends
+    // in exactly one `history.replaceState` (app/url-state.ts:206), so counting that call is a
+    // DIRECT observation of the event under test. It is also not vacuous: the counter says the write
+    // HAPPENED, and says nothing about what it wrote, which is what the assertions below are for.
+    //
+    // The one case the counter cannot see: `writeUrlState` skips `replaceState` when the serialized
+    // URL is byte-identical to the current one, so a hypothetical no-op write never increments. That
+    // degrades to the old sleep — but it is now RECORDED as the path taken, instead of being the
+    // silent default.
+    await page.addInitScript(() => {
+      window.__urlWrites = 0;
+      const real = history.replaceState.bind(history);
+      history.replaceState = (...a) => { window.__urlWrites += 1; return real(...a); };
+    });
     await page.goto(`${base}/v2/?stage=1&probe=1&scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
     await waitScene(page);
-    await page.waitForTimeout(1400);   // past the 200 ms debounce with room to spare
+    let urlWriteSeen = true;
+    await page.waitForFunction(() => (window.__urlWrites ?? 0) > 0, null, {timeout: 20000})
+      .catch(() => { urlWriteSeen = false; });
+    if (!urlWriteSeen) await page.waitForTimeout(1400);
+    prereq('the debounced URL write was OBSERVED (replaceState), not slept through',
+      urlWriteSeen,
+      urlWriteSeen ? `history.replaceState fired ${await page.evaluate(() => window.__urlWrites)} time(s)`
+        : 'no replaceState within 20 s — fell back to the legacy 1400 ms sleep',
+      'observed');
 
     const afterDebounce = await page.evaluate(() => location.search);
     assert('stage=1 survives the debounced URL write', /(\?|&)stage=1(&|$)/.test(afterDebounce), afterDebounce.slice(0, 160), 'stage=1 present');
@@ -440,12 +464,26 @@ if (want('readiness-generations')) {
         for (const p of parked.filter((x) => x.n === n)) { try { await p.route.continue(); } catch { /* gone */ } }
       };
       const marker = () => pg.evaluate(() => document.documentElement.dataset.atlasSceneReady ?? null);
+      // WHICH CHUNKS ACTUALLY CAME BACK. codex r9 Medium 3: "marker absence does not prove the
+      // intended A request was parked, or that A's phase completed after release." Absence is the
+      // weakest evidence there is — it is equally consistent with the hold working and with the
+      // request never having been made. These two instruments make both halves positive facts.
+      const served = new Set();
+      pg.on('response', (r) => { const m = /\/models\/body-(\d+)\.bin/.exec(r.url()); if (m) served.add(Number(m[1])); });
 
       await pg.goto(`${base}/v2/?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       // A's first phase cannot complete while one of ITS chunks is held, so the marker must not
       // exist yet. This also proves the hold is working — without it everything below is vacuous.
       await pg.waitForTimeout(7000);
       const m0 = await marker();
+      // THE INTENDED REQUEST, NAMED. `parked.length > 0` was satisfied by any parked chunk at all —
+      // including one belonging only to B — which would leave A unheld and every assertion below
+      // vacuous. Assert that A's OWN chunk is the one sitting in the queue, and that it has not been
+      // served.
+      prereq('the intended chunk of A is parked and unserved (not merely "something is parked")',
+        parked.some((p) => p.n === holdA) && !served.has(holdA),
+        `holdA=${holdA}, parked=[${parked.map((p) => p.n).join(',')}], served=[${[...served].join(',')}]`,
+        `body-${holdA} parked, not served`);
       prereq('the chunk hold works: A’s barrier has NOT fired while one of A’s chunks is held',
         m0 === null, `data-atlas-scene-ready=${m0}, ${parked.length} requests parked`, 'absent');
 
@@ -459,6 +497,11 @@ if (want('readiness-generations')) {
       // because the page is showing B and B's geometry is still held.
       await release(holdA);
       await pg.waitForTimeout(7000);
+      // POSITIVE EVIDENCE THAT A'S PHASE COULD COMPLETE. Without this the next assertion reads
+      // "the marker is absent" — which is also what you get if the release silently failed and A
+      // is still starved. The response event says the geometry actually arrived.
+      prereq('A’s held chunk was released AND its response arrived (so A’s phase had its geometry)',
+        served.has(holdA), `served=[${[...served].join(',')}] want ${holdA}`, `body-${holdA} served`);
       const m2 = await marker();
       const shown = await atlasState(pg);
       assert('A’s completing first phase does NOT publish readiness for B',
@@ -1311,6 +1354,16 @@ if (want('shared-worker-population')) {
     assert('the refusal SURVIVES the worker’s destruction (lifecycle history, not a live snapshot)',
       popAfter.ok === false && /shared_worker/.test(popAfter.measured),
       popAfter.measured.slice(0, 200), 'still refused');
+    // codex r9 LOW 1. The assertion above proves the refusal CONTINUES; it does not prove the thing
+    // it is named after — that the worker was destroyed. A worker that simply outlived the
+    // navigation would satisfy it identically, and then this case would be testing nothing but the
+    // passage of 1.5 seconds. The lifecycle entry is where destruction is actually recorded
+    // (request-ledger.mjs:206), so read it.
+    const swHistory = targetHistory(ledger).filter((t) => t.type === 'shared_worker');
+    assert('and the worker’s lifecycle entry records destroyed === true (the premise, not just the consequence)',
+      swHistory.length === 1 && swHistory[0].destroyed === true,
+      `${swHistory.length} shared_worker entr(ies): ${swHistory.map((t) => `destroyed=${t.destroyed}`).join(', ') || 'none'}`,
+      '1 entry, destroyed=true');
   } catch (e) { prereq('the shared-worker fixture ran', false, String(e).slice(0, 200), 'no throw'); }
   finally { await cx.close(); await new Promise((r) => srv.close(r)); }
 }
@@ -1377,8 +1430,18 @@ if (want('prerender-population')) {
     if (prerenderTargets.length > 0) {
       // THE ARMED BRANCH. If this build ever prerenders under CDP, default-deny must refuse it and
       // name it — the exact hole review 8 identified in the round-7 allowlist.
-      assert('a prerender target materialised, and the population gate REFUSES it',
-        pop.ok === false && /prerender/.test(pop.measured), pop.measured.slice(0, 220), 'refused, named page/prerender');
+      // codex r9 LOW 2. `/prerender/.test(pop.measured)` matched the CASE NAME inside the
+      // population boilerplate, so a refusal caused by an entirely unrelated stray target satisfied
+      // it. Read the structured `violations` instead and require that the refused target is the
+      // prerender one — the same objects `prerenderTargets` was computed from.
+      const refusedPrerender = (pop.violations ?? []).filter((t) =>
+        t.subtype === 'prerender' || (t.type === 'page' && t.targetId !== ledger.self?.targetId));
+      assert('a prerender target materialised, and the population gate REFUSES that target by identity',
+        pop.ok === false && refusedPrerender.length > 0
+          && prerenderTargets.every((p) => refusedPrerender.some((v) => v.targetId === p.targetId)),
+        `${prerenderTargets.length} prerender target(s) discovered, ${refusedPrerender.length} of them in pop.violations: `
+          + refusedPrerender.map((t) => `${t.type}${t.subtype ? `/${t.subtype}` : ''} ${t.targetId}`).join(', '),
+        'every discovered prerender target is a named violation');
     } else {
       // THE SKIP, WITH ITS REASON QUOTED FROM THE BROWSER. Not a pass about prerendering — a
       // recorded finding that prerendering cannot occur while this suite is watching.

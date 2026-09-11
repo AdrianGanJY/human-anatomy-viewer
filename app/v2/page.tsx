@@ -350,8 +350,19 @@ export default function V2() {
  };
 
  // ─── the reserved local tool surface ──────────────────────────────────────────────────────
- const live = useRef({scene, sceneBlob, picks, focusId, lang, state, phase, bytes, stage, focused, t, plate});
- live.current = {scene, sceneBlob, picks, focusId, lang, state, phase, bytes, stage, focused, t, plate};
+ // ⚠️ `live` IS RENDER-FRESH, NOT DISPATCH-FRESH — and the controller facts are read from `ctlRef`
+ // instead (codex r9 Medium 5). `dispatch` writes `ctlRef.current` SYNCHRONOUSLY and then calls
+ // `setCtl`, so between the two, `live.current` still holds the PREVIOUS render's scene / blob /
+ // picks / focus. A caller doing `await atlas.add(id); atlas.state()` — the natural shape, and the
+ // one `/mcp` and the oracles use — therefore read the set as it was BEFORE their own edit.
+ // So: anything the controller owns comes from `ctlRef.current`; only the things the controller does
+ // NOT own (language, phase, bytes, stage, the hovered concept, the translator, the renderer's
+ // projected plate) stay here, because for those a React render IS the moment they become true.
+ // `conceptsById`/`parts` are here so `state()` can RE-DERIVE the focused concept the same way the
+ // render does — `resolvePicks(conceptsById, parts, picks)` — from dispatch-fresh picks. Carrying the
+ // rendered `focused` object instead is what made `state().name` describe the previous selection.
+ const live = useRef({lang, phase, bytes, stage, t, plate, conceptsById, parts});
+ live.current = {lang, phase, bytes, stage, t, plate, conceptsById, parts};
  useEffect(() => installAtlasTools({
   applyScene: (input) => {
    // Accept a bare blob or any URL/query carrying `scene=`. A hash write re-drives the page
@@ -370,7 +381,7 @@ export default function V2() {
    location.hash = `scene=${blob}`;
    return true;
   },
-  focus: (ids) => { const id = ids.find((x) => live.current.picks.includes(x)); if (!id) return false; focusPick(id); return true; },
+  focus: (ids) => { const id = ids.find((x) => ctlRef.current.picks.includes(x)); if (!id) return false; focusPick(id); return true; },
   // THE SAME COMMANDS THE ON-SCREEN CONTROLS SEND. Not a parallel implementation — that is the
   // whole reason the controller exists (codex-app-review.md §1).
   add: (id) => { if (!known(id)) return false; return dispatch({type: 'add', id}); },
@@ -378,22 +389,29 @@ export default function V2() {
   clear: () => dispatch({type: 'clear-all'}),
   setView: (view) => (VIEW_NAMES.includes(view as View) ? dispatch({type: 'set-view', view: view as View}) : false),
   plate: () => {
-   const blob = live.current.sceneBlob || (live.current.scene ? encodeScene(live.current.scene) : '');
-   const ids = live.current.picks;
+   const c = ctlRef.current;
+   const blob = c.blob || (c.scene ? encodeScene(c.scene) : '');
+   const ids = c.picks;
    return {blob, ids, url: `${location.origin}/api/snap?select=${ids.join(',')}${blob ? `&scene=${blob}` : ''}&snap=1`};
   },
   state: (): AtlasState => {
-   const l = live.current;
+   const l = live.current, c = ctlRef.current;
+   // The same derivation the render makes (page.tsx `basket`/`focused`), off controller-fresh picks.
+   const basketNow = resolvePicks(l.conceptsById, l.parts, c.picks);
+   const focusedNow = basketNow.find((p) => p.id === c.focusId) ?? basketNow[0] ?? null;
    return {
-    blob: l.sceneBlob, ids: l.picks, focus: l.focusId ?? l.focused?.id ?? null,
-    name: l.focused ? l.t.name(l.focused.id, l.focused.name) : null,
-    nameEn: l.focused?.name ?? null,
-    lang: l.lang, view: l.state.view, stage: l.stage, phase: l.phase, bytes: l.bytes,
+    blob: c.blob, ids: c.picks, focus: c.focusId ?? focusedNow?.id ?? null,
+    name: focusedNow ? l.t.name(focusedNow.id, focusedNow.name) : null,
+    nameEn: focusedNow?.name ?? null,
+    lang: l.lang, view: c.render.view, stage: l.stage, phase: l.phase, bytes: l.bytes,
     // Introspection the oracles read instead of scraping the DOM for something the DOM does not
     // say: how many MESHES the camera is being asked to look at and to contain. A framing
     // failure is either "the fit is wrong" or "the fit was never given anything", and only this
     // tells them apart.
-    framing: {focus: l.plate?.focus.length ?? 0, frame: l.plate?.frame.length ?? 0, isolate: l.state.isolate},
+    // `plate` is the RENDERER's projection — render-fresh is the only thing it can be, and saying so
+    // is honest: it describes the last painted frame, not the pending edit. `isolate` is controller
+    // state, so it comes from the controller.
+    framing: {focus: l.plate?.focus.length ?? 0, frame: l.plate?.frame.length ?? 0, isolate: c.render.isolate},
    };
   },
  }), [focusPick, known, dispatch]);
@@ -487,7 +505,11 @@ export default function V2() {
   return () => clearTimeout(timer);
  }, [probeMode, phase, sceneBlob]);
 
- const describe = (name: string | undefined, sys: SystemId | undefined) => (name && sys ? explanation(name, sys) : '');
+ // THE DESCRIPTION IS TRANSLATED. `explanation()` (app/anatomy.ts) returns the ENGLISH sentence; the
+ // Chinese dictionaries carry the same sentences under `explanations[name.toLowerCase()]` and
+ // `t.explanation` is the accessor for them, with the English as its fallback. Calling the bare
+ // function put an English paragraph under a 简体 heading on every structure card.
+ const describe = (name: string | undefined, sys: SystemId | undefined) => (name && sys ? t.explanation(name, explanation(name, sys)) : '');
  const nameOf = (id: string) => {
   const p = basket.find((b) => b.id === id);
   if (p) return t.name(p.id, p.name);

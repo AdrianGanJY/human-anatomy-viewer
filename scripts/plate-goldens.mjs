@@ -46,6 +46,38 @@ import {encodeScene, normalizeScene} from '../app/scene-codec.js';
  *     "nothing changed" and that is the one reading it must never produce.
  */
 const GHOSTED = new Set(['forward-bend']);   // the only control scene with a `ghost` role
+/**
+ * ══ THE PIXEL FINGERPRINT (L31 v2.1b+c, S0 prelude) ════════════════════════════════════════════
+ * codex r9 Medium 2: "Ghost comparison lacks a pixel-change bound. Similar compressed sizes can
+ * conceal materially different images." True, and the PNG byte count was never a picture
+ * measurement — it is a measurement of how well zlib did, which correlates with the picture only
+ * loosely and not at all monotonically. A different structure at the same complexity compresses to
+ * roughly the same size.
+ *
+ * So every capture now also records a fingerprint: the screenshot resampled to a 32×24 grid and
+ * reduced to per-cell luma 0–255. That IS the pixels — averaged, which is exactly the right filter
+ * here, because the noise this tolerance exists to absorb is a PER-PIXEL coverage dither (measured
+ * on an unchanged deployment: forward-bend hashed f6d8f9e6 → 1b7a09da → f6d8f9e6) while every
+ * change worth failing on — a lost ghost, a different structure, a moved subject — is a
+ * REGION-level change that block averaging preserves.
+ *
+ * ⚠️ THE BOUNDS BELOW ARE MEASURED, NOT GUESSED — see the worklog entry that set them. They are the
+ * observed same-build ghost drift with headroom, and they must be re-measured (two captures of one
+ * unchanged deployment) rather than widened, if a future run starts brushing them.
+ *
+ * ⚠️ A GOLDEN FILE PRODUCED BEFORE THIS EXISTS HAS NO `fp`. When either side lacks one, the
+ * comparison falls back to the old byte proxy AND SAYS SO in the report — it never silently reports
+ * a weaker check as the stronger one.
+ */
+const FP_GRID = {w: 32, h: 24};
+const FP_MAX_CELL = 6;      // no single 30×30 px cell may move more than 6/255
+const FP_MEAN = 1.5;        // and the average cell may not move more than 1.5/255
+const fpDelta = (b, a) => {
+  if (!Array.isArray(b) || !Array.isArray(a) || !b.length || b.length !== a.length) return null;
+  let max = 0, sum = 0;
+  for (let i = 0; i < b.length; i++) { const d = Math.abs(b[i] - a[i]); if (d > max) max = d; sum += d; }
+  return {max, mean: sum / b.length, cells: b.length};
+};
 /** THE REQUIRED INVENTORY, named here rather than derived from the artifacts being compared.
  *  Deriving it meant a scene missing from BOTH sides simply vanished from verification — two empty
  *  manifests compared equal and passed (codex review, 2026-09-09, High 7). An absent measurement
@@ -89,12 +121,27 @@ if (process.argv[2] === 'compare') {
       // individual pixels and barely moves the compressed size; a real appearance change (different
       // structures, a moved camera, a lost ghost) moves it a lot. Camera and projected bounds are
       // already asserted equal above, so this is the last remaining degree of freedom.
+      const d = fpDelta(b.fp, a.fp);
       if (GHOSTED.has(name)) {
-        const drift = (b.bytes && a.bytes) ? Math.abs(a.bytes - b.bytes) / b.bytes : 1;
-        if (drift <= 0.02) notes.push(`${line}  (TOLERATED: ghost dither, PNG size moved ${(drift * 100).toFixed(2)}% <= 2%)`);
-        else failures.push(`${line}  — PNG size moved ${(drift * 100).toFixed(1)}%, far past the 2% a coverage dither explains`);
+        if (d) {
+          // THE PIXELS THEMSELVES, not their compressed size.
+          const shape = `max cell ${d.max}/255 (<= ${FP_MAX_CELL}), mean ${d.mean.toFixed(3)}/255 (<= ${FP_MEAN}), ${d.cells} cells`;
+          if (d.max <= FP_MAX_CELL && d.mean <= FP_MEAN) notes.push(`${line}  (TOLERATED: ghost dither — ${shape})`);
+          else failures.push(`${line}  — the PICTURE moved: ${shape}`);
+        } else {
+          // NAMED, never silent. One side predates the fingerprint, so only the weak proxy is
+          // available and the report has to say which check actually ran.
+          const drift = (b.bytes && a.bytes) ? Math.abs(a.bytes - b.bytes) / b.bytes : 1;
+          const why = `no pixel fingerprint on ${!b.fp ? 'the BEFORE' : 'the AFTER'} side — falling back to the PNG-size proxy`;
+          if (drift <= 0.02) notes.push(`${line}  (WEAK CHECK: ${why}; size moved ${(drift * 100).toFixed(2)}% <= 2%)`);
+          else failures.push(`${line}  — ${why}; size moved ${(drift * 100).toFixed(1)}%, past the 2% a dither explains`);
+        }
       }
-      else failures.push(`${line}  — camera and bounds are identical, so the PIXELS changed on their own`);
+      // A non-ghost scene is deterministic: any hash change is a failure. The fingerprint is still
+      // reported, because "the pixels changed" and "the pixels changed by THIS much" are different
+      // amounts of help to whoever reads the failure.
+      else failures.push(`${line}  — camera and bounds are identical, so the PIXELS changed on their own`
+        + (d ? ` (max cell ${d.max}/255, mean ${d.mean.toFixed(3)}/255)` : ' (no fingerprint on one side)'));
     }
   }
   const missing = REQUIRED.filter((n) => !before.plates[n] || !after.plates[n]);
@@ -171,8 +218,25 @@ for (const [name, spec] of Object.entries(SCENES)) {
         w: g.w, h: g.h, cam: [g.camera.x.toFixed(4), g.camera.y.toFixed(4), g.camera.z.toFixed(4), g.camera.tx.toFixed(4), g.camera.ty.toFixed(4), g.camera.tz.toFixed(4)].join(','),
       };
     }, spec.structures.map(([id]) => id));
-    out.plates[name] = {hash, bytes: buf.length, rect, blob: blob.slice(0, 24)};
-    console.log(`${name}  hash=${hash}  rect=${rect ? `${rect.l},${rect.t}-${rect.r},${rect.b}` : 'none'}  cam=${rect?.cam}`);
+    // THE PIXEL FINGERPRINT. Decoded and resampled inside the same browser that took the shot, so
+    // no PNG decoder has to be added to this script's dependency surface (it has none today, which
+    // is worth keeping). Nothing is inserted into the document: the bitmap goes to an
+    // OffscreenCanvas, so the page under measurement is not disturbed by its own measurement.
+    const fp = await page.evaluate(async ({b64, grid}) => {
+      const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const bmp = await createImageBitmap(new Blob([bin], {type: 'image/png'}));
+      const cv = new OffscreenCanvas(grid.w, grid.h);
+      const ctx = cv.getContext('2d', {willReadFrequently: true});
+      ctx.drawImage(bmp, 0, 0, grid.w, grid.h);
+      const px = ctx.getImageData(0, 0, grid.w, grid.h).data;
+      const cells = [];
+      for (let i = 0; i < grid.w * grid.h; i++) {
+        cells.push(Math.round(0.299 * px[i * 4] + 0.587 * px[i * 4 + 1] + 0.114 * px[i * 4 + 2]));
+      }
+      return cells;
+    }, {b64: buf.toString('base64'), grid: FP_GRID}).catch(() => null);
+    out.plates[name] = {hash, bytes: buf.length, rect, fp, grid: FP_GRID, blob: blob.slice(0, 24)};
+    console.log(`${name}  hash=${hash}  fp=${fp ? `${fp.length} cells` : 'FAILED'}  rect=${rect ? `${rect.l},${rect.t}-${rect.r},${rect.b}` : 'none'}  cam=${rect?.cam}`);
   } catch (e) {
     out.plates[name] = {error: String(e).slice(0, 200)};
     console.log(`${name}  ERROR ${String(e).slice(0, 160)}`);

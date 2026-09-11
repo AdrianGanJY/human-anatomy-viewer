@@ -121,6 +121,26 @@ export interface V2State {
  picks: string[];
  focusId: string | null;
  render: SceneState;
+ /**
+  * THE SYSTEM SET THE HUMAN CHOSE — kept apart from `render.visible`, which a scene can overwrite.
+  *
+  * codex r9 Medium 1, second half (controller.ts:282): `apply-scene` wrote
+  * `visible: scene.rest.include === 'skeletal' ? ['skeletal'] : state.render.visible`. The first
+  * branch is correct as a RENDER decision — a scene declaring a skeletal ghost is asking for the
+  * skeleton — but it wrote that decision into the field that also holds the human's own choice, and
+  * `render.visible` is the ONLY copy. So a ghost scene consumed it: after one such link, the user's
+  * set was `['skeletal']` for the rest of the session, and the very next non-ghost scene inherited
+  * `['skeletal']` through the `else` branch as if the human had asked for it. It is a one-way door,
+  * and it is serialised (`system=`, app/url-state.ts:138), so the clobbered value also went into
+  * the address bar.
+  *
+  * Two facts needed two fields. This one is INTENT, written only by the commands that ARE the human
+  * speaking — `set-visible`, and the legacy URL's `system=` key. `render.visible` stays the RENDER
+  * value and a scene may still drive it. Optional so every existing `V2State` literal (the unit
+  * suite builds several) keeps type-checking and behaves as before: readers fall back to
+  * `render.visible`, which is exactly today's value.
+  */
+ visibleIntent?: SystemId[];
 }
 
 export type Command =
@@ -215,7 +235,9 @@ export function initialState(
  url: {scene?: Scene | null; sceneBlob?: string; select?: string[]} & LegacyUrlFields,
  render: SceneState,
 ): {state: V2State; rejected?: string} {
- const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render};
+ // The seed's intent is whatever the URL asked for, or the render seed's own set. `legacySceneState`
+ // is not consulted here because it needs a `previous` and this IS the previous.
+ const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render, visibleIntent: url.visible ?? render.visible};
  if (url.scene) {
   const scene = normalizeScene(url.scene) as Scene;
   const invalid = validateScene(scene);
@@ -225,7 +247,7 @@ export function initialState(
     state: {
      scene, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene),
      blob: url.sceneBlob && url.sceneBlob === encoded ? url.sceneBlob : encoded,
-     render,
+     render, visibleIntent: url.visible ?? render.visible,
     },
    };
   }
@@ -279,7 +301,9 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     // `rest:'none'` IS today's isolate, exactly — the same mapping v1 makes at page.tsx:149 — so
     // every P1–P3 deep link keeps meaning what it meant.
     isolate: scene.rest.include === 'none',
-    visible: scene.rest.include === 'skeletal' ? ['skeletal'] : state.render.visible,
+    // The ghost drives the RENDER value; the human's own set (`visibleIntent`) is never touched, so
+    // it survives a ghost scene and is what the NEXT scene falls back to. See `visibleIntent`.
+    visible: scene.rest.include === 'skeletal' ? ['skeletal'] : (state.visibleIntent ?? state.render.visible),
    });
    // THE ARRIVAL BLOB IS KEPT ONLY WHEN IT IS ALREADY CANONICAL, and the earlier wording here
    // overstated that. codex passed a valid blob using the supported `structures` spelling instead of
@@ -314,6 +338,9 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     state: {
      ...state, scene: null, blob: '', picks,
      focusId: state.focusId && picks.includes(state.focusId) ? state.focusId : null,
+     // `system=` in a legacy URL IS the human speaking (it is what `set-visible` serialises to), so
+     // it updates the intent; absent, the previous intent stands. See `visibleIntent`.
+     visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -329,6 +356,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     state: {
      ...state, scene: null, blob: '', focusId: null,
      picks: cleared,
+     visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -355,7 +383,12 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     ...state.scene,
     structures: ids.map((id) => ({id, role: 'primary' as Role})),
     // The declared focus can only name a member; keep it when the new set still contains it.
-    camera: {...state.scene.camera, focus: state.scene.camera.focus.filter((f) => ids.includes(f))},
+    // `rotate:false` IS WRITTEN THROUGH, for the same reason `set-view` writes it (codex r9 Medium
+    // 1, controller.ts:345): this command stops the live turntable via `intent(…{rotate:false})`,
+    // and leaving `camera.rotate:true` in the blob makes the link and the screen disagree about a
+    // field the codec expresses perfectly well. Every camera field a command touches is serialised,
+    // or the exception list in this file's header is a fiction.
+    camera: {...state.scene.camera, rotate: false, focus: state.scene.camera.focus.filter((f) => ids.includes(f))},
     styles: state.scene.styles.filter((s) => ids.includes(s.id)),
     // An annotation survives only if EVERY id it points at survives — `validateScene` rejects one
     // that targets a non-member, so a half-reconciled annotation makes the scene unencodable.
@@ -414,13 +447,23 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // only focus representation the renderer reads (app/v2/page.tsx `plate`), so writing it here is
    // what makes the camera move AND what makes the change survive into the URL and plate().
    if (state.scene?.structures.some((s) => s.id === cmd.id)) {
-    const out = commitScene(state, {...state.scene, camera: {...state.scene.camera, focus: [cmd.id]}}, render);
+    // `rotate:false` travels with the focus — codex r9 Medium 1 (controller.ts:412). The live
+    // turntable is stopped by `intent` above; the blob has to say so too.
+    const out = commitScene(state, {...state.scene, camera: {...state.scene.camera, rotate: false, focus: [cmd.id]}}, render);
     // `commitScene` re-derives focusId from the scene, which is now this id — but be explicit, so
     // a future change to `sceneFocusId` cannot silently move the UI focus somewhere else.
     return out.rejected ? out : {...out, state: {...out.state, focusId: cmd.id}};
    }
    // Not a member: the UI focus moves, the DECLARED focus does not. Adding it to the scene would
    // change membership as a side effect of looking at something.
+   //
+   // BUT THE STOPPED ROTATION IS STILL A CAMERA FACT. Focusing a non-member is still a camera
+   // intent that stops the turntable, so in scene mode the scene is patched to agree — and ONLY
+   // when it currently disagrees, so a focus on a non-member never re-encodes a scene for nothing.
+   if (state.scene?.camera.rotate) {
+    const out = commitScene(state, {...state.scene, camera: {...state.scene.camera, rotate: false}}, render);
+    return out.rejected ? out : {...out, state: {...out.state, focusId: cmd.id}};
+   }
    return {state: {...state, focusId: cmd.id, render}};
   }
   case 'set-view': {
@@ -443,7 +486,12 @@ export function reduce(state: V2State, cmd: Command): Outcome {
   case 'set-visible': {
    // Systems are page state serialised as `system=`; they are not a scene field, so no re-encode.
    // Not a camera intent: turning a system off must not refit.
-   return {state: {...state, render: {...state.render, isolate: false, visible: cmd.visible}}};
+   //
+   // THE HUMAN IS SPEAKING, so this writes BOTH the render value and the intent it came from.
+   // ⚠️ S3: this command also clears `isolate` unconditionally, so a system eye silently
+   // un-isolates an isolated scene. Surface that in the control's text or refuse the toggle while
+   // isolate is on — opus-plan-review-2.md RC8.
+   return {state: {...state, visibleIntent: cmd.visible, render: {...state.render, isolate: false, visible: cmd.visible}}};
   }
   case 'set-isolate': {
    // RENDER-ONLY, IN BOTH MODES, AND THAT IS THE DEFERRAL DISCIPLINE RATHER THAN AN OVERSIGHT.
