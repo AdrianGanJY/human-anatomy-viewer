@@ -37,6 +37,8 @@ import {v2t} from './copy';
 import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
+import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
+import {useShell} from './shell/use-shell.ts';
 
 /** THE STATIC SAFE INSET, in CSS pixels. A CONSTANT, never a DOM measurement — the critic's
  *  ruling (build-plan.md:127) and the whole point of item 2 above. Its table collapses to one
@@ -505,11 +507,29 @@ export default function V2() {
   return () => clearTimeout(timer);
  }, [probeMode, phase, sceneBlob]);
 
- // THE DESCRIPTION IS TRANSLATED. `explanation()` (app/anatomy.ts) returns the ENGLISH sentence; the
- // Chinese dictionaries carry the same sentences under `explanations[name.toLowerCase()]` and
- // `t.explanation` is the accessor for them, with the English as its fallback. Calling the bare
- // function put an English paragraph under a 简体 heading on every structure card.
- const describe = (name: string | undefined, sys: SystemId | undefined) => (name && sys ? t.explanation(name, explanation(name, sys)) : '');
+ /**
+  * THE DESCRIPTION IS TRANSLATED — and it takes TWO accessors, not one.
+  *
+  * ⚠️ THE FIRST FIX WAS INCOMPLETE, and only LOOKING at a 简体 screenshot showed it. `explanation()`
+  * (app/anatomy.ts) has two branches: a PER-STRUCTURE sentence for a handful of named organs, and
+  * otherwise the SYSTEM's own description. The Chinese dictionaries mirror both — but in different
+  * places: `explanations[name]` carries 9 per-structure entries and `systems[id].description`
+  * carries the system prose. So routing everything through `t.explanation` translated the 9 and
+  * left every other structure — which is nearly all of them — printing an English paragraph under
+  * a Chinese heading, exactly the defect the prelude set out to end.
+  *
+  * WHICH BRANCH FIRED IS DETECTABLE WITHOUT EXPORTING THE TABLE: `EXPLANATIONS` is module-private,
+  * but `explanation()` returns the system's own description verbatim when it misses, so comparing
+  * against that description identifies the fallback exactly. No new export, no second copy of the
+  * lookup, and if the table ever gains an entry equal to its system's description the two readings
+  * are identical anyway.
+  */
+ const describe = (name: string | undefined, sys: SystemId | undefined) => {
+  if (!name || !sys) return '';
+  const s = SYSTEMS.find((x) => x.id === sys);
+  const en = explanation(name, sys);
+  return s && en === s.description ? t.systemDesc(s.id, s.description) : t.explanation(name, en);
+ };
  const nameOf = (id: string) => {
   const p = basket.find((b) => b.id === id);
   if (p) return t.name(p.id, p.name);
@@ -524,12 +544,59 @@ export default function V2() {
  const loading = phase === 'boot' || (phase === 'scene' && bytes.total > 0);
  const title = caption.title || (focused ? t.name(focused.id, focused.name) : '');
 
- return <main className="v2" data-phase={phase} data-detent={detent} data-ground={background}>
+ /**
+  * ══ THE STUDIO SHELL, >=1180 ONLY (L31 v2.1b+c, S0) ═══════════════════════════════════════════
+  *
+  * `useShell` is called UNCONDITIONALLY, at every width — hooks may not be conditional, and its
+  * cost below 1180 is two matchMedia listeners and one localStorage read. What is conditional is
+  * the RENDER: at >=1180 the head / rail / margin are replaced by bar / tools / side / dock /
+  * status, and below it not one rule changes. That is why "the phone tier is preserved" is a
+  * structural claim here rather than a promise — `shell` is false and every branch below is the
+  * code that was already shipping.
+  *
+  * ⚠️ `.v2-field` IS RENDERED IN THE SAME TREE POSITION IN BOTH BRANCHES, deliberately. Moving it
+  * would make React unmount and remount `AnatomyScene` when the window crosses 1180 — a full
+  * WebGL teardown and a re-download of every chunk, in the middle of a resize. The regions around
+  * it change; the field never does.
+  */
+ const shell = useShell();
+
+ return <main
+  className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
+  data-phase={phase} data-detent={detent} data-ground={background} data-tier={shell.tier}
+  style={shell.studio ? {'--v2-side-w': `${shell.sideW}px`, '--v2-dock-w': `${shell.dockW}px`} as React.CSSProperties : undefined}
+ >
+  {/* ⚠️ `!stage` IS LOAD-BEARING. `?stage=1` is the L32 display client's whole contract: the figure
+      and NOTHING else. v2.css's fence lists the phone's surfaces by name (`.v2-head`, `.v2-rail`,
+      `.v2-margin`, `.v2-chrome`) and knew nothing about the studio's five, so the first build
+      rendered the whole studio in stage and squeezed the field to 362x138 — caught by the
+      `stage-probe` regression case, which asserts the field gets the whole viewport. Not rendering
+      is the primary fence; shell.css adds the display:none belt behind it. */}
+  {shell.studio && !stage && <Shell
+   t={t} tr={tr} lang={lang} applyLang={applyLang}
+   atlas={atlas} basket={basket} focused={focused} focusPick={focusPick} clearPicks={clearPicks}
+   systemId={systemId} describe={describe}
+   state={state} dispatch={dispatch} scene={scene} sceneBlob={sceneBlob} picks={picks}
+   caption={caption} phase={phase} bytes={bytes} background={background} refused={refused}
+   docks={shell.docks} sideStub={shell.sideStub} autoCollapsed={shell.autoCollapsed}
+   onToggleDock={shell.toggleDock} onToggleSide={shell.toggleSide}
+   keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
+   settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
+   sheet={shell.sheet} coarse={shell.coarse}
+  />}
+  {/* HOSTED AT EVERY WIDTH. `?` is a keyboard explanation, not a studio control, so the map has to
+      open on a narrow window too — and that is what gives `Overlay`'s SHEET presentation a
+      reachable invoker at S0 rather than an untested branch waiting for S4. */}
+  <StudioOverlays
+   t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}
+   keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
+   settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
+  />
   {/* THE HEADER IS PAINTED FROM THE URL, IN THE FIRST FRAME. It never resizes afterwards:
       its height is fixed in CSS, so the title arriving, the name arriving and the model
       arriving all land inside a box that was already there. That is CLS 0 by construction
       rather than by measurement. */}
-  <header className="v2-head">
+  {!shell.studio && <header className="v2-head">
    <div className="v2-head-text">
     <h1 title={title}>{title || v2t(lang, 'app.title')}</h1>
     {caption.note && <p className="v2-note">{caption.note}</p>}
@@ -537,9 +604,9 @@ export default function V2() {
    <div className="v2-lang" role="group" aria-label={tr('lang.aria')}>
     {LANGS.map((l) => <button type="button" key={l} lang={l} className={lang === l ? 'is-on' : ''} aria-pressed={lang === l} onClick={() => applyLang(l)}>{LANG_LABELS[l]}</button>)}
    </div>
-  </header>
+  </header>}
 
-  <div className="v2-field">
+  <div className="v2-field" id="v2-field">
    {atlas && <AnatomyScene
     atlas={atlas}
     state={{...state, ...(plate ?? {}), insets: FIELD_INSET}}
@@ -565,7 +632,10 @@ export default function V2() {
        is rate-limited on this account — so the honest version of the transition is this one,
        and the poster hand-off stays specified rather than faked. */}
    <div className="v2-wash" data-on={phase === 'boot' ? '1' : '0'} aria-hidden="true"/>
-   {loading && !error && !expired && <div className="v2-progress" role="status">
+   {/* ONE PROGRESS INSTRUMENT PER TIER. In the studio the app bar's status chip says the same thing
+       in a place that does not float over the key pad — two of them on one screen is how the first
+       build said "Loading this view" and "This view is ready" at the same time. */}
+   {loading && !shell.studio && !error && !expired && <div className="v2-progress" role="status">
     <span>{phase === 'boot' ? tr('entry.loading') : tr('entry.sceneReady')}</span>
     {bytes.total > 0 && <b>{tr('entry.bytes', {done: MB(bytes.done), total: MB(bytes.total)})}</b>}
    </div>}
@@ -573,13 +643,20 @@ export default function V2() {
    {error && !expired && <div className="v2-recover" role="alert">{error} <button type="button" onClick={() => location.reload()}>{tr('error.reload')}</button></div>}
    {stage && <button type="button" className="v2-stage-exit" onClick={() => setStage(false)}>{tr('stage.exit')}</button>}
    {stage && focused && <div className="v2-stage-name"><b>{t.name(focused.id, focused.name)}</b><i>{t.secondary(focused.id, focused.name) || focused.name}</i></div>}
+   {/* THE FIELD OVERLAYS — caption, navigation pill, key pad, legend. Inside the field because
+       that is what they float over, and rendered only in the studio because the phone has the
+       margin instead. `?stage=1` strips them with the rest of the chrome. */}
+   {shell.studio && !stage && <StudioField
+    tr={tr} caption={caption} state={state} dispatch={dispatch}
+    structures={basket.length} pieces={state.selected.length} onKeys={shell.setKeysOpen}
+   />}
   </div>
 
   {/* THE RAIL — the set, the focus control, the contents and the loading skeleton, all one
       44 px column. Names arrive with the atlas; the NOTCHES arrive with the URL, so the
       skeleton is the finished component with its labels missing, not a placeholder that gets
       replaced (and therefore not a layout shift). */}
-  <nav className="v2-rail" aria-label={tr('rail.aria')} role="listbox" aria-orientation="vertical">
+  {!shell.studio && <nav className="v2-rail" aria-label={tr('rail.aria')} role="listbox" aria-orientation="vertical">
    {rail.map((n) => <button
      type="button" key={n.id} role="option" aria-selected={focused?.id === n.id}
      className={`v2-notch role-${n.role} ${focused?.id === n.id ? 'is-on' : ''} ${atlas ? '' : 'is-skeleton'}`}
@@ -589,11 +666,12 @@ export default function V2() {
      onClick={() => focusPick(n.id)}
     ><i/></button>)}
    {railOverflow > 0 && <button type="button" className="v2-notch is-more" onClick={() => { setDetent('half'); setPanel('none'); }} aria-label={tr('rail.more', {n: railOverflow})}>+{railOverflow}</button>}
-  </nav>
+  </nav>}
 
   {/* THE MARGIN — two detents on a phone. PEEK is what a chat link opens on: the term pair and
-      one line, so the figure keeps the screen. Everything else is one drag or one tap away. */}
-  <section className="v2-margin" aria-label={tr('margin.aria')}>
+      one line, so the figure keeps the screen. Everything else is one drag or one tap away.
+      Replaced by the studio's docks at >=1180; unchanged below it. */}
+  {!shell.studio && <section className="v2-margin" aria-label={tr('margin.aria')}>
    <button type="button" className="v2-handle" onClick={() => setDetent((d) => (d === 'peek' ? 'half' : 'peek'))} aria-expanded={detent === 'half'}>
     <i/><span className="sr-only">{detent === 'peek' ? tr('margin.expand') : tr('margin.collapse')}</span>
    </button>
@@ -682,7 +760,7 @@ export default function V2() {
     </div>}
 
    </div>
-  </section>
+  </section>}
 
   {/* THE CHROME LAYER — a fixed pass-through overlay, and today the probe panel is its only
       tenant. The probe used to be the last child of `.v2-margin-scroll`, which put the ONLY

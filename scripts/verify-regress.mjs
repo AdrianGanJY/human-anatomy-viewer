@@ -321,7 +321,8 @@ if (want('stage-probe')) {
     await page.waitForTimeout(800);
     const afterReload = await page.evaluate(() => ({
       search: location.search, stage: document.body.classList.contains('v2-stage'),
-      head: !!document.querySelector('.v2-head') && getComputedStyle(document.querySelector('.v2-head')).display !== 'none',
+      // `.v2-head` on the phone/tablet, `.v2-bar` in the studio -- one claim, two trees.
+      head: (() => { const el = document.querySelector('.v2-head, .v2-bar'); return !!el && getComputedStyle(el).display !== 'none'; })(),
     }));
     assert('stage still applies after a reload', afterReload.stage && !afterReload.head,
       `stage=${afterReload.stage} headShown=${afterReload.head} search=${afterReload.search.slice(0, 80)}`, 'staged, no chrome');
@@ -335,7 +336,8 @@ if (want('stage-probe')) {
       await page.waitForTimeout(1200);
       const afterExit = await page.evaluate(() => ({
         search: location.search, stage: document.body.classList.contains('v2-stage'),
-        head: !!document.querySelector('.v2-head') && getComputedStyle(document.querySelector('.v2-head')).display !== 'none',
+        // `.v2-head` on the phone/tablet, `.v2-bar` in the studio -- one claim, two trees.
+      head: (() => { const el = document.querySelector('.v2-head, .v2-bar'); return !!el && getComputedStyle(el).display !== 'none'; })(),
       }));
       assert('exit restores the chrome and drops stage from the URL',
         !afterExit.stage && afterExit.head && !/stage=1/.test(afterExit.search),
@@ -711,11 +713,11 @@ if (want('edited-scene-persists')) {
     // Remove the femur (a CONTEXT member, so the primary and the focus are untouched and the
     // assertion is about membership rather than about focus fallback).
     const removed = 'FMA9611';
-    const xs = await page.$$('.v2-row-x');
+    const xs = await page.$$('.v2-row-x, .v2-card-x');
     let clicked = false;
     for (const x of xs) {
       const owns = await x.evaluate((el, id) => {
-        const row = el.closest('.v2-row');
+        const row = el.closest('.v2-row, .v2-card');
         const label = el.getAttribute('aria-label') || '';
         return !!row && (label.includes('femur') || label.includes('股骨') || row.textContent.includes(id));
       }, removed);
@@ -787,13 +789,34 @@ if (want('focus-retargets-camera')) {
     // FMA16203 is the GHOST and the alphabetically-first member — the structure L31's hotfix
     // stopped the page opening on. Focusing it deliberately is a different operation from
     // defaulting to it, and it is far from the hamstrings, so a real retarget is unmistakable.
+    // TIER-AWARE SINCE L31 v2.1b+c S0. `fresh()` opens at 1440x900, which is now the STUDIO tier,
+    // where the phone's rail / margin / set-list do not exist -- the same product facts are carried
+    // by the Selection dock. The lookups below name BOTH trees, so one case asserts one behaviour
+    // across both rather than two cases drifting apart. The PRODUCT claim is unchanged.
     const notches = await page.$$('.v2-rail .v2-notch');
     let moved = false;
     for (const n of notches) {
       const isGhost = await n.evaluate((el) => el.className.includes('role-ghost'));
       if (isGhost) { moved = await clickAt(page, n); break; }
     }
-    prereq('the ghost notch was found and pressed', moved, `${notches.length} notches in the rail`, 'one pressed');
+    if (notches.length) {
+      prereq('the ghost notch was found and pressed', moved, `${notches.length} notches in the rail`, 'one pressed');
+    } else {
+      // THE STUDIO. The ghost is identified by its ROLE BADGE -- the same fact the rail's
+      // `role-ghost` class carries -- never by position, which would silently follow whatever
+      // order the dock happens to render in.
+      const cards = await page.$$('.v2-card');
+      let ghosts = 0;
+      for (const c of cards) {
+        const isGhost = await c.evaluate((el) => !!el.querySelector('.v2-badge.role-ghost'));
+        if (!isGhost) continue;
+        ghosts += 1;
+        const btn = await c.$('.v2-card-focus');
+        if (btn) { moved = await clickAt(page, btn); break; }
+      }
+      prereq('the ghost focus control was found and pressed (studio Selection dock)', moved,
+        `${cards.length} selection cards, ${ghosts} carrying the ghost badge`, 'one pressed');
+    }
     await page.waitForTimeout(SETTLE);
 
     const t1 = await targets(page, ['FMA22359', 'FMA16203']);
@@ -838,7 +861,7 @@ if (want('review2-paths')) {
       await waitScene(page); await waitAll(page);
       await page.waitForTimeout(SETTLE);
       await openMargin(page);
-      const clearBtn = (await page.$$('.v2-set-foot button')).at(-1);
+      const clearBtn = (await page.$('.v2-clear-all')) ?? (await page.$$('.v2-set-foot button')).at(-1);
       prereq('the Clear control was found', !!clearBtn, clearBtn ? 'present' : 'absent', 'present');
       if (clearBtn) await clickAt(page, clearBtn);
       await page.waitForFunction(() => !/(\?|&)scene=/.test(location.search), null, {timeout: 15000})
@@ -897,7 +920,7 @@ if (want('review2-paths')) {
       prereq('the percent-encoded hash really applied the scene', (before?.ids ?? []).length === 5,
         `${(before?.ids ?? []).length} ids from #%73cene=`, '5');
       // remove a member, then reload
-      const xs = await page.$$('.v2-row-x');
+      const xs = await page.$$('.v2-row-x, .v2-card-x');
       prereq('a remove control was found', xs.length > 0, `${xs.length} remove controls`, '> 0');
       if (xs.length) await clickAt(page, xs[xs.length - 1]);
       await page.waitForFunction(() => (window.atlas?.state?.().ids ?? []).length === 4, null, {timeout: 15000})
@@ -985,7 +1008,7 @@ if (want('plain-entry-widths')) {
 
       const find = async (label) => {
         const handle = await page.evaluateHandle((l) => [...document.querySelectorAll('button')]
-          .find((b) => (b.textContent || '').trim() === l) ?? null, label);
+          .find((b) => (b.textContent || '').trim() === l || (b.getAttribute('aria-label') || '').trim() === l) ?? null, label);
         const el = handle.asElement();
         return el;
       };
@@ -1004,7 +1027,14 @@ if (want('plain-entry-widths')) {
       };
 
       const missing = [];
-      for (const label of ['Find', 'Systems', 'Reset view', 'Three-quarter', 'Front', 'Side', 'Back']) {
+      // TIER-AWARE, SAME REQUIREMENT (R:25). In the studio the margin's Find/Systems buttons become
+      // the tools row's Find and the left Layers sidebar; 'Reset view' and the four named views keep
+      // their names in the navigation pill. Seven controls either way.
+      const inStudio = await page.evaluate(() => !!document.querySelector('.v2.v2-studio'));
+      const WANT = inStudio
+        ? ['Find', 'Layers', 'Reset view', 'Three-quarter', 'Front', 'Side', 'Back']
+        : ['Find', 'Systems', 'Reset view', 'Three-quarter', 'Front', 'Side', 'Back'];
+      for (const label of WANT) {
         const r = await reachable(label);
         if (!r.ok) missing.push(`${label}: ${r.why}`);
       }
@@ -1012,8 +1042,19 @@ if (want('plain-entry-widths')) {
         missing.length === 0, missing.length ? missing.join(' | ') : 'all 7 reachable', '0 unreachable');
 
       // AND THEY WORK. Reachability without operation is the vacuous half of the check.
+      // FIND IS INERT IN THE STUDIO AT S0 (the palette is S2), so 'it opens a search field' is a
+      // claim about the phone/tablet tree only. Asserting it in the studio would assert that an
+      // unbuilt feature works; asserting nothing would let a broken phone search through. So the
+      // operation check runs where the feature exists, and the studio gets its own: present,
+      // focusable, and declaring itself inert rather than merely looking broken.
       const findBtn = await reachable('Find');
-      if (findBtn.ok) {
+      if (findBtn.ok && inStudio) {
+        const st = await findBtn.el.evaluate((el) => ({inert: el.getAttribute('aria-disabled') === 'true', owner: el.getAttribute('title'), focusable: el.tabIndex >= 0}));
+        assert(`[${width}px] Find declares itself inert and names the group that brings it`,
+          st.inert && st.owner === 'S2' && st.focusable,
+          `aria-disabled=${st.inert} title=${st.owner} focusable=${st.focusable}`, 'inert, S2, focusable');
+      }
+      if (findBtn.ok && !inStudio) {
         await clickAt(page, findBtn.el);
         await page.waitForTimeout(500);
         const searchOpen = await page.evaluate(() => !!document.querySelector('.v2-search input'));
@@ -1021,14 +1062,33 @@ if (want('plain-entry-widths')) {
         await clickAt(page, findBtn.el);   // close it again
         await page.waitForTimeout(300);
       }
-      const sysBtn = await reachable('Systems');
-      if (sysBtn.ok) {
-        await clickAt(page, sysBtn.el);
-        await page.waitForTimeout(500);
-        const rows = await page.evaluate(() => document.querySelectorAll('.v2-systems label').length);
-        assert(`[${width}px] Systems opens the system list`, rows > 0, `${rows} system rows`, '> 0');
-        await clickAt(page, sysBtn.el);
-        await page.waitForTimeout(300);
+      if (inStudio) {
+        // The studio's Layers sidebar is OPEN by default, so the system list is on screen without a
+        // press -- and the toggle must still work, so it is pressed twice and the list counted both
+        // times. Fifteen rows either way, which is also a check that the tree is the real inventory
+        // and not a placeholder that happens to render.
+        const openRows = await page.evaluate(() => document.querySelectorAll('.v2-tree-row').length);
+        const layersBtn = await reachable('Layers');
+        let stubbed = null, back = null;
+        if (layersBtn.ok) {
+          await clickAt(page, layersBtn.el); await page.waitForTimeout(400);
+          stubbed = await page.evaluate(() => !!document.querySelector('.v2-side.is-stub'));
+          await clickAt(page, layersBtn.el); await page.waitForTimeout(400);
+          back = await page.evaluate(() => document.querySelectorAll('.v2-tree-row').length);
+        }
+        assert(`[${width}px] the Layers sidebar lists the systems, and its toggle collapses and restores it`,
+          openRows === 15 && stubbed === true && back === 15,
+          `${openRows} rows open, collapsed=${stubbed}, ${back} rows after restoring`, '15, collapsed, 15');
+      } else {
+        const sysBtn = await reachable('Systems');
+        if (sysBtn.ok) {
+          await clickAt(page, sysBtn.el);
+          await page.waitForTimeout(500);
+          const rows = await page.evaluate(() => document.querySelectorAll('.v2-systems label').length);
+          assert(`[${width}px] Systems opens the system list`, rows > 0, `${rows} system rows`, '> 0');
+          await clickAt(page, sysBtn.el);
+          await page.waitForTimeout(300);
+        }
       }
       const sideBtn = await reachable('Side');
       if (sideBtn.ok) {

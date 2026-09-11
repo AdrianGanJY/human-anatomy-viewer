@@ -4,4 +4,5 @@
 import {createRoot} from 'react-dom/client';
 import V2 from '../../app/v2/page';
 import '../../app/v2/v2.css';
+import '../../app/v2/shell/shell.css';
 createRoot(document.getElementById('root')!).render(<V2/>);

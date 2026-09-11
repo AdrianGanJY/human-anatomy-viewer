@@ -140,7 +140,13 @@ if (!SWEEP.length) { console.error(`UX_VIEWPORTS matched none of: ${VIEWPORTS.ma
 
 /** Where the title lives in each entry. Two selectors, one contract: "the visible name of the
  *  structure this link is about". */
-const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b'};
+/** ⚠️ TWO SELECTORS FOR v2 SINCE L31 v2.1b+c S0, and the CONTRACT is unchanged: "the visible name of
+ *  the structure this link is about". On the phone that is `.v2-term b`. In the studio the term pair
+ *  is gone and the same fact is the FIRST SELECTION CARD — the focused primary, first because the
+ *  dock is role-ordered. The app bar deliberately shows the scene's CAPTION instead, which is a
+ *  different fact and would have made this row assert the wrong thing. `querySelector` takes the
+ *  first match of either, and only one of the two exists at any width. */
+const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b, .v2-card b'};
 /** The element the camera actually draws into — the whole viewport in v1, the grid cell in v2.
  *  This is the measurement that makes 'the field is a layout cell' checkable. */
 const FIELD_SEL = {v1: '.scene', v2: '.v2-field'};
@@ -874,7 +880,18 @@ for (const vp of SWEEP) {
     // and neither is asserted against the other's contract.
     if (variant === 'v2') {
       const reachOf = () => barePage.evaluate(() => {
-        const wanted = ['Find', 'Systems', 'Three-quarter', 'Front', 'Side', 'Back'];
+        // ⚠️ THE CONTROL NAMES ARE TIER-DEPENDENT AS OF L31 v2.1b+c S0, and the ASSERTION IS NOT.
+      // R:25 is "on a plain `/v2/` visit the controls are reachable and work at 1100–1920" — it was
+      // never about the string "Systems". At >=1180 the shell replaces the margin's Find/Systems
+      // buttons with the tools row's panel toggles and the sidebar; the named views move from the
+      // margin into the navigation pill and keep their names. So the studio asks for ITS equivalent
+      // set, by the same rule: every control this visit needs, present and hit-testable. This is a
+      // RELABELLING of the same requirement, not a relaxation of it — the count goes UP, from six
+      // to eight.
+      const studio = !!document.querySelector('.v2.v2-studio');
+      const wanted = studio
+        ? ['Layers', 'Selection', 'Info', 'Find', 'Three-quarter', 'Front', 'Side', 'Back']
+        : ['Find', 'Systems', 'Three-quarter', 'Front', 'Side', 'Back'];
         const visible = (el) => {
           const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
           return r.width >= 1 && r.height >= 1 && cs.display !== 'none' && cs.visibility !== 'hidden';
@@ -986,6 +1003,278 @@ for (const vp of SWEEP) {
     check(vp.name, 'bare entry run completed', false, String(e).slice(0, 220), 'no throw');
   } finally {
     await bareCtx.close();
+  }
+}
+
+/**
+ * ══ THE S0 STUDIO PASS (L31 v2.1b+c) ═══════════════════════════════════════════════════════════
+ *
+ * Its own pass rather than rows bolted onto the six-viewport sweep, for one reason: the things S0
+ * must get right are things LATER GROUPS CANNOT CHANGE — the grid, the tier boundaries, the dock
+ * geometry, the collapse ladder, the persistence shape — and several of them are only observable at
+ * viewports the sweep does not visit (1179 and 1180 are a pixel apart, and no sweep viewport is
+ * within 240 px of the boundary). A boundary nobody measures is a boundary a mis-ordered `@media`
+ * moves silently.
+ *
+ * Every row here asserts a COMPUTED or RENDERED value — `getComputedStyle(...).gridTemplateAreas`,
+ * a `getBoundingClientRect` — never a token. `--v2-rail:45px` exists in this project precisely
+ * because a token once lied about a rendered width.
+ */
+if (variant === 'v2') {
+  /** The five tiers and their expected `grid-template-areas`, as STRINGS the browser computed. */
+  const TIERS = [
+    {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true, tier: 'phone',
+      areas: '"head head" "field rail" "margin margin"'},
+    {name: '1024x768', width: 1024, height: 768, dpr: 2, coarse: true, tier: 'tablet',
+      areas: '"head head head" "field rail margin"'},
+    // THE BOUNDARY ITSELF (opus-plan-review-2.md RC7). 1180, not 1200: v2.css:265 still says 1200
+    // for its own legacy rules, and the studio's own tier query is what has to be at 1180.
+    {name: '1179x900', width: 1179, height: 900, dpr: 1, coarse: false, tier: 'tablet',
+      areas: '"head head head" "field rail margin"'},
+    {name: '1180x900', width: 1180, height: 900, dpr: 1, coarse: false, tier: 'studio',
+      areas: '"bar bar bar" "tools tools tools" "side field dock" "status status status"'},
+    {name: '1920x860', width: 1920, height: 860, dpr: 1, coarse: false, tier: 'studio-wide',
+      areas: '"bar bar bar" "tools tools tools" "side field dock" "status status status"'},
+  ];
+  const STUDIO_V = 'S0-studio';
+
+  for (const vp of TIERS) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const g = await page.evaluate(() => {
+        const el = document.querySelector('.v2');
+        const box = (sel) => { const n = document.querySelector(sel); if (!n) return null; const r = n.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x)}; };
+        return {
+          areas: getComputedStyle(el).gridTemplateAreas,
+          tier: el.dataset.tier,
+          studio: el.classList.contains('v2-studio'),
+          bar: box('.v2-bar'), tools: box('.v2-tools'), status: box('.v2-status'),
+          side: box('.v2-side'), field: box('.v2-field'),
+          panes: [...document.querySelectorAll('.v2-pane')].map((n) => Math.round(n.getBoundingClientRect().width)),
+          // the phone's geometry constants, read back rather than assumed
+          head: box('.v2-head'), rail: box('.v2-rail'), margin: box('.v2-margin'),
+        };
+      });
+      // G8. The ONE line that detects a mis-ordered `@media`, and the only instrument that can.
+      check(vp.name, `[${STUDIO_V}] the computed grid-template-areas is the ${vp.tier} tier`,
+        g.areas === vp.areas, `tier=${g.tier} areas=${g.areas}`, vp.areas);
+      check(vp.name, `[${STUDIO_V}] the tier the page believes it is in agrees with the grid it drew`,
+        g.tier === vp.tier && g.studio === (vp.tier === 'studio' || vp.tier === 'studio-wide'),
+        `data-tier=${g.tier} .v2-studio=${g.studio}`, `${vp.tier}, studio=${vp.tier.startsWith('studio')}`);
+
+      if (vp.tier.startsWith('studio')) {
+        // THE FIXED ROWS, RENDERED. 52 / 44 / 32 in every studio tier including coarse — `spec.md`
+        // decision 4 fixes the synthesis's inconsistent heights rather than carrying them in.
+        check(vp.name, `[${STUDIO_V}] the studio rows are 52 / 44 / 32 as rendered`,
+          g.bar?.h === 52 && g.tools?.h === 44 && g.status?.h === 32,
+          `bar=${g.bar?.h} tools=${g.tools?.h} status=${g.status?.h}`, '52 / 44 / 32');
+        check(vp.name, `[${STUDIO_V}] the sidebar is 264 and the field clears the 420 px floor`,
+          g.side?.w === 264 && (g.field?.w ?? 0) >= 420,
+          `side=${g.side?.w} field=${g.field?.w}x${g.field?.h}`, 'side 264, field >= 420');
+        // AT MOST TWO DOCKS, EVER, and each at its own width. "Max two, never three" is a layout
+        // invariant; a third column is what the eviction rule exists to prevent.
+        const total = g.panes.reduce((a, b) => a + b, 0);
+        check(vp.name, `[${STUDIO_V}] at most two right docks, at their declared widths, <= 780 combined`,
+          g.panes.length <= 2 && total <= 780 && g.panes.every((w) => [320, 300, 360].includes(w)),
+          `${g.panes.length} pane(s) [${g.panes.join(', ')}] total ${total}`, '<= 2 of 320/300/360, total <= 780');
+        check(vp.name, `[${STUDIO_V}] ${vp.tier === 'studio-wide' ? 'two docks' : 'one dock'} by default (G2)`,
+          g.panes.length === (vp.tier === 'studio-wide' ? 2 : 1),
+          `${g.panes.length} pane(s)`, vp.tier === 'studio-wide' ? '2' : '1');
+        check(vp.name, `[${STUDIO_V}] the phone's head / rail / margin are GONE, not merely hidden`,
+          g.head === null && g.rail === null && g.margin === null,
+          `head=${!!g.head} rail=${!!g.rail} margin=${!!g.margin}`, 'absent');
+      } else {
+        // PHONE AND TABLET PRESERVATION, as a POSITIVE control rather than the absence of a change:
+        // the constants are read back off the rendered page.
+        check(vp.name, `[${STUDIO_V}] the shell did not render below 1180 — head / rail / margin intact`,
+          !!g.head && !!g.rail && !!g.margin && g.bar === null && g.side === null && g.status === null,
+          `head=${g.head?.h} rail=${g.rail?.w} margin=${g.margin?.h} bar=${!!g.bar} side=${!!g.side}`,
+          'the pre-S0 tree');
+        if (vp.tier === 'phone') {
+          check(vp.name, `[${STUDIO_V}] the phone geometry constants are unchanged (56 / 45 / 108)`,
+            g.head.h === 56 && g.rail.w === 45 && g.margin.h === 108,
+            `head=${g.head.h} rail=${g.rail.w} margin=${g.margin.h}`, '56 / 45 / 108');
+        }
+      }
+
+      // THE KEY MAP AT EVERY WIDTH, and its SHEET presentation below 768 — the sheet primitive's
+      // only reachable invoker at S0, so without this row the primitive ships untested.
+      await page.keyboard.press('?');
+      await page.waitForTimeout(400);
+      const modal = await page.evaluate(() => {
+        const m = document.querySelector('.v2-modal');
+        if (!m) return null;
+        const r = m.getBoundingClientRect(), h = document.querySelector('.v2-sheet-handle');
+        const hr = h?.getBoundingClientRect();
+        return {
+          sheet: m.classList.contains('is-sheet'), w: Math.round(r.width), h: Math.round(r.height),
+          handle: hr ? Math.round(hr.height) : null,
+          focusInside: m.contains(document.activeElement),
+          rows: document.querySelectorAll('.v2-keys dt').length,
+        };
+      });
+      check(vp.name, `[${STUDIO_V}] "?" opens the key map, traps focus inside it, and lists every binding`,
+        !!modal && modal.focusInside && modal.rows >= 20,
+        modal ? `${modal.rows} rows, focusInside=${modal.focusInside}, sheet=${modal.sheet}` : 'no overlay opened',
+        'open, focus inside, >= 20 rows');
+      check(vp.name, `[${STUDIO_V}] it presents as a ${vp.width < 768 ? 'SHEET with a 44 px handle' : 'centred modal'}`,
+        vp.width < 768 ? (modal?.sheet === true && modal?.handle === 44) : (modal?.sheet === false && modal?.handle === null),
+        `sheet=${modal?.sheet} handle=${modal?.handle}`, vp.width < 768 ? 'sheet, handle 44' : 'modal, no handle');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+      const closed = await page.evaluate(() => !document.querySelector('.v2-modal'));
+      check(vp.name, `[${STUDIO_V}] Escape closes it (the only other binding S0 installs)`,
+        closed, closed ? 'closed' : 'still open', 'closed');
+
+      if (vp.tier.startsWith('studio')) {
+        await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`)});
+      }
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the studio pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── THE COLLAPSE LADDER, DRIVEN ───────────────────────────────────────────────────────────────
+  // Not the pure function (that is unit-tested) — the RENDERED consequence, seeded through the very
+  // persistence layer a human's browser would carry: a 420 px sidebar and two docks at 1180, which
+  // is `spec.md`'s own worked example and does not fit.
+  {
+    const vp = {name: 'ladder-1180', width: 1180, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.addInitScript(() => {
+        localStorage.setItem('atlas.dock', JSON.stringify({v: 1, open: ['json', 'selection'], side: 420, sideCollapsed: false}));
+      });
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const g = await page.evaluate(() => {
+        const f = document.querySelector('.v2-field').getBoundingClientRect();
+        const s = document.querySelector('.v2-side')?.getBoundingClientRect();
+        return {
+          field: Math.round(f.width), side: s ? Math.round(s.width) : null,
+          panes: document.querySelectorAll('.v2-pane').length,
+          announced: !!document.querySelector('.v2-status .is-warn'),
+          announceText: document.querySelector('.v2-status .is-warn')?.textContent ?? '',
+          togglesStillThere: document.querySelectorAll('.v2-tools .v2-tbtn[aria-pressed]').length,
+        };
+      });
+      // 1180 - 420 - (360 + 320) = 80. The ladder closes the last-opened dock (selection, 320) to
+      // reach 400 — still short — then the remaining json (360) to reach 760. The sidebar stays.
+      check(vp.name, `[${STUDIO_V}] a 420 px sidebar + two docks at 1180 collapses to a >= 420 field, deterministically`,
+        g.field >= 420 && g.panes === 0 && g.side === 420,
+        `field=${g.field} side=${g.side} panes=${g.panes}`, 'field 760, side 420, 0 docks');
+      check(vp.name, `[${STUDIO_V}] and it ANNOUNCES the automatic collapse rather than doing it silently`,
+        g.announced, g.announced ? `announced: "${g.announceText.slice(0, 60)}"` : 'no announcement', 'announced');
+      check(vp.name, `[${STUDIO_V}] the panel toggles survive the collapse (the way back is never removed)`,
+        g.togglesStillThere >= 4, `${g.togglesStillThere} toggles`, '>= 4');
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the ladder pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── A CORRUPT PERSISTED VALUE IN EVERY KEY STILL RENDERS THE SHELL (RC12) ─────────────────────
+  {
+    const vp = {name: 'corrupt-prefs', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    const errs = [];
+    page.on('pageerror', (e) => errs.push(String(e).slice(0, 120)));
+    try {
+      await page.addInitScript(() => {
+        for (const k of ['atlas.dock', 'atlas.pinyin', 'atlas.scenes', 'atlas.openai']) {
+          localStorage.setItem(k, '{"v":99,"open":"not-an-array","side":"wide"');   // unparseable AND wrong-shaped
+        }
+      });
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const g = await page.evaluate(() => ({
+        bar: !!document.querySelector('.v2-bar'), side: Math.round(document.querySelector('.v2-side')?.getBoundingClientRect().width ?? 0),
+        field: Math.round(document.querySelector('.v2-field')?.getBoundingClientRect().width ?? 0),
+        panes: document.querySelectorAll('.v2-pane').length,
+      }));
+      check(vp.name, `[${STUDIO_V}] a corrupt value in EVERY persisted key still renders the shell at its defaults`,
+        g.bar && g.side === 264 && g.field >= 420 && g.panes === 1 && errs.length === 0,
+        `bar=${g.bar} side=${g.side} field=${g.field} panes=${g.panes} pageerrors=${errs.length ? errs[0] : 0}`,
+        'bar, side 264, one dock, no page error');
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the corrupt-prefs pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── THE PROBE PANEL SURVIVES THE SHELL, AND STAGE STILL HIDES IT (G5 / RC6) ───────────────────
+  // `?probe=1` is the only real-device timing lane this project has, and v2.1b's shell deletes the
+  // container it used to live in. It was lifted into `.v2-chrome` in v2.1a; this proves the lift
+  // holds at the two studio widths and that the stage fence still covers it.
+  for (const w of [1440, 1920]) {
+    const vp = {name: `probe-${w}`, width: w, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      for (const q of ['probe=1', 'stage=1&probe=1']) {
+        await page.goto(`${base}${path}?${q}&scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        await page.waitForTimeout(1400);
+        const seen = await page.evaluate(() => {
+          const el = document.querySelector('.v2-probe');
+          if (!el) return {shown: false, close: false};
+          const cs = getComputedStyle(el), r = el.getBoundingClientRect();
+          return {
+            shown: cs.display !== 'none' && cs.visibility !== 'hidden' && r.width > 0 && r.height > 0,
+            close: !!document.querySelector('.v2-probe-close'),
+            w: Math.round(r.width),
+          };
+        });
+        const staged = q.startsWith('stage');
+        check(vp.name, `[${STUDIO_V}] ?${q}: the probe panel is ${staged ? 'HIDDEN by the stage fence' : 'reachable at the studio tier, with its close control'}`,
+          staged ? !seen.shown : (seen.shown && seen.close),
+          `shown=${seen.shown} close=${seen.close}${seen.w ? ` w=${seen.w}` : ''}`, staged ? 'hidden' : 'shown, closable');
+      }
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the probe pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── THE CJK GUARD, EXTENDED TO THE STUDIO'S OWN ROWS ──────────────────────────────────────────
+  // The existing guard covers `.v2-term b`, which the studio does not render. A Tailwind import or
+  // a stray `:root` would pull v1's Latin stack over the forked CJK stacks — invisible in 简体,
+  // WRONG CHARACTERS in 繁體 (Simplified glyph variants), in a vocabulary-teaching tool.
+  {
+    const vp = {name: 'cjk-studio', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      // ⚠️ `?lang=` LOSES TO THE SCENE'S OWN `lang`. `BLOB` declares zh-Hans, so `?lang=zh-Hant` on
+      // it leaves the page in Simplified and this row measured the SC stack while claiming to test
+      // TC — a check that could never have gone red for the reason it names. The blob carries the
+      // language, so the fixture has to.
+      const hantBlob = encodeScene(normalizeScene({...SCENE, lang: 'zh-Hant'}));
+      await page.goto(`${base}${path}?scene=${hantBlob}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(900);
+      const fonts = await page.evaluate(() => {
+        const out = {};
+        for (const sel of ['.v2-bar-text b', '.v2-tree-name', '.v2-card b', '.v2-status > span']) {
+          const el = document.querySelector(sel);
+          out[sel] = el ? getComputedStyle(el).fontFamily : null;
+        }
+        return {out, lang: document.documentElement.lang};
+      });
+      const rows = Object.entries(fonts.out);
+      const bad = rows.filter(([, v]) => !v || !/PingFang TC|Noto Sans (CJK )?TC|Source Han Sans TC|JhengHei/i.test(v));
+      check(vp.name, `[${STUDIO_V}] every studio text row resolves the zh-Hant CJK stack, not v1's Latin one`,
+        fonts.lang === 'zh-Hant' && bad.length === 0,
+        bad.length ? `${bad.map(([k, v]) => `${k}: ${String(v).slice(0, 60)}`).join(' | ')}` : `${rows.length} rows, all TC (lang=${fonts.lang})`,
+        'the TC stack on every row');
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the CJK pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
   }
 }
 

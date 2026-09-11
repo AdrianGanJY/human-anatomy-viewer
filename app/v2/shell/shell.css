@@ -1,0 +1,308 @@
+/*
+ * THE STUDIO SHELL — >=1180 px only. L31 v2.1b+c, S0.
+ *
+ * It EXTENDS `app/v2/v2.css`; it does not replace it. The phone tier (<768) and the tablet tier
+ * (768-1179) keep every rule they have today, and the only thing this file does below 1180 is
+ * define tokens nothing reads and style overlays that only a keyboard can open. That is what makes
+ * "phone geometry preserved" a structural claim rather than a promise: the rules that produce the
+ * phone's 56 / 45 / 108 / min(48dvh,420) are in the other file and are not touched here.
+ *
+ * ⚠️ NO `@import 'tailwindcss'`, EVER (G1). It pulls v1's `:root` font stack over v2's forked CJK
+ * stacks -- silently, and only visibly in 繁體, where the Simplified glyph variants are the wrong
+ * characters in a vocabulary-teaching tool. A build guard greps for it.
+ *
+ * ⚠️ NO HEX OUTSIDE THE TOKEN BLOCK (G1). Every colour below is a `var(--v2-*)`. This is what makes
+ * a Mipos-purple sweep structurally impossible rather than grep-enforced: there is nowhere to put
+ * one. If a rule needs a colour that does not exist, the token block gets a token.
+ */
+
+/* ══ TOKEN EXTENSION ════════════════════════════════════════════════════════════════════════════
+   `spec.md` §"Token extension of v2.css". Existing names keep their existing values; these are the
+   NEW ones plus two deliberate refinements. Geometry tokens live here rather than in v2.css so a
+   reader can see the whole studio contract in one place. */
+:root{
+ /* the three fixed studio rows — 52 / 44 / 32 in EVERY studio tier, including coarse. `spec.md`
+    decision 4: fix the synthesis's arithmetic rather than carry inconsistent heights into S0. */
+ --v2-bar:52px; --v2-tools:44px; --v2-status:32px;
+ --v2-side:264px; --v2-side-stub:44px;
+ --v2-dock:320px; --v2-dock-info:300px; --v2-dock-json:360px;
+ --v2-field-min:420px;
+ --v2-radius-sm:8px; --v2-radius-lg:14px; --v2-radius-sheet:18px;
+ --v2-space:8px;
+ --v2-type-xs:12px; --v2-type-sm:13px; --v2-type-body:14px; --v2-type-title:16px; --v2-type-term:19px; --v2-type-head:24px;
+ --v2-warn:#8a4200; --v2-warn-soft:#fff3df;
+ --v2-scrim:#1b2a3340;
+ --v2-accent-hover:#066773;
+ /* live layout, written by the collapse ladder in JS. Declared here so the grid below is readable
+    without reading the component. */
+ --v2-side-w:264px; --v2-dock-w:320px;
+}
+/* THE ACCENT REFINEMENT IS SCOPED TO THE STUDIO, on purpose (opus-plan-review-2.md RC5).
+   `spec.md` refines --v2-accent #0f766e -> #087f8c globally, and the phone paints that token at
+   entry and at rest (v2.css:103, :128, :159, :186) -- so a global change repaints the phone, and
+   "generally the UI is okay" is Adrian's ruling about the phone. He gets the new tint where the new
+   surface is, and the tint he already approved everywhere else, until he asks otherwise. */
+.v2-studio{
+ --v2-accent:#087f8c;
+ --v2-accent-soft:#e6f4f4;
+}
+body[data-ground=dark] .v2-studio{--v2-accent:#4ecdc0;--v2-accent-soft:#4ecdc01f;--v2-accent-hover:#7ddcd2;--v2-warn-soft:#f0b4691a;--v2-warn:#f2c893;--v2-scrim:#0b0f1266}
+
+/* ══ THE GRID ═══════════════════════════════════════════════════════════════════════════════════
+   bar / tools / (side | field | dock) / status. The field is a CELL, exactly as on the phone, so
+   `FIELD_INSET` stays a constant and the camera frames the space that is actually free.
+
+   The column widths come from JS (the collapse ladder), not from `@media`: closing a dock when the
+   field would go under 420 px is an algorithm with an order and an announcement, and CSS can only
+   express "shrink". See app/v2/shell/layout.ts. */
+.v2.v2-studio{
+ grid-template-columns:var(--v2-side-w) minmax(0,1fr) var(--v2-dock-w);
+ grid-template-rows:var(--v2-bar) var(--v2-tools) minmax(0,1fr) var(--v2-status);
+ grid-template-areas:"bar bar bar" "tools tools tools" "side field dock" "status status status";
+}
+/* ?stage=1 keeps winning: it collapses the studio to one field cell, same as the phone. Declared
+   here because `.v2-studio`'s own template would otherwise beat v2.css:229 on specificity. */
+body.v2-stage .v2.v2-studio{grid-template-columns:1fr;grid-template-rows:1fr;grid-template-areas:"field"}
+/* THE FENCE, EXTENDED TO THE STUDIO'S FIVE REGIONS. `?stage=1` is the display client's contract —
+   the figure and nothing else — and v2.css:228 lists the phone's surfaces by name, so the studio's
+   were simply not in it. This is the belt; `page.tsx` not rendering the shell in stage is the
+   braces. Both, because a fence that depends on remembering to add a name to a list is the thing
+   `.v2-chrome` exists to avoid. */
+body.v2-stage .v2-bar,body.v2-stage .v2-tools,body.v2-stage .v2-side,body.v2-stage .v2-dock,
+body.v2-stage .v2-status,body.v2-stage .v2-cap,body.v2-stage .v2-pill,body.v2-stage .v2-pad,
+body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
+
+/* ── the app bar ─────────────────────────────────────────────────────────────────────────────── */
+.v2-bar{grid-area:bar;display:flex;align-items:center;gap:calc(var(--v2-space)*1.5);padding:0 12px 0 16px;border-bottom:1px solid var(--v2-line-2);background:var(--v2-surface);min-width:0}
+.v2-brand{display:flex;align-items:center;gap:8px;font-size:var(--v2-type-title);font-weight:600;white-space:nowrap;color:var(--v2-ink)}
+.v2-brand svg{flex-shrink:0;color:var(--v2-accent)}
+.v2-bar-sep{width:1px;height:24px;background:var(--v2-line-2);flex-shrink:0}
+.v2-bar-text{flex:1;min-width:0}
+.v2-bar-text b{display:block;font-size:var(--v2-type-title);font-weight:600;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-bar-text i{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-chip{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;height:32px;padding:0 14px;border-radius:999px;background:var(--v2-surface-2);font-size:var(--v2-type-xs);color:var(--v2-ink-2);white-space:nowrap}
+.v2-chip s{width:7px;height:7px;border-radius:50%;background:var(--v2-accent);text-decoration:none;flex-shrink:0}
+.v2-chip.is-loading s{background:var(--v2-ink-3);animation:v2pulse 1.4s ease-in-out infinite}
+
+/* ── the tools row ───────────────────────────────────────────────────────────────────────────── */
+.v2-tools{grid-area:tools;display:flex;align-items:center;gap:6px;padding:0 12px 0 16px;border-bottom:1px solid var(--v2-line-2);background:var(--v2-surface);min-width:0;overflow:hidden}
+.v2-grow{flex:1;min-width:0}
+.v2-sep{width:1px;height:20px;background:var(--v2-line-2);flex-shrink:0;margin:0 4px}
+/* The one button. 32 px on a fine pointer, 44 on a coarse one -- the size split is a POINTER
+   question, never a width one, so a coarse 1366x1024 tablet in the studio tier gets real targets. */
+.v2-tbtn{display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 11px;border-radius:var(--v2-radius-sm);border:1px solid transparent;font-size:var(--v2-type-sm);color:var(--v2-ink-2);white-space:nowrap;flex-shrink:0}
+.v2-tbtn:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-tbtn:active{background:var(--v2-accent-soft)}
+.v2-tbtn.is-on{color:var(--v2-accent);background:var(--v2-accent-soft);border-color:var(--v2-accent-soft);font-weight:600}
+.v2-tbtn[disabled]{opacity:.45;cursor:default}
+.v2-tbtn svg{flex-shrink:0}
+.v2-kbd{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:5px;background:var(--v2-surface-2);border:1px solid var(--v2-line-2);font-size:11px;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-findbtn{flex:0 1 260px;justify-content:flex-start;min-width:120px;border:1px solid var(--v2-line);background:var(--v2-surface)}
+.v2-findbtn .v2-grow{text-align:left}
+
+/* THE INERT CONVENTION, and it is deliberately NOT `disabled` (`spec.md` §State and wiring ledger).
+   A disabled control says "not now, and here is why" -- Fit with nothing selected, `+` at cap 8.
+   An INERT one says "this is where that will be", and it must stay FOCUSABLE so a keyboard reader
+   can reach it and be told which group brings it. Dashed neutral border, never accent: it is not a
+   state the human can act on. */
+.v2-inert{border:1px dashed var(--v2-line);color:var(--v2-ink-3);cursor:default;background:none}
+.v2-inert:hover{background:none;color:var(--v2-ink-3)}
+.v2-inert:active{background:none}
+
+/* ── the left sidebar ────────────────────────────────────────────────────────────────────────── */
+.v2-side{grid-area:side;display:flex;flex-direction:column;min-width:0;background:var(--v2-surface);border-right:1px solid var(--v2-line-2);overflow:hidden}
+.v2-side-head{display:flex;align-items:center;gap:8px;height:44px;padding:0 8px 0 16px;flex-shrink:0}
+.v2-side-head h2{margin:0;font-size:var(--v2-type-body);font-weight:600}
+.v2-side-head em{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+/* ⚠️ EXPLICIT `line-height`, MEASURED. `document.documentElement.lang` is set in an effect
+   (page.tsx), so the CJK stack resolves one frame AFTER the first paint — and this row's natural
+   line box changed 25 px -> 24 px when it did, moving every tree row below it up by one pixel.
+   The CLS observer saw exactly that: 0.00067 x 4 rows against a 0.001 budget. A pinned line box
+   cannot change height when the font under it does. Same treatment for the foot, for the same
+   reason, even though nothing sits below it today. */
+.v2-side-sub{padding:0 16px 8px;font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-2)}
+.v2-side-filter{padding:0 12px 10px;flex-shrink:0}
+.v2-side-filter div{display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);color:var(--v2-ink-3);font-size:var(--v2-type-sm)}
+.v2-tree{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 8px;list-style:none;margin:0}
+/* ⚠️ A FIXED 36 px ROW, and this reverses my own first attempt. The mock wraps "Reproductive system"
+   to two lines at 264 px, so the first build used `min-height` to let it -- and then the row heights
+   became a function of the NAME, which changes twice after the first paint: once when
+   `document.documentElement.lang` resolves the CJK stack, and again when the Chinese dictionary
+   lands and every system is renamed. The tree's scrollHeight moved 560 -> 558 px and the CLS
+   observer attributed 0.00067 x 4 rows against a 0.001 budget. `spec.md`'s own geometry table says
+   "Tree parent 36 fine / 48 coarse" -- fixed -- so the table wins over the mock's rendering of one
+   row, and a long name gets an ellipsis with its full text in `title`. */
+.v2-tree-row{display:flex;align-items:center;gap:8px;height:36px;padding:0 4px;border-radius:6px}
+.v2-tree-row:hover{background:var(--v2-surface-2)}
+.v2-tw{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0}
+.v2-tick{width:18px;height:18px;border-radius:4px;border:1.5px solid var(--v2-line);flex:0 0 18px;display:flex;align-items:center;justify-content:center;background:var(--v2-surface)}
+.v2-tick.is-mixed{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-tick.is-mixed::after{content:"";width:9px;height:2px;background:var(--v2-surface);border-radius:1px}
+.v2-swatch{flex:0 0 3px;width:3px;align-self:stretch;min-height:16px;border-radius:2px}
+/* THE NAME IS THE ONLY THING THAT GROWS, and it needs its own class: `.v2-tree-row>span` also
+   matched the tick and the swatch (both spans), so `flex:1` stretched all three and every system
+   name rendered as "Ske…" against a 34 px checkbox. Caught by LOOKING at the first screenshot. */
+.v2-tree-name{flex:1;min-width:0;font-size:var(--v2-type-body);line-height:20px;color:var(--v2-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* `min-width` RESERVES the count's column before the atlas supplies it, so the number arriving
+   cannot push the name. Tabular numerals keep it steady as the value changes. */
+.v2-tree-row>em{flex-shrink:0;min-width:4ch;text-align:right;font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-eye{width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0;border-radius:5px}
+.v2-side-foot{flex-shrink:0;padding:10px 16px;border-top:1px solid var(--v2-line-2);font-size:11px;line-height:17px;color:var(--v2-ink-2)}
+.v2-side-foot button{font-size:11px;color:var(--v2-accent);padding:0}
+/* THE 44 px STUB. Docks collapse to ZERO; the sidebar collapses to a stub, because there has to be
+   something left to click to get it back. */
+.v2-side.is-stub{align-items:center}
+.v2-side.is-stub>*:not(.v2-side-head){display:none}
+.v2-side.is-stub .v2-side-head{padding:0;justify-content:center;width:100%}
+.v2-side.is-stub .v2-side-head h2,.v2-side.is-stub .v2-side-head em{display:none}
+
+/* ── the right docks ─────────────────────────────────────────────────────────────────────────── */
+/* ⚠️ THE BORDER LIVES ON THE PANE, NOT ON THE DOCK — and that is a measured correction, not taste.
+   With `border-left` on `.v2-dock`, the 320 px grid column has a 319 px content box, the pane cannot
+   fit its declared 320 and `overflow:hidden` + flex shrink silently took a pixel off every dock. The
+   S0 oracle measures RENDERED rects precisely because a token lied about a width once before
+   (`--v2-rail:45px`), and it caught this one on the first run: "1 pane(s) [319]". */
+.v2-dock{grid-area:dock;display:flex;min-width:0;background:var(--v2-surface);overflow:hidden}
+.v2-pane{display:flex;flex-direction:column;flex:0 0 auto;min-width:0;height:100%;border-left:1px solid var(--v2-line-2)}
+.v2-pane-head{display:flex;align-items:center;gap:8px;height:44px;padding:0 8px 0 16px;flex-shrink:0;border-bottom:1px solid var(--v2-line-2)}
+.v2-pane-head h2{margin:0;flex:1;min-width:0;font-size:var(--v2-type-body);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-pane-head em{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-pane-x{width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--v2-ink-3);font-size:17px;flex-shrink:0}
+.v2-pane-x:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-pane-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:12px}
+.v2-pane-foot{flex-shrink:0;display:flex;gap:8px;padding:12px;border-top:1px solid var(--v2-line-2)}
+.v2-pane-foot .v2-tbtn{height:36px}
+.v2-pill-count{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:999px;background:var(--v2-accent-soft);color:var(--v2-accent);font-size:var(--v2-type-xs);font-weight:600;margin-bottom:10px}
+.v2-card{border:1px solid var(--v2-line-2);border-radius:10px;padding:10px 12px;margin-bottom:8px;background:var(--v2-surface)}
+.v2-card.is-on{border-color:var(--v2-accent);background:var(--v2-accent-soft)}
+.v2-card-top{display:flex;align-items:flex-start;gap:6px}
+.v2-card-top>div{flex:1;min-width:0}
+.v2-card b{display:block;font-size:var(--v2-type-body);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-card i{display:block;font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-card-act{width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:6px;color:var(--v2-ink-3);flex-shrink:0}
+.v2-card-act:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-card-row{display:flex;align-items:center;gap:8px;margin-top:8px}
+.v2-badge{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:5px;background:var(--v2-surface-2);font-size:11px;color:var(--v2-ink-2)}
+.v2-badge.role-primary{background:var(--v2-accent-soft);color:var(--v2-accent)}
+.v2-card-row>em{margin-left:auto;font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-acc{border:1px solid var(--v2-line-2);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.v2-acc>h3{margin:0;padding:9px 12px;background:var(--v2-surface-2);font-size:var(--v2-type-sm);font-weight:600}
+.v2-acc>div{padding:10px 12px;font-size:var(--v2-type-sm);line-height:1.6;color:var(--v2-ink-2)}
+.v2-kv{display:flex;align-items:baseline;gap:10px;padding:8px 2px;border-bottom:1px solid var(--v2-line-2);font-size:var(--v2-type-sm)}
+.v2-kv>span{flex:1;color:var(--v2-ink-2)}
+.v2-kv>b{font-weight:600;font-variant-numeric:tabular-nums}
+.v2-json{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--v2-type-xs);line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--v2-ink-2)}
+.v2-note-sm{font-size:var(--v2-type-xs);line-height:1.55;color:var(--v2-ink-2);margin:0 0 10px}
+.v2-askbox{width:100%;min-height:132px;padding:10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);font-size:var(--v2-type-body);line-height:1.6;resize:none;font-family:inherit}
+.v2-empty-state{padding:24px 8px;text-align:center;font-size:var(--v2-type-sm);color:var(--v2-ink-2);line-height:1.7}
+
+/* ── the field overlays: caption, pill, key pad, legend ──────────────────────────────────────── */
+.v2-cap{position:absolute;left:16px;top:78px;width:min(360px,calc(100% - 32px));padding:12px 16px 14px;background:var(--v2-surface);border:1px solid var(--v2-line-2);border-radius:var(--v2-radius);box-shadow:var(--v2-shadow)}
+.v2-cap s{display:block;text-decoration:none;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--v2-accent);margin-bottom:3px}
+html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;text-transform:none;font-size:var(--v2-type-xs)}
+.v2-cap b{display:block;font-size:var(--v2-type-term);font-weight:600;line-height:1.25}
+.v2-cap p{margin:6px 0 0;font-size:var(--v2-type-sm);line-height:1.6;color:var(--v2-ink-2)}
+
+.v2-pill{position:absolute;left:50%;transform:translateX(-50%);top:12px;display:flex;align-items:center;gap:4px;height:44px;padding:0 8px;border-radius:999px;background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow);max-width:calc(100% - 32px);overflow:hidden}
+.v2-pill .v2-sep{margin:0 2px}
+.v2-pbtn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;border-radius:999px;font-size:var(--v2-type-sm);color:var(--v2-ink-2);white-space:nowrap;flex-shrink:0}
+.v2-pbtn:hover{background:var(--v2-surface-2)}
+.v2-pbtn.is-on{color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
+.v2-pbtn.v2-inert{border:1px dashed var(--v2-line)}
+
+.v2-pad{position:absolute;left:16px;bottom:16px;display:grid;grid-template-columns:repeat(6,40px);grid-auto-rows:40px;gap:6px;padding:10px;border-radius:var(--v2-radius);background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow)}
+.v2-cap-key{display:flex;align-items:center;justify-content:center;border-radius:var(--v2-radius-sm);border:1px dashed var(--v2-line);color:var(--v2-ink-3);font-size:var(--v2-type-sm);font-weight:500}
+/* A GAP IN THE PAD IS A GAP, not an empty key. The first build drew the spacers with the same
+   dashed border as the keys, so the pad read as eight broken buttons instead of W / A S D and the
+   arrow cluster. */
+.v2-cap-key.is-gap{border:0;background:none}
+.v2-legend{position:absolute;right:16px;bottom:16px;padding:8px 12px;border-radius:10px;background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow);font-size:var(--v2-type-xs);color:var(--v2-ink-2)}
+.v2-legend div{display:flex;gap:14px;justify-content:space-between}
+.v2-legend b{font-weight:600;color:var(--v2-ink);font-variant-numeric:tabular-nums}
+
+/* ── the status strip ────────────────────────────────────────────────────────────────────────── */
+.v2-status{grid-area:status;display:flex;align-items:center;gap:10px;padding:0 12px 0 16px;border-top:1px solid var(--v2-line-2);background:var(--v2-surface);font-size:var(--v2-type-xs);color:var(--v2-ink-3);min-width:0;overflow:hidden}
+.v2-status>span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v2-status .is-warn{color:var(--v2-warn);background:var(--v2-warn-soft);padding:2px 8px;border-radius:5px}
+.v2-tabs{display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0;min-width:0}
+.v2-tab{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:6px;font-size:var(--v2-type-xs);color:var(--v2-ink-2);white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
+.v2-tab.is-on{background:var(--v2-accent-soft);color:var(--v2-accent);font-weight:600}
+.v2-tab.v2-inert{border:1px dashed var(--v2-line)}
+
+/* ══ OVERLAYS — one primitive, two presentations ════════════════════════════════════════════════ */
+.v2-scrim{position:fixed;inset:0;z-index:80;background:var(--v2-scrim);display:flex;align-items:center;justify-content:center;padding:16px}
+.v2-scrim.is-sheet{align-items:flex-end;padding:0}
+.v2-modal{display:flex;flex-direction:column;width:min(640px,100%);max-height:min(720px,calc(100dvh - 32px));background:var(--v2-surface);border-radius:var(--v2-radius-lg);box-shadow:var(--v2-shadow);overflow:hidden}
+.v2-modal:focus{outline:none}
+/* THE SHEET. `--v2-vv` is the VISUAL viewport height, written by the primitive when iOS opens the
+   keyboard -- `100dvh` does not move for the keyboard and a sheet sized from it puts its input
+   under the keys. It falls back to `100dvh` where the API is absent. The safe-area padding is
+   ADDITIONAL to the body's own, inside the sheet. */
+.v2-modal.is-sheet{width:100%;max-width:none;max-height:calc(min(var(--v2-vv,100dvh),100dvh) - 120px);border-radius:var(--v2-radius-sheet) var(--v2-radius-sheet) 0 0;padding-bottom:env(safe-area-inset-bottom)}
+.v2-sheet-handle{width:100%;min-height:44px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.v2-sheet-handle i{display:block;width:38px;height:4px;border-radius:2px;background:var(--v2-line)}
+.v2-modal-head{display:flex;align-items:center;gap:10px;padding:0 12px 0 24px;height:52px;flex-shrink:0;border-bottom:1px solid var(--v2-line-2)}
+.v2-modal.is-sheet .v2-modal-head{padding-left:16px}
+.v2-modal-head h2{margin:0;flex:1;min-width:0;font-size:var(--v2-type-title);font-weight:600}
+.v2-modal-x{width:40px;height:40px;display:flex;align-items:center;justify-content:center;border-radius:var(--v2-radius-sm);font-size:20px;color:var(--v2-ink-2);flex-shrink:0}
+.v2-modal-x:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-modal-body{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 24px 24px}
+.v2-modal.is-sheet .v2-modal-body{padding:0 16px 24px}
+
+.v2-mtabs{display:flex;gap:4px;position:sticky;top:0;z-index:1;background:var(--v2-surface);padding:6px 0 0;border-bottom:1px solid var(--v2-line-2);margin-bottom:16px}
+.v2-mtab{height:44px;padding:0 14px;font-size:var(--v2-type-body);color:var(--v2-ink-2);border-bottom:2px solid transparent;border-radius:0}
+.v2-mtab.is-on{color:var(--v2-accent);border-bottom-color:var(--v2-accent);font-weight:600}
+.v2-srow{display:flex;align-items:flex-start;gap:16px;padding:16px 0;border-bottom:1px solid var(--v2-line-2)}
+.v2-srow>div{flex:1;min-width:0}
+.v2-srow b{display:block;font-size:var(--v2-type-body);font-weight:600}
+.v2-srow p{margin:3px 0 0;font-size:var(--v2-type-sm);line-height:1.6;color:var(--v2-ink-2)}
+.v2-srow-act{flex-shrink:0;display:flex;gap:6px;align-items:center;padding-top:2px}
+.v2-seg{display:inline-flex;gap:4px}
+.v2-seg button{height:36px;padding:0 14px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);font-size:var(--v2-type-sm);color:var(--v2-ink-2)}
+.v2-seg button.is-on{color:var(--v2-accent);border-color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
+.v2-static{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:6px;background:var(--v2-surface-2);font-size:var(--v2-type-xs);color:var(--v2-ink-2)}
+.v2-about h3{margin:20px 0 6px;font-size:var(--v2-type-sm);font-weight:600;color:var(--v2-ink)}
+.v2-about p{margin:0 0 8px;font-size:var(--v2-type-sm);line-height:1.7;color:var(--v2-ink-2)}
+.v2-about a{color:var(--v2-accent);text-decoration:none;margin-right:16px;display:inline-flex;align-items:center;min-height:32px}
+.v2-about a:hover{text-decoration:underline}
+.v2-about hr{border:0;border-top:1px solid var(--v2-line-2);margin:20px 0 0}
+.v2-keys{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;align-items:baseline;margin:0 0 4px}
+.v2-keys dt{font-size:var(--v2-type-xs)}
+.v2-keys dd{margin:0;font-size:var(--v2-type-sm);color:var(--v2-ink-2)}
+.v2-keys dd s{text-decoration:none;color:var(--v2-ink-3);font-size:11px;margin-left:6px}
+
+/* ══ COARSE POINTERS IN THE STUDIO TIER ════════════════════════════════════════════════════════
+   `spec.md`: ">=1180 coarse — desktop column structure, same rows; all controls at least 44. Large
+   targets force more toolbar actions into More, not taller toolbar rows." The rows stay 52/44/32;
+   only the CONTROLS grow, and the tools row hides its labels rather than its height. */
+/* THE SKIP LINK. Off-screen until focused rather than `.sr-only`, which clips it to 1×1 — and a 1×1
+   focusable anchor fails the coarse 44 px sweep, correctly: a control a finger can reach must be a
+   control a finger can hit. Moving it off-screen keeps it invisible, keeps it in the tab order, and
+   gives it real dimensions. */
+.v2-skip{position:absolute;left:8px;top:-72px;z-index:90;display:inline-flex;align-items:center;min-height:44px;min-width:44px;padding:0 16px;border-radius:var(--v2-radius-sm);background:var(--v2-surface);border:1px solid var(--v2-accent);color:var(--v2-accent);font-size:var(--v2-type-sm);font-weight:600;box-shadow:var(--v2-shadow);transition:top .15s}
+.v2-skip:focus{top:8px}
+
+@media (pointer:coarse){
+ /* `min-width`, not only `height`. An ICON-ONLY button is 12+15+12 = 39 px wide at this padding, so
+    four of them (Settings, Keys, More, Collapse) measured 41×44 and failed the sweep at 1366×1024 —
+    the one tier that is desktop-structured AND touch. */
+ .v2-studio .v2-tbtn{height:44px;min-width:44px;justify-content:center;padding:0 12px}
+ .v2-studio .v2-pbtn{min-width:44px;justify-content:center}
+ .v2-studio .v2-modal-x,.v2-studio .v2-mtab,.v2-modal.is-sheet .v2-modal-x{min-width:44px;min-height:44px}
+ .v2-studio .v2-side-foot button,.v2-studio .v2-side-filter div{min-height:44px}
+ .v2-studio .v2-tick{width:24px;height:24px;flex-basis:24px}
+ .v2-studio .v2-tbtn{height:44px;padding:0 12px}
+ .v2-studio .v2-pill{height:56px}
+ .v2-studio .v2-pbtn{height:44px;padding:0 12px}
+ .v2-studio .v2-pad{grid-template-columns:repeat(6,48px);grid-auto-rows:48px}
+ .v2-studio .v2-cap{top:86px}
+ .v2-studio .v2-eye,.v2-studio .v2-pane-x,.v2-studio .v2-card-act{width:44px;height:44px}
+ .v2-studio .v2-tree-row{height:48px}
+ /* The inert opacity row is FOCUSABLE, so the coarse sweep counts it as a target — and is right to:
+    a 22 px focusable strip is not something a finger can land on. It grows with the rest. */
+ .v2-studio .v2-opacity{min-height:44px}
+ .v2-studio .v2-tab{height:28px}
+}
+@media (prefers-reduced-motion:reduce){
+ .v2-chip.is-loading s{animation:none}
+}
