@@ -366,7 +366,21 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
  * by keyboard AND have on-screen buttons: round 2's High inverted, in the fix for round 3's
  * Medium (round 4, Medium 1). The set here is exactly `CAMERA_CMDS` plus the held keys.
  */
-export interface KeyRow {keys: string; cmd: string; group: 'now' | 'camera' | 'global' | 'tree'; owner?: string; studioOnly?: true}
+export interface KeyRow {
+ keys: string; cmd: string; group: 'now' | 'camera' | 'global' | 'tree'; owner?: string;
+ studioOnly?: true;
+ /**
+  * The commands and/or physical codes this ROW stands for. It exists so `studioOnly` can be
+  * CHECKED against `CAMERA_CMDS` and `HOLD_CODES` instead of being a hand-kept snapshot of them.
+  *
+  * ⚠️ WITHOUT IT THE MARK SILENTLY RE-OPENS. Round 5 executed the case: adding `reset` back to
+  * `CAMERA_CMDS` — which is exactly how round 2's High happened — left BOTH instruments green,
+  * because nothing tied the withheld set to the rows that advertise it. A guard whose two halves
+  * can drift is a guard that fires once. The unit test now asserts the correspondence in both
+  * directions, so S2 cannot widen guard 7 without the map following.
+  */
+ binds?: readonly (Command | string)[];
+}
 export const KEY_MAP: KeyRow[] = [
  {keys: 'Esc', cmd: 'keys.esc', group: 'now'},
  {keys: '?', cmd: 'keys.help', group: 'now'},
@@ -386,17 +400,17 @@ export const KEY_MAP: KeyRow[] = [
   * eleven camera bindings were flattened into one list beside Esc and `?`. Dropping `owner` is the
   * whole edit — a row with no owner is a row that works today.
   */
- {keys: 'W A S D', cmd: 'keys.pan', group: 'camera', studioOnly: true},
- {keys: '← →', cmd: 'keys.orbit', group: 'camera', studioOnly: true},
- {keys: '↑ ↓', cmd: 'keys.dolly', group: 'camera', studioOnly: true},
- {keys: 'Q E', cmd: 'keys.tilt', group: 'camera', studioOnly: true},
- {keys: 'O P', cmd: 'keys.modes', group: 'camera', studioOnly: true},
- {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'camera', studioOnly: true},
- {keys: 'H', cmd: 'keys.home', group: 'camera', studioOnly: true},
+ {keys: 'W A S D', cmd: 'keys.pan', group: 'camera', studioOnly: true, binds: ['KeyW', 'KeyA', 'KeyS', 'KeyD']},
+ {keys: '← →', cmd: 'keys.orbit', group: 'camera', studioOnly: true, binds: ['ArrowLeft', 'ArrowRight']},
+ {keys: '↑ ↓', cmd: 'keys.dolly', group: 'camera', studioOnly: true, binds: ['ArrowUp', 'ArrowDown']},
+ {keys: 'Q E', cmd: 'keys.tilt', group: 'camera', studioOnly: true, binds: ['KeyQ', 'KeyE']},
+ {keys: 'O P', cmd: 'keys.modes', group: 'camera', studioOnly: true, binds: ['mode-orbit', 'mode-pan']},
+ {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'camera', studioOnly: true, binds: ['fit']},
+ {keys: 'H', cmd: 'keys.home', group: 'camera', studioOnly: true, binds: ['home']},
  // NOT studio-only: `set-view` and `reset-view` are controller dispatches with on-screen buttons at
  // every tier, and they worked on every tier before S1 existed.
- {keys: '1 2 3 4', cmd: 'keys.views', group: 'camera'},
- {keys: 'R', cmd: 'keys.reset', group: 'camera'},
+ {keys: '1 2 3 4', cmd: 'keys.views', group: 'camera', binds: ['view-three-quarter', 'view-front', 'view-side', 'view-back']},
+ {keys: 'R', cmd: 'keys.reset', group: 'camera', binds: ['reset']},
  // `+ −` and `I / Shift ⌫` were inert copy for commands v2 does not have: zoom IS the dolly
  // (↑ ↓) rather than a second pair of keys, and there is no per-structure hide until the tree's
  // eyes arrive in S3. A key map that lists a key nobody bound is the thing this file exists to

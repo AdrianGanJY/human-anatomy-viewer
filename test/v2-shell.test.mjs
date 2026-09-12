@@ -14,7 +14,7 @@ import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
   defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes,
 } from '../app/v2/shell/store.ts';
-import {HOLD, HOLD_CODES, KEY_MAP} from '../app/v2/shell/keys.ts';
+import {CAMERA_CMDS, HOLD, HOLD_CODES, KEY_MAP} from '../app/v2/shell/keys.ts';
 
 // ── tiers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -318,6 +318,33 @@ test('the key map lists every S1 binding and no key nobody bound', () => {
   // controller dispatches that work at every tier and must NOT be marked (round 4, Medium 1).
   const studioOnly = KEY_MAP.filter((r) => r.studioOnly).map((r) => r.keys).sort();
   assert.deepEqual(studioOnly, ['F / Shift F', 'H', 'O P', 'Q E', 'W A S D', '← →', '↑ ↓'].sort());
+
+  /**
+   * ⚠️ THE MARK IS TIED TO THE WITHHELD SET, IN BOTH DIRECTIONS — the literal above is a
+   * convenience, this is the invariant.
+   *
+   * Round 5 executed the gap: adding `reset` back to `CAMERA_CMDS` (which is exactly how round 2's
+   * High happened) left BOTH instruments green, because nothing connected the commands guard 7
+   * withholds to the rows that advertise them. A guard whose two halves can drift is a guard that
+   * fires once. S2 widens this dispatcher; this is what makes it impossible to widen it quietly.
+   */
+  const marked = new Set(KEY_MAP.filter((r) => r.studioOnly).flatMap((r) => r.binds ?? []));
+  for (const c of CAMERA_CMDS) {
+    assert.ok(marked.has(c), `guard 7 withholds "${c}" — some key-map row must be marked studioOnly for it`);
+  }
+  for (const code of HOLD_CODES) {
+    assert.ok(marked.has(code), `"${code}" is a held camera key — its row must be marked studioOnly`);
+  }
+  // And nothing is marked that is NOT withheld: every `binds` entry on a marked row is either a
+  // withheld command or a held code.
+  for (const b of marked) {
+    assert.ok(CAMERA_CMDS.has(b) || HOLD_CODES.includes(b),
+      `"${b}" is marked desktop-only but guard 7 does not withhold it`);
+  }
+  // Every camera row declares what it binds, or the check above is silently partial.
+  for (const r of KEY_MAP.filter((x) => x.group === 'camera')) {
+    assert.ok((r.binds ?? []).length > 0, `${r.keys} must declare what it binds`);
+  }
   for (const k of ['1 2 3 4', 'R', 'Esc', '?', 'Shift P / Shift S']) {
     assert.equal(KEY_MAP.find((r) => r.keys === k).studioOnly, undefined, `${k} works at every tier`);
   }
