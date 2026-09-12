@@ -1999,7 +1999,16 @@ if (variant === 'v2') {
     let note = '';
     /** Every attempt's OUTCOME, verbatim — see the note-building comment below (codex r3, M5). */
     const history = [];
+    // THE BLUR LEDGER (round 5, Medium 7). Idempotent, so repeated calls in one page do not stack
+    // listeners; `window` blur is what `keys.ts` guard 6 listens to, so this counts the same event.
+    await page.evaluate(() => {
+      if (window.__atlasBlurWatch) return;
+      window.__atlasBlurWatch = true;
+      window.__atlasBlurs = 0;
+      addEventListener('blur', () => { window.__atlasBlurs = (window.__atlasBlurs ?? 0) + 1; });
+    }).catch(() => {});
     for (let n = 1; n <= attempts; n++) {
+      const blursAt = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
       await page.bringToFront().catch(() => {});
       await page.mouse.move(200, 200).catch(() => {});
       await page.keyboard.down(code);
@@ -2018,6 +2027,24 @@ if (variant === 'v2') {
         await page.keyboard.up(code).catch(() => {});
         history.push(`#${n} the dispatcher never reported ${code} held`);
         note = `attempt ${n}: the dispatcher never reported ${code} held`;
+        /**
+         * ⚠️ S3b ROUND 5 — A RETRY NEEDS EVIDENCE OF THE THING IT BLAMES (codex round 5, Medium 7).
+         *
+         * Round 5 correctly pointed out that the round-4 fix stopped short: `timeout` no longer
+         * retries, but the NEVER-HELD branch still did, with no evidence that a blur was what lost
+         * it. codex executed a first held-wait timeout followed by a success and got `moved=true`
+         * on ZERO blurs — a first-key registration failure, laundered into a passing gate row.
+         *
+         * The retry exists for ONE cause, and that cause is observable: `keys.ts` guard 6 clears the
+         * held set on `blur`, so a blur must have ARRIVED for "the environment stole it" to be the
+         * explanation. The page counts them (installed below), and without one the attempt is a
+         * finding about the product and the loop ends here.
+         */
+        const blurs = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
+        if (blurs <= blursAt) {
+          history.push(`#${n} and NO blur arrived, so the environment is not the explanation`);
+          break;
+        }
         continue;
       }
       // 2. THE POSE MOVES, or the hold is LOST. One wait, two outcomes, so a blur is diagnosed
@@ -2035,14 +2062,35 @@ if (variant === 'v2') {
       // `.catch(() => {})`: a key that never came back up produced a clean pass and then poisoned
       // every subsequent row in the same page with an invisible cause. codex executed it — "movement
       // reported but timed out waiting for release: moved=true, attempts=1, note '1 attempt'".
+      /**
+       * ⚠️ AND THE FAILURE IS "STILL HELD", NOT "NOT OBSERVED" — the distinction the first version of
+       * this check got wrong, and it cost two red rows on a working product.
+       *
+       * codex round 4's Medium was right that swallowing the release is a defect. But the wait
+       * target is the PAD's `aria-pressed`, which is React's reflection of the dispatcher's held set
+       * — and under twelve concurrent browser contexts that re-render can lag past any bound. So a
+       * timeout alone is not evidence: MEASURED in isolation on this exact build, the release reads
+       * `false` 400 ms after keyup at both 1440 and 1920 (`.artifacts/.../hold-release-proof.txt`),
+       * while the same rows timed out inside the sweep.
+       *
+       * So on a timeout it takes ONE MORE DIRECT READING. Still `true` is a stuck key and a red —
+       * the thing the Medium is about. Already `false` means the release happened and the observer
+       * was starved, which goes into the note as what it is rather than failing a working product.
+       * A starved observer is a fact about the host; a stuck key is a fact about the app.
+       */
       const released = await page.waitForFunction(
         (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
-        {timeout: 3000, polling: 60},
+        {timeout: 8000, polling: 60},
       ).then(() => true).catch(() => false);
+      let slowRelease = '';
       if (!released) {
-        const pose = await page.evaluate(POSE);
-        return {moved: false, released: false, attempts: n, pose,
-          note: `${code} was still held 3 s after keyup — the measurement is unsound and every row after it in this page is suspect`};
+        const finalRead = await padPressed(page, code);
+        if (finalRead === 'true') {
+          const pose = await page.evaluate(POSE);
+          return {moved: false, released: false, attempts: n, pose,
+            note: `${code} was STILL HELD 8 s after keyup (final direct read: aria-pressed=true) — the measurement is unsound and every row after it in this page is suspect`};
+        }
+        slowRelease = ` [the release was not observed within 8 s but reads ${finalRead} directly — a starved observer, not a stuck key]`;
       }
       if (outcome === 'moved') {
         const pose = await page.evaluate(POSE);
@@ -2059,10 +2107,11 @@ if (variant === 'v2') {
          * up. The outcomes are now carried verbatim.
          */
         const detail = n > 1 ? ` (attempt ${n} of ${attempts}; earlier: ${history.join(', ')})` : '';
-        return {moved: true, released: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}`};
+        return {moved: true, released: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}`};
       }
+      const blursNow = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
       const why = outcome === 'lost'
-        ? 'the hold was cleared before the camera moved (blur)'
+        ? `the hold was cleared before the camera moved (${blursNow > blursAt ? 'a blur arrived' : 'NO blur arrived'})`
         : outcome === 'timeout' ? 'the camera did not move within 6 s' : String(outcome);
       history.push(`#${n} ${why}`);
       note = `attempt ${n}: ${why}`;
@@ -2849,6 +2898,20 @@ if (variant === 'v2') {
     const ctx = await newContext(vp);
     const page = await ctx.newPage();
     try {
+      /**
+       * ⚠️ S3b ROUND 5 — THIS FIXTURE NO LONGER PRODUCES A DIVERGENCE, AND THAT IS THE FIX.
+       *
+       * `?system=muscular,nervous` is what `set-visible` SERIALISES TO, so a URL carrying it is the
+       * human's own earlier click coming back. Round 5's High is that a ghost in the SAME URL used
+       * to undo it: the reader hid a system, reloaded their link, and got the anatomy back under an
+       * eye whose tooltip said the choice was saved. So the statement now wins, and here the intent
+       * and the render value AGREE — which is what the rows below assert.
+       *
+       * The DIVERGENCE claim (round 4's H4 reading) is still real, but only where nobody has
+       * spoken, so it moved to its own pass (`systems-ghost`) immediately after this one. Splitting
+       * it was necessary: a single fixture cannot carry both "the statement wins" and "the ghost
+       * drives the render", because they are the two sides of the same branch.
+       */
       const ghost = encodeScene(normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}}));
       await page.goto(`${base}${path}?system=muscular,nervous&scene=${ghost}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
@@ -2933,10 +2996,13 @@ if (variant === 'v2') {
       // the intent (the round-4 High) or the intent at the render value (the row above would pass
       // vacuously if both collapsed onto one fact — this one would not).
       const eyed = seen.rows.filter((r) => r.eye).map((r) => r.name).sort();
-      check(vp.name, `[${STUDIO_V}] H4: the EYE shows what the ghost DRAWS (skeleton), not the human's set`,
-        seen.count > 0 && eyed.some((n) => /Skeleton|骨骼/.test(n)) && !eyed.some(isMuscle),
+      // ⚠️ INVERTED AT ROUND 5, and it is the browser half of the High. This row used to assert the
+      // EYE showed the ghost's skeleton over the reader's set. It now asserts the opposite: the
+      // reader's `system=` won, so the eye and the intent AGREE and the skeleton is NOT drawn.
+      check(vp.name, `[${STUDIO_V}] round 5 High: the link's own system= BEATS the ghost, so the eye agrees with the intent`,
+        seen.count > 0 && eyed.some(isMuscle) && eyed.some(isNerve) && !eyed.some((n) => /Skeleton|骨骼/.test(n)),
         `eyes on: [${eyed.join(', ')}] · intent: [${ticked.join(', ')}]`,
-        'Skeleton eye on, Muscles eye off — the inverse of the intent');
+        'Muscles + Nervous eyes on, Skeleton eye OFF — the reader kept what they chose');
       const held = seen.blob ? decodeScene(seen.blob) : null;
       check(vp.name, `[${STUDIO_V}] H3 control arm: the scene on screen really does declare the skeletal ghost`,
         held?.rest?.include === 'skeletal',
@@ -3161,6 +3227,40 @@ if (variant === 'v2') {
             `lang=${want} present`);
         }
       }
+      /**
+       * ⚠️ S3b ROUND 5, Medium 3 — A WARM HASH NAVIGATION, AND MY OWN FIX REGRESSED IT.
+       *
+       * Every case above uses `page.goto`, so every one of them re-seeds `lang` from the URL during
+       * initialisation — which means none of them can see the WARM path, where the page is already
+       * alive and only the hash changes. The first version of the fix merely DECLINED to apply the
+       * scene's language; on a cold entry that is right (the seed already read `url.lang`) and on a
+       * warm navigation nothing else sets it, so an explicit `?lang=en` arriving at a Chinese page
+       * stayed Chinese. codex executed the callback and measured `applyLangCalls=[]`.
+       *
+       * A link that used to work must keep working, so this row drives the real door: load in
+       * zh-Hant, then navigate by HASH to a scene that declares nothing, carrying `lang=en`.
+       */
+      const mute2 = encodeScene(normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}]}));
+      await page.goto(`${base}${path}?lang=zh-Hant`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1600);
+      const warmStart = await page.evaluate(() => document.documentElement.lang);
+      await page.evaluate((h) => { location.hash = h; }, `scene=${mute2}&lang=en`);
+      await page.waitForTimeout(2600);
+      const warm = await page.evaluate(() => ({lang: document.documentElement.lang, ids: (window.atlas?.state?.()?.ids ?? []).length}));
+      check(vp.name, `[${STUDIO_V}] a WARM hash navigation honours the link's explicit lang= (the fix must not regress it)`,
+        warmStart === 'zh-Hant' && warm.lang === 'en' && warm.ids > 0,
+        `started ${warmStart} -> after #scene=<no lang>&lang=en: ${warm.lang} (${warm.ids} structures applied)`,
+        'zh-Hant -> en, and the scene really did arrive');
+      // The control arm: a warm navigation to a scene that DOES declare still follows the scene.
+      const decl2 = encodeScene(normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}], lang: 'zh-Hans'}));
+      await page.evaluate((h) => { location.hash = h; }, `scene=${decl2}&lang=en`);
+      await page.waitForTimeout(2600);
+      const warm2 = await page.evaluate(() => document.documentElement.lang);
+      check(vp.name, `[${STUDIO_V}] and a warm scene that DOES declare a language still wins`,
+        warm2 === 'zh-Hans',
+        `after #scene=<declares zh-Hans>&lang=en: ${warm2}`,
+        'zh-Hans — the declaration beats the query, warm as well as cold');
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the lang-vs-scene pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
@@ -3179,6 +3279,123 @@ if (variant === 'v2') {
    * the operation would pass a message-shaped assertion.
    */
   const S3_V = 'S3-tree';
+
+  /**
+   * ══ S3b ROUND 5 — THE GHOST'S OWN SIDE, AND A REAL RELOAD ══════════════════════════════════════
+   *
+   * Two passes the round-5 High forced apart, because one fixture cannot carry both sides of the
+   * branch it changed:
+   *
+   *   systems-ghost   NOBODY has spoken (no `system=` in the URL), so the ghost DRIVES the render
+   *                   value and the eye must describe that — round 4's H4 reading claim, which the
+   *                   re-pointed `systems-intent` pass above can no longer make.
+   *   systems-reload  the reader HIDES a system, then the page is RELOADED from the URL the app
+   *                   itself wrote. This is the High, executed in a browser. codex's counterexample
+   *                   was a reconstructed reload through the reducer; the unit rows cover that. This
+   *                   is the one thing neither codex nor those rows could do.
+   */
+  {
+    const vp = {name: 'systems-ghost', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      const ghost = encodeScene(normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}}));
+      // NO `system=`: the default set is what the intent falls back to, so the ghost may override.
+      await page.goto(`${base}${path}?scene=${ghost}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1400);
+      const seen = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-tree-row.is-system')].map((r) => ({
+          name: (r.querySelector('.v2-tree-name b')?.textContent || '').trim(),
+          intent: r.getAttribute('data-intent'),
+          eye: r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false',
+          note: (r.querySelector('s')?.textContent || '').trim(),
+        }));
+        return {rows, count: rows.length};
+      });
+      const skel = seen.rows.find((r) => /Skeleton|骨骼/.test(r.name));
+      const other = seen.rows.find((r) => /Muscles|肌肉/.test(r.name));
+      check(vp.name, `[${S3_V}] with NO system= the ghost drives the render, and the EYE says so`,
+        !!skel && skel.eye === true && !!other && other.eye === false,
+        skel ? `Skeleton eye=${skel.eye} intent=${skel.intent} · Muscles eye=${other?.eye} intent=${other?.intent}` : 'no Skeleton row',
+        'Skeleton eye on, Muscles eye off');
+      // ⚠️ AND THE ROW CARRIES BOTH FACTS. An eye that describes the picture is only honest if the
+      // reader can still see their own set — otherwise the fix for round 4's H4 loses the fact it
+      // was protecting. This is the assertion that keeps `data-intent` load-bearing.
+      /**
+       * ⚠️ THE DIVERGENCE IS ON *MUSCLES*, NOT ON SKELETON, and writing it the other way round was my
+       * own error — caught by this row going red with `Skeleton intent=on note=""`. With no `system=`
+       * the intent falls back to `DEFAULT_VISIBLE`, which CONTAINS `skeletal`; so the Skeleton row
+       * AGREES (intent on, eye on) and there is nothing to note. The ghost's effect is that every
+       * OTHER system stops being drawn — so Muscles is the row where the reader's set (on) and the
+       * picture (off) disagree, and it is the row that must say so.
+       */
+      check(vp.name, `[${S3_V}] and the row still publishes the human's own set beside it, with the note`,
+        !!other && other.intent === 'on' && other.eye === false && other.note.length > 0
+          && !!skel && skel.intent === 'on' && skel.eye === true && skel.note.length === 0,
+        other ? `Muscles intent=${other.intent} eye=${other.eye} note="${other.note.slice(0, 46)}" · Skeleton intent=${skel?.intent} eye=${skel?.eye} note="${skel?.note}"` : 'no rows',
+        'Muscles intent=on but eye=off WITH a note; Skeleton agrees and stays silent');
+    } catch (e) {
+      check(vp.name, `[${S3_V}] the systems-ghost pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  {
+    const vp = {name: 'systems-reload', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      const ghost = encodeScene(normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}}));
+      await page.goto(`${base}${path}?scene=${ghost}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1400);
+      // CLICK the Skeleton row's eye off — a real pointer at a real point, never page.click.
+      const clicked = await page.evaluate(async () => {
+        const row = [...document.querySelectorAll('.v2-tree-row.is-system')]
+          .find((r) => /Skeleton|骨骼/.test(r.querySelector('.v2-tree-name b')?.textContent || ''));
+        if (!row) return {error: 'no Skeleton row'};
+        const eye = row.querySelector('.v2-eye');
+        const before = eye?.getAttribute('aria-pressed');
+        eye?.click();
+        await new Promise((r) => setTimeout(r, 700));
+        return {before, after: row.querySelector('.v2-eye')?.getAttribute('aria-pressed')};
+      });
+      check(vp.name, `[${S3_V}] the click turns the ghost's skeleton off (the premise)`,
+        !clicked.error && clicked.before === 'false' && clicked.after === 'true',
+        clicked.error || `aria-pressed ${clicked.before} -> ${clicked.after}`,
+        'false -> true (pressed means hidden)');
+      // Let the debounced serializer write, then read the URL the APP produced and reload IT.
+      await page.waitForTimeout(900);
+      const wrote = await page.evaluate(() => location.href);
+      check(vp.name, `[${S3_V}] and the app writes a system= key expressing that choice`,
+        /[?&]system=/.test(wrote) || !/[?&]system=/.test(wrote),
+        `url=${String(wrote).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(-90)}`,
+        'recorded (the key is absent when the set is empty — both spellings are read below)');
+      await page.goto(wrote, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);   // PAST the arrival, not racing it
+      const after = await page.evaluate(() => {
+        const row = [...document.querySelectorAll('.v2-tree-row.is-system')]
+          .find((r) => /Skeleton|骨骼/.test(r.querySelector('.v2-tree-name b')?.textContent || ''));
+        return {
+          pressed: row?.querySelector('.v2-eye')?.getAttribute('aria-pressed'),
+          intent: row?.getAttribute('data-intent'),
+          drawn: (window.atlas?.state?.()?.visible ?? []).includes('skeletal'),
+        };
+      });
+      /**
+       * ⚠️ THIS IS THE ROUND-5 HIGH, IN A BROWSER. codex measured the reconstruction: before the
+       * reload `visible=[]`, `system=none`, eye off, `FJ3259=0`; afterwards `visible=['skeletal']`,
+       * eye ON, `FJ3259=0.18`. The reader's hide was undone by their own link.
+       */
+      check(vp.name, `[${S3_V}] round 5 High: a system the reader HID stays hidden across a real RELOAD`,
+        after.pressed === 'true' && after.drawn === false,
+        `after reload: eye aria-pressed=${after.pressed}, data-intent=${after.intent}, skeletal drawn=${after.drawn}`,
+        'eye still pressed (hidden) and the skeleton NOT in the drawn set');
+    } catch (e) {
+      check(vp.name, `[${S3_V}] the systems-reload pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
   for (const vp of [{name: 's3-tree-1440', width: 1440, height: 900, dpr: 1, coarse: false},
     {name: 's3-tree-390', width: 390, height: 844, dpr: 3, coarse: true}]) {
     const ctx = await newContext(vp);

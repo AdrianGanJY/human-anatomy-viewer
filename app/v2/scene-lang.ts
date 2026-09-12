@@ -31,7 +31,7 @@
  * If this ever needs to grow into a general "what did the wire object declare?" reader, it belongs
  * in the codec, and that commit should take the `SITE_BUILD` bump with it.
  */
-import {LANGS, LIMITS, b64urlDecode} from '../scene-model.ts';
+import {LANGS, LIMITS, b64urlDecode, decodeScene} from '../scene-model.ts';
 
 /**
  * True only when the blob's own JSON carries a `lang` the codec would accept.
@@ -46,8 +46,16 @@ import {LANGS, LIMITS, b64urlDecode} from '../scene-model.ts';
  */
 export function sceneDeclaresLang(blob: string | null | undefined): boolean {
  if (typeof blob !== 'string' || !blob || blob.length > LIMITS.SCENE_MAX_B64) return false;
- // The same shape gate `decodeScene` applies, so the two cannot disagree about what a blob is.
  if (!/^[A-Za-z0-9_-]+$/.test(blob)) return false;
+ /**
+  * ⚠️ AGREEMENT WITH THE CODEC IS NOW *DELEGATED*, NOT RE-TYPED — codex round 5, the Low. The first
+  * version checked the encoding and the language and skipped the codec's VERSION and
+  * nonempty-structure gates, so `{lang:'zh-Hans'}`, `{v:2,…}` and `{v:1,s:[],…}` all returned true
+  * while `decodeScene` returned null for every one of them. The doc claimed the two agreed; they
+  * did not. Asking `decodeScene` is the only way that claim can stay true as the codec's gates
+  * change, and it costs one extra parse on a path that runs once per arrival.
+  */
+ if (!decodeScene(blob)) return false;
  try {
   const parsed = JSON.parse(b64urlDecode(blob)) as unknown;
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;

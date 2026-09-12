@@ -520,8 +520,18 @@ export default function V2() {
   * that tie the reader's explicit `?lang=` wins, which is the side that cannot surprise anybody.
   */
  const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null) => {
+  /**
+   * ⚠️ AND WHEN THE SCENE LOSES, THE LINK MUST STILL WIN — codex round 5, Medium 3, and it is a
+   * REGRESSION THIS FIX INTRODUCED. The first version merely DECLINED to apply the scene's language,
+   * which is right on a cold entry (the initial `lang` state already came from `url.lang`) and wrong
+   * on a WARM hash navigation, where nothing else sets it: codex executed the callback starting at
+   * `zh-Hant` with `#scene=<no lang>&lang=en` and measured `applyLangCalls=[]`, so an explicit
+   * English warm link stayed Chinese — a link that used to work. Applying `urlLang` explicitly is
+   * the same answer on both paths, which is why it replaces the guard rather than joining it.
+   */
   const declared = sceneDeclaresLang(blob);
-  if (sc.lang && !(urlLang && !declared)) applyLang(sc.lang);
+  if (urlLang && !declared) applyLang(urlLang);
+  else if (sc.lang) applyLang(sc.lang);
   if (!dispatch({type: 'apply-scene', scene: sc, blob})) return;
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps

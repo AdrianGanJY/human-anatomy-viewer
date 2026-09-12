@@ -486,15 +486,31 @@ test('focusing a NON-MEMBER stops it as well — and re-encodes only when it has
   assert.equal(out2.epoch, undefined);
 });
 
+/**
+ * ⚠️ RE-POINTED AT S3b ROUND 5, AND THE POLARITY OF ONE ASSERTION IS INVERTED ON PURPOSE.
+ *
+ * This row asserted `afterGhost.render.visible === ['skeletal']` — "the ghost still drives what is
+ * drawn" — AFTER an explicit `set-visible`. codex round 5's High is that exactly that sequence is a
+ * defect: the reader hid a system, reloaded their own link, and the ghost branch undid it while the
+ * eye's tooltip claimed the choice was saved in the link. So a CLICK is now a statement
+ * (`intentExplicit`), and a statement beats a scene's `rest` declaration.
+ *
+ * The row's REAL claim — a ghost must not CONSUME the human's set, so the next scene does not
+ * inherit it — is untouched and still asserted below. What changed is the one line about what the
+ * ghost drives when the human has already spoken. Named here rather than quietly edited, and the
+ * ghost's own behaviour where nobody has spoken is asserted by the new row after this one.
+ */
 test('a GHOST scene does not consume the system set the human chose', () => {
   // The human picks two systems, then opens a link whose rest is a skeletal ghost.
   const seeded = initialState({}, {...render, visible: ['muscular', 'nervous']});
   const chosen = reduce(seeded.state, {type: 'set-visible', visible: ['muscular', 'nervous']}).state;
   assert.deepEqual(chosen.visibleIntent, ['muscular', 'nervous']);
+  assert.equal(chosen.intentExplicit, true, 'the click is a STATEMENT (S3b round 5)');
 
   const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
   const afterGhost = reduce(chosen, {type: 'apply-scene', scene: ghost}).state;
-  assert.deepEqual(afterGhost.render.visible, ['skeletal'], 'the ghost still drives what is drawn');
+  assert.deepEqual(afterGhost.render.visible, ['muscular', 'nervous'],
+    'INVERTED at round 5: a statement beats the ghost, so the reader keeps what they chose');
   assert.deepEqual(afterGhost.visibleIntent, ['muscular', 'nervous'], 'and the human choice survives it');
 
   // THE DEFECT, in one assertion: the NEXT scene used to inherit ['skeletal'] as if it were asked for.
@@ -503,12 +519,29 @@ test('a GHOST scene does not consume the system set the human chose', () => {
     'a non-ghost scene restores the human set — it does not inherit the ghost');
 });
 
+/** THE CONTROL ARM FOR THE ROW ABOVE, added at round 5. Inverting an assertion is only safe if the
+ *  behaviour it used to cover is asserted somewhere — otherwise the ghost feature could break
+ *  silently. Where NOBODY has spoken, the ghost still drives the render value, exactly as before. */
+test('a GHOST scene still drives what is drawn when the human has NOT spoken', () => {
+  const seeded = initialState({}, {...render, visible: ['muscular', 'nervous']}).state;
+  assert.equal(seeded.intentExplicit ?? false, false, 'no click, no system= — no statement');
+  const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
+  const afterGhost = reduce(seeded, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(afterGhost.render.visible, ['skeletal'], 'the ghost feature is intact');
+  assert.deepEqual(afterGhost.visibleIntent, ['muscular', 'nervous'], 'and still does not consume the set');
+});
+
+/** ⚠️ ALSO RE-POINTED AT ROUND 5: a URL `system=` key is what `set-visible` SERIALISES TO, so a link
+ *  carrying it is the human's own earlier click coming back — and a ghost in the same URL must not
+ *  undo it. That is the browser half of round 5's High. */
 test('system= in a legacy URL IS the human speaking, and survives a later ghost', () => {
   const seeded = initialState({select: ['FMA9611'], visible: ['arterial']}, {...render}).state;
   assert.deepEqual(seeded.visibleIntent, ['arterial']);
+  assert.equal(seeded.intentExplicit, true, 'the URL key is the statement');
   const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
   const afterGhost = reduce(seeded, {type: 'apply-scene', scene: ghost}).state;
-  assert.deepEqual(afterGhost.render.visible, ['skeletal']);
+  assert.deepEqual(afterGhost.render.visible, ['arterial'],
+    'INVERTED at round 5: the link’s own system= beats the ghost in the same link');
   const back = reduce(afterGhost, {type: 'apply-legacy', url: {select: ['FMA9611']}}).state;
   assert.deepEqual(back.visibleIntent, ['arterial'], 'a legacy apply with no system= leaves the intent alone');
 });
@@ -525,7 +558,11 @@ test('the human\u2019s system set survives a ghost scene THROUGH THE UI, not onl
 
   const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
   const afterGhost = reduce(chosen, {type: 'apply-scene', scene: ghost}).state;
-  assert.deepEqual(afterGhost.render.visible, ['skeletal'], 'the ghost drives what is DRAWN');
+  // ⚠️ RE-POINTED AT ROUND 5, same inversion as the row above: `chosen` came from a CLICK, which is
+  // now a statement, so the ghost does not override it. The claim this row exists for — one click
+  // must not write the ghost into the intent — is downstream and unchanged.
+  assert.deepEqual(afterGhost.render.visible, ['muscular', 'nervous'],
+    'a statement beats the ghost (S3b round 5); the ghost-wins case is its own row above');
 
   // WHAT THE CHECKBOX SHOWS. `app/v2/page.tsx` reads `visibleIntent`, never `render.visible` — so
   // the human sees the boxes they ticked, not the scene's ghost.

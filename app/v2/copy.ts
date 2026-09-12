@@ -161,6 +161,11 @@ export const V2: Record<string, Row> = {
  'tree.drawnThrough': {en: 'Still drawn through {name} — they share a part', 'zh-Hans': '仍通过{name}绘制 — 两者共用同一部件', 'zh-Hant': '仍透過{name}繪製 — 兩者共用同一部件'},
  'tree.sysShownByView': {en: 'Shown by this view, not by your setting', 'zh-Hans': '由本视图显示，而非你的设置', 'zh-Hant': '由本視圖顯示，而非你的設定'},
  'tree.sysHiddenByView': {en: 'Hidden by this view — your setting has it on', 'zh-Hans': '被本视图隐藏 — 你的设置是开启', 'zh-Hant': '被本視圖隱藏 — 你的設定是開啟'},
+ // S3b round 5, Medium 4: the eye owns the session override and the scene's style, and it owns
+ // NEITHER the system switch — so on that cause it says so instead of offering a click that cannot
+ // work. The note names the system, because that IS the control the reader needs.
+ 'tree.hiddenWithSystem': {en: 'Hidden with the {name} system', 'zh-Hans': '随{name}系统一并隐藏', 'zh-Hant': '隨{name}系統一併隱藏'},
+ 'tree.eyeSystemOff': {en: 'Its system is switched off — use the system row above to show it', 'zh-Hans': '所属系统已关闭 — 请用上方的系统行显示', 'zh-Hant': '所屬系統已關閉 — 請用上方的系統列顯示'},
  'tree.hide':      {en: 'hide', 'zh-Hans': '隐藏', 'zh-Hant': '隱藏'},
  'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
  // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader

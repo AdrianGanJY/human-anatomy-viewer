@@ -197,6 +197,27 @@ export interface V2State {
   * `render.visible`, which is exactly today's value.
   */
  visibleIntent?: SystemId[];
+ /**
+  * ⚠️ S3b ROUND 5 — HAS THE HUMAN SPOKEN ABOUT SYSTEMS *FOR THIS PAGE*? codex round 5, the High.
+  *
+  * S3b fixed WHAT the system eye READS and left WHETHER IT PERSISTS untouched — and the honest eye
+  * made the persistence defect visible instead of hiding it. codex executed the reload: hide
+  * Skeleton on a `rest:'skeletal'` scene → `visible=[]`, `system=none` in the URL; reload →
+  * `apply-scene` takes the ghost branch again → `visible=['skeletal']`, `FJ3259=0.18`. The reader's
+  * hide was undone by their own link, under a tooltip that says "saved in the link (system=)".
+  *
+  * The ghost branch is right for a scene ARRIVING at a page nobody has told anything. It is wrong
+  * when the URL also carries an explicit `system=`, because that key IS the human speaking and it
+  * is a LATER statement than the scene's rest declaration. So the arrival needs to know which case
+  * it is in, and `visibleIntent` alone cannot say: it is populated either way (it falls back to the
+  * render seed), so "non-empty" is not evidence of a choice — and the failing case is the EMPTY set,
+  * which is indistinguishable from "never chosen" without this flag.
+  *
+  * Set by exactly the two things that are the human speaking: `set-visible`, and a URL carrying
+  * `system=`. Optional, so every existing `V2State` literal keeps type-checking and behaves as
+  * before — absent means "nobody has said anything", which is the old ghost behaviour.
+  */
+ intentExplicit?: boolean;
 }
 
 export type Command =
@@ -210,7 +231,15 @@ export type Command =
  | {type: 'focus'; id: string}
  | {type: 'set-view'; view: View}
  | {type: 'reset-view'}
- | {type: 'set-visible'; visible: SystemId[]}
+ /**
+ * ⚠️ TWO SETS, NOT ONE — codex round 5, Medium 6. `visible` is what the renderer draws; `intent` is
+ * what the human has chosen. They differ after a scene overrode the render value, and computing the
+ * intent FROM the effective set discarded preferences for systems the reader never clicked (codex:
+ * intent `['muscular','nervous']` + a skeletal ghost + one click on Digestive → intent
+ * `['skeletal','digestive']`, both originals gone). `intent` absent keeps the old behaviour — one
+ * set for both — which is what every non-tree caller still means.
+ */
+| {type: 'set-visible'; visible: SystemId[]; intent?: SystemId[]}
  | {type: 'set-isolate'; on: boolean}
  /**
   * ── S3. THE TREE'S TICK — ONE ATOMIC TRANSACTION FOR ONE ROW AND FOR A WHOLE SYSTEM ───────────
@@ -313,7 +342,11 @@ export function initialState(
 ): {state: V2State; rejected?: string} {
  // The seed's intent is whatever the URL asked for, or the render seed's own set. `legacySceneState`
  // is not consulted here because it needs a `previous` and this IS the previous.
- const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render, visibleIntent: url.visible ?? render.visible};
+ // `intentExplicit` on a `system=` key: that key is what `set-visible` SERIALISES TO, so a URL
+ // carrying it is the human's own earlier click coming back, and a ghost scene in the same URL must
+ // not undo it (codex round 5, the High). Absent `system=` leaves it false and the ghost still wins.
+ const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render,
+  visibleIntent: url.visible ?? render.visible, intentExplicit: !!url.visible};
  if (url.scene) {
   const scene = normalizeScene(url.scene) as Scene;
   const invalid = validateScene(scene);
@@ -323,7 +356,7 @@ export function initialState(
     state: {
      scene, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene),
      blob: url.sceneBlob && url.sceneBlob === encoded ? url.sceneBlob : encoded,
-     render, visibleIntent: url.visible ?? render.visible,
+     render, visibleIntent: url.visible ?? render.visible, intentExplicit: !!url.visible,
     },
    };
   }
@@ -379,7 +412,15 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     isolate: scene.rest.include === 'none',
     // The ghost drives the RENDER value; the human's own set (`visibleIntent`) is never touched, so
     // it survives a ghost scene and is what the NEXT scene falls back to. See `visibleIntent`.
-    visible: scene.rest.include === 'skeletal' ? ['skeletal'] : (state.visibleIntent ?? state.render.visible),
+    //
+    // ⚠️ UNLESS THE HUMAN HAS ALREADY SPOKEN — codex round 5, the High. `intentExplicit` means the
+    // URL carried a `system=` key or the reader used the control; that is a LATER statement than the
+    // scene's `rest` declaration, so it wins and the reader's hide survives a reload of their own
+    // link. A plain ghost link, which is the case the branch was written for, has no such statement
+    // and still ghosts the skeleton.
+    visible: scene.rest.include === 'skeletal' && !state.intentExplicit
+      ? ['skeletal']
+      : (state.visibleIntent ?? state.render.visible),
    });
    // THE ARRIVAL BLOB IS KEPT ONLY WHEN IT IS ALREADY CANONICAL, and the earlier wording here
    // overstated that. codex passed a valid blob using the supported `structures` spelling instead of
@@ -417,6 +458,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
      // `system=` in a legacy URL IS the human speaking (it is what `set-visible` serialises to), so
      // it updates the intent; absent, the previous intent stands. See `visibleIntent`.
      visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
+     intentExplicit: cmd.url.visible ? true : state.intentExplicit,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -433,6 +475,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
      ...state, scene: null, blob: '', focusId: null,
      picks: cleared,
      visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
+     intentExplicit: cmd.url.visible ? true : state.intentExplicit,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -652,7 +695,14 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // click rather than surprised after it. The alternative RC8 allows — refusing the toggle while
    // isolate is on — was weighed and rejected: it makes a working control unusable in the exact
    // mode where a reader most wants to add context back.
-   return {state: {...state, visibleIntent: cmd.visible, render: {...state.render, isolate: false, visible: cmd.visible}}};
+   // ⚠️ THE INTENT IS PATCHED, NOT REPLACED, when the caller distinguishes the two (Medium 6), and
+   // the click is now RECORDED as a statement so a later scene arrival cannot undo it (the High).
+   return {state: {
+    ...state,
+    visibleIntent: cmd.intent ?? cmd.visible,
+    intentExplicit: true,
+    render: {...state.render, isolate: false, visible: cmd.visible},
+   }};
   }
   case 'set-isolate': {
    // RENDER-ONLY, IN BOTH MODES, AND THAT IS THE DEFERRAL DISCIPLINE RATHER THAN AN OVERSIGHT.

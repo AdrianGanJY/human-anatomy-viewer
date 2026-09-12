@@ -42,7 +42,7 @@ import {searchEntries, systemEntries, type Dicts, type T} from '../../i18n/dict'
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {atlasIndex, best, norm} from '../find.ts';
-import {eyeAction, eyeOn as eyeOnOf, type EyeKind} from '../visibility.ts';
+import {alphaCause, eyeAction, eyeOn as eyeOnOf, type EyeKind} from '../visibility.ts';
 
 /** Fixed heights. `spec.md` A3: "48/60 px rows"; D4 draws a 52 px system row over a 54 px child
  *  row, and the child is the taller one because it carries a second (paired-name) line. Fixed
@@ -282,11 +282,25 @@ export default function Tree(p: TreeProps) {
   *   · a system click is computed from the EFFECTIVE set, so it does what it looks like it does.
   */
  const toggleEye = useCallback((row: TreeRow) => {
-  const act = eyeAction({kind: eyeKind(row), on: eyeOn(row), system: row.kind === 'system' ? row.system : undefined, visible: p.visible});
-  if (act.visible) { p.dispatch({type: 'set-visible', visible: act.visible}); return; }
-  if (act.session === 'hide') p.onHide(row.id, true);
+  const act = eyeAction({
+   kind: eyeKind(row), on: eyeOn(row),
+   system: row.kind === 'system' ? row.system : undefined,
+   visible: p.visible, intent: p.visibleIntent,
+  });
+  if (act.visible) { p.dispatch({type: 'set-visible', visible: act.visible, intent: act.intent}); return; }
+  /**
+   * ⚠️ THE COMMAND GOES FIRST, AND THE SESSION SET MOVES ONLY IF IT WAS ACCEPTED — codex round 5,
+   * Medium 1. Clearing the override BEFORE dispatching made the operation non-atomic: codex built a
+   * scene 1,348 characters long, clicked "show" on a member, and the controller refused the 1,402
+   * character result — correctly, atomically, changing nothing in the scene — while the override had
+   * already been cleared, so the picture changed from alpha 0 to 0.55 under a message that said the
+   * edit did not happen. A refusal that alters what is on screen is not a refusal.
+   */
+  if (act.session === 'hide') { p.onHide(row.id, true); return; }
+  if (act.opacity !== undefined) {
+   if (!p.dispatch({type: 'set-opacity', id: row.id, opacity: act.opacity})) return;
+  }
   if (act.session === 'clear') p.onHide(row.id, false);
-  if (act.opacity !== undefined) p.dispatch({type: 'set-opacity', id: row.id, opacity: act.opacity});
  }, [eyeOn, eyeKind, p]);
 
  /**
@@ -307,7 +321,19 @@ export default function Tree(p: TreeProps) {
    if (id === row.id) continue;
    const other = covered.byId.get(id);
    if (!other?.elements.some((e) => mine.has(e))) continue;
-   if (p.effectiveAlpha(id) > 0) return t.name(id, other.name);
+   /**
+    * ⚠️ IT MUST BE A CONTRIBUTOR, NOT MERELY A NEIGHBOUR — codex round 5, Medium 5. The test was
+    * `effectiveAlpha(id) > 0`, which proves the candidate is DRAWN, not that it is what draws the
+    * shared mesh. With three concepts on one mesh (codex executed body-of-organ, sternum and
+    * body-of-sternum, all sharing `FJ3178`, two of them declared 0), every candidate reads 1 because
+    * the third keeps the mesh alive — so the note pointed the reader at another HIDDEN declaration.
+    * The candidate's own DECLARED alpha is what contributes to the max, so that is the test.
+    */
+   if (p.hidden.has(id)) continue;
+   const declared = eyeKind(row) === 'member'
+    ? (p.scene?.styles.find((st) => st.id === id)?.opacity ?? 1)
+    : 1;
+   if (declared > 0 && p.effectiveAlpha(id) > 0) return t.name(id, other.name);
   }
   return null;
  }, [covered, p, eyeKind, t]);
@@ -532,6 +558,20 @@ export default function Tree(p: TreeProps) {
       const state = row.kind === 'system' ? sysState(row.system) : (picked.has(row.id) ? 'on' : 'off');
       const cover = row.kind === 'concept' ? coverageOf(row.id) : null;
       const via = drawnThrough(row);
+      /**
+       * ⚠️ WHY IT IS NOT DRAWN — codex round 5, Medium 4. An ordinary row whose SYSTEM is switched
+       * off reads effective 0, so the eye offered "show"; clicking it cleared an empty session set
+       * and changed nothing. The eye owns the session override and the scene's style, and it owns
+       * NEITHER the system switch — so on that cause it says so and declines, which is the S0 inert
+       * convention rather than a control that silently fails.
+       */
+      const cause = row.kind === 'concept' ? alphaCause({
+       alpha: p.effectiveAlpha(row.id),
+       inSession: p.hidden.has(row.id),
+       declaredZero: eyeKind(row) === 'member' && (p.scene?.styles.find((st) => st.id === row.id)?.opacity ?? 1) === 0,
+       systemOn: p.visible.includes(row.system),
+      }) : 'drawn';
+      const eyeInert = cause === 'system';
       // The system row's OTHER fact: the human's own set, which a scene's arrival does not touch.
       const intent = row.kind === 'system' ? p.visibleIntent.includes(row.system) : undefined;
       const openNow = row.kind === 'system' && (q ? !filtered.sysHit.has(row.system) || expanded.has(row.system) : expanded.has(row.system));
@@ -592,14 +632,16 @@ export default function Tree(p: TreeProps) {
             (a shared mesh), or the eye is on for a system they never asked for (a ghost scene). */}
         {via && <s id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</s>}
         {intent !== undefined && intent !== on && <s>{tr(intent ? 'tree.sysHiddenByView' : 'tree.sysShownByView')}</s>}
+        {cause === 'system' && <s>{tr('tree.hiddenWithSystem', {name: t.system(row.system, SYSTEMS.find((x) => x.id === row.system)?.name ?? row.system)})}</s>}
        </button>
        {row.kind === 'system' && <em>{(row.count ?? 0).toLocaleString()}</em>}
        <button type="button" tabIndex={-1}
-        className={`v2-eye is-${kind} ${on ? '' : 'is-off'}`}
+        className={`v2-eye is-${kind} ${on ? '' : 'is-off'} ${eyeInert ? 'is-inert' : ''}`}
         aria-pressed={!on}
-        aria-label={`${label} — ${tr(on ? 'tree.hide' : 'tree.show')}`}
-        title={eyeTitle(row)}
-        onClick={() => toggleEye(row)}>
+        aria-disabled={eyeInert || undefined}
+        aria-label={`${label} — ${tr(eyeInert ? 'tree.eyeSystemOff' : on ? 'tree.hide' : 'tree.show')}`}
+        title={eyeInert ? tr('tree.eyeSystemOff') : eyeTitle(row)}
+        onClick={() => { if (!eyeInert) toggleEye(row); }}>
         <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor"
          strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
          <path d={on

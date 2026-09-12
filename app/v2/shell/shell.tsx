@@ -553,9 +553,11 @@ export default function Shell(p: ShellProps) {
          disabled={p.scene?.mode !== 'render'}
          aria-label={tr('tree.opacityOf', {name: t.name(b.id, b.name)})}
          onChange={(e) => {
+          // ⚠️ THE COMMAND FIRST, THE SESSION SET ONLY IF IT WAS ACCEPTED — codex round 5, Medium 1.
+          // Clearing the override before dispatching let a REFUSED edit still change the picture.
           const v = Number(e.target.value) / 100;
+          if (!p.dispatch({type: 'set-opacity', id: b.id, opacity: v})) return;
           if (v > 0) p.onHide(b.id, false);
-          p.dispatch({type: 'set-opacity', id: b.id, opacity: v});
          }}/>
         <em>{alphaOf(b.id) === 0 ? tr('tree.hiddenWord') : `${Math.round(alphaOf(b.id) * 100)}%`}</em>
        </div>}

@@ -79,6 +79,29 @@ export function conceptAlpha(alphaOf: (partId: string) => number, elements: read
 }
 
 /**
+ * WHY A STRUCTURE IS NOT DRAWN — because the eye must not offer an action it cannot perform.
+ * codex round 5, Medium 4: an ordinary row whose SYSTEM is switched off reads effective 0, so the
+ * eye offered "show", and clicking it cleared an empty session set and changed nothing. A truthful
+ * reading needs a truthful control, which means naming the cause.
+ *
+ *   'session'  — a render-only override the eye owns. Actionable.
+ *   'declared' — the scene declares alpha 0 for it. Actionable (the member eye / the slider).
+ *   'system'   — its system is switched off. NOT actionable by this eye: it is a different control.
+ *   'drawn'    — it is on screen. Nothing to explain.
+ */
+export function alphaCause(args: {
+ alpha: number;
+ inSession: boolean;
+ declaredZero: boolean;
+ systemOn: boolean;
+}): 'drawn' | 'session' | 'declared' | 'system' {
+ if (args.alpha > 0) return 'drawn';
+ if (args.inSession) return 'session';
+ if (args.declaredZero) return 'declared';
+ return args.systemOn ? 'declared' : 'system';
+}
+
+/**
  * STEP 2+3 OF THE CHAIN — the scene's own per-mesh alpha, before the session set touches it.
  *
  * Lifted out of `page.tsx`'s `plate` memo so that the two things that need it — the renderer and
@@ -163,6 +186,13 @@ export type SessionOp = 'hide' | 'clear' | 'none';
 export interface EyeAction {
  /** For a system row: the new EFFECTIVE set to dispatch through `set-visible`. */
  visible?: SystemId[];
+ /**
+  * The new INTENT set — the human's own choice, patched rather than replaced (codex round 5,
+  * Medium 6). Computing the intent from the EFFECTIVE set discarded preferences for systems the
+  * reader never clicked: codex executed intent `['muscular','nervous']` + a skeletal-ghost scene +
+  * one click on Digestive and got intent `['skeletal','digestive']`, both originals gone.
+  */
+ intent?: SystemId[];
  /** For a structure row: the `set-opacity` argument, or `undefined` for "do not dispatch". */
  opacity?: number;
  session: SessionOp;
@@ -187,13 +217,22 @@ export interface EyeAction {
  * and the render value, so clicking an eye is also how a reader takes their intent back from a
  * scene that overrode it.
  */
-export function eyeAction(args: {kind: EyeKind; on: boolean; system?: SystemId; visible: readonly SystemId[]}): EyeAction {
+export function eyeAction(args: {
+ kind: EyeKind; on: boolean; system?: SystemId;
+ /** `render.visible` — the EFFECTIVE set the click acts on. */
+ visible: readonly SystemId[];
+ /** `visibleIntent` — the human's own set, PATCHED by the same click. */
+ intent?: readonly SystemId[];
+}): EyeAction {
  if (args.kind === 'system') {
   const sys = args.system;
-  return {
-   visible: args.on ? args.visible.filter((x) => x !== sys) : [...args.visible.filter((x) => x !== sys), ...(sys ? [sys] : [])],
-   session: 'none',
-  };
+  const toggle = (set: readonly SystemId[]) => (args.on
+   ? set.filter((x) => x !== sys)
+   : [...set.filter((x) => x !== sys), ...(sys ? [sys] : [])]);
+  // TWO SETS, THE SAME OPERATION. The effective set is what the reader is looking at, so the click
+  // acts on it; the intent is their own list, so the click adds to or removes from THAT rather than
+  // overwriting it with the scene's choice plus one.
+  return {visible: toggle(args.visible), intent: toggle(args.intent ?? args.visible), session: 'none'};
  }
  if (args.kind === 'member') return args.on ? {opacity: 0, session: 'none'} : {opacity: 1, session: 'clear'};
  return args.on ? {session: 'hide'} : {session: 'clear'};
