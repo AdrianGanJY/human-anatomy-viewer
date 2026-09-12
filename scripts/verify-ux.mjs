@@ -3827,24 +3827,54 @@ if (variant === 'v2') {
        * same fact the eye's own tooltip promises ("Saved in this view as opacity 0"), so a pass here
        * means the control's promise and the codec agree.
        */
+      /**
+       * ⚠️ THE ASSERTION IS ABOUT THE STYLE, NOT ABOUT BYTE-IDENTITY — and the first version of it
+       * being wrong is how the behaviour below got measured.
+       *
+       * I wrote "the Show restores the blob", which went RED. Decoding the three blobs
+       * (`.artifacts/.../blob-roundtrip-probe.txt`) says why, and it is not a defect in the wiring
+       * this row is about:
+       *
+       *   b0 (arrival)  styles: []
+       *   b1 (Hide)     styles: [{"id":"FMA22359","opacity":0}]     ← the member write, in the SCENE
+       *   b2 (Show)     styles: [{"id":"FMA22359","opacity":1}]     ← an EXPLICIT 1, not a removal
+       *
+       * `visibility.ts:311` — `kind === 'member'` returns `{opacity: 1}` on Show. That is S3 code,
+       * not S4's, and it is consistent with the eye's own tooltip ("the same setting as the Opacity
+       * slider"): the slider's right endpoint is an explicit 1 too.
+       *
+       * So the member lane's CONTRACT is "the Hide lands in the scene and the Show lifts it", and
+       * that is what is asserted. Byte-identity was my invention and would have been asserting the
+       * absence of a feature the slider deliberately has.
+       *
+       * ⚠️ RESIDUE, ESCALATED RATHER THAN FIXED HERE (S5a): the blob grows 168 → 223 characters and
+       * STAYS grown, because an explicit 1 is written where there had been no entry at all. The
+       * scene budget is a hard 1,400-character bound with an atomic refusal, so a reader who toggles
+       * eyes and toggles them back has spent budget on no-op styles and can meet a refusal they
+       * cannot account for. Changing `{opacity: 1}` to a removal is a product change in S3 code on a
+       * round whose job is confirming two blockers are closed, so it is measured, recorded and
+       * handed on — not slipped in.
+       */
       const persisted = (() => {
         if (probe.error || !probe.blob0 || !probe.blob1) return {ok: false, why: 'no blob recorded'};
         if (probe.blob1 === probe.blob0) return {ok: false, why: 'the Hide changed NO blob — a session-only write in the member lane'};
-        if (probe.blob2 !== probe.blob0) return {ok: false, why: 'the Show did not restore the blob'};
         try {
           const hidden = decodeScene(probe.blob1);
-          const back = decodeScene(probe.blob0);
+          const shown = decodeScene(probe.blob2);
           const zeroed = (hidden.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
-          const stillZero = (back.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
+          const stillZero = (shown.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
+          const grew = probe.blob2.length - probe.blob0.length;
           return {
+            // The Hide must put SOMETHING at opacity 0 in the scene, and the Show must leave nothing
+            // at 0. A session-only write produces neither.
             ok: zeroed.length > 0 && stillZero.length === 0,
-            why: `hidden blob styles at opacity 0: [${zeroed.join(',')}] · after Show: [${stillZero.join(',')}]`,
+            why: `Hide -> styles at opacity 0: [${zeroed.join(',')}] · Show -> [${stillZero.join(',')}] · blob ${probe.blob0.length} -> ${probe.blob1.length} -> ${probe.blob2.length} chars (residue +${grew}, S5a)`,
           };
         } catch (e) { return {ok: false, why: `the blob did not decode: ${String(e).slice(0, 80)}`}; }
       })();
-      check(vp.name, `[${S4_V}] and the member Hide PERSISTED into the scene (styles opacity 0), then left it`,
+      check(vp.name, `[${S4_V}] and the member Hide PERSISTED into the scene (styles opacity 0), and the Show lifted it`,
         persisted.ok, persisted.why,
-        'the blob changed, decodes to an opacity-0 style, and returns to the original on Show');
+        'the blob changed, decodes to an opacity-0 style for the clicked structure, and nothing is left at 0 after the Show');
     } catch (e) {
       check(vp.name, `[S4-prelude] the member-show pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
