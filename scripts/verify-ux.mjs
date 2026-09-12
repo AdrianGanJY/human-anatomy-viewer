@@ -1851,6 +1851,100 @@ if (variant === 'v2') {
     return {k: [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(','), manual: p.manual};
   })()`;
 
+  /**
+   * ══ HOLD A KEY UNTIL THE STATE SAYS SO — NEVER FOR A FIXED NUMBER OF MILLISECONDS ═════════════
+   * (S3 PRELUDE. The defect this replaces is an INSTRUMENT defect, and it gated a deploy.)
+   *
+   * Every S1 held-key row used to be `down(code)` → `waitForTimeout(400…500)` → `up(code)` → assert
+   * the pose changed. In a sweep that opens a dozen browser contexts, a context that opens DURING
+   * those 400 ms sends this page a `blur`; `keys.ts` guard 6 then clears the held set (correctly —
+   * a keyup delivered to an unfocused window never arrives, and the camera would otherwise pan for
+   * ever), the rAF loop stops, and the pose never moves. The row goes red on a product that is
+   * working perfectly. Measured across the S2 gate: red on 2 of 5 sweep runs, a DIFFERENT row each
+   * time (`s1-r1-fixes`, then `s1-pose-1440`, then `s1-pose-1920` + `s1-r1-fixes`, then none) and
+   * green 3/3 in isolation. S1 tried `bringToFront()`, which narrows the window and does not close
+   * it: the steal happens after the call.
+   *
+   * A NONDETERMINISTIC RED IN A DEPLOY-GATING SUITE IS ITSELF A DEFECT — it trains its reader to
+   * re-run until green, which is how a real red gets waved through. So the fix is not a longer
+   * sleep and not a retuned guard; it is to stop measuring TIME and start measuring the STATE the
+   * row is actually asserting about.
+   *
+   * THE WAIT TARGET IS THE PRODUCT'S OWN REFLECTION OF THE HELD SET. The on-screen pad renders
+   * `aria-pressed` straight off `dispRef.current.held` (`shell.tsx` `PAD`, `use-shell.ts` `held`),
+   * so `.v2-cap-key[aria-label="<code>"][aria-pressed="true"]` IS the dispatcher's set, observed —
+   * not a test-only back door, and the same fact S1's own pad row already asserts. Two consequences
+   * worth stating: the helper needs no new product API, and if a later group removes the pad this
+   * instrument fails LOUDLY (a timeout naming the selector) rather than silently measuring nothing.
+   *
+   * WHAT IT DOES WITH A LOST HOLD. It does not paper over it: the second wait resolves to `lost` the
+   * moment the pad goes unpressed before the pose moved, and the attempt is retried from a re-focused
+   * page, bounded at three. The number of attempts travels into the row's measured string, so
+   * "green after 2 attempts" is visible as environment noise while "3 attempts, never held" stays a
+   * red about the product. A silent retry would be a different kind of lie.
+   */
+  const padSel = (code) => `.v2-cap-key[aria-label="${code}"]`;
+  const padPressed = (page, code) =>
+    page.evaluate((s) => document.querySelector(s)?.getAttribute('aria-pressed') ?? 'absent', padSel(code));
+  /**
+   * Hold `code` until the camera pose LEAVES `baseline`, then release and wait for the release to be
+   * observed too. Returns `{moved, attempts, pose, note}` — never throws, because a timeout here is
+   * a finding to report, not a pass to abandon.
+   */
+  async function holdUntilMoved(page, code, baseline, {attempts = 3, timeout = 6000} = {}) {
+    let note = '';
+    for (let n = 1; n <= attempts; n++) {
+      await page.bringToFront().catch(() => {});
+      await page.mouse.move(200, 200).catch(() => {});
+      await page.keyboard.down(code);
+      // 1. THE DISPATCHER REALLY TOOK IT. Without this the second wait cannot distinguish "the key
+      //    never registered" from "it registered and the camera is not answering".
+      const held = await page.waitForFunction(
+        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code), {timeout: 3000},
+      ).then(() => true).catch(() => false);
+      if (!held) {
+        await page.keyboard.up(code).catch(() => {});
+        note = `attempt ${n}: the dispatcher never reported ${code} held`;
+        continue;
+      }
+      // 2. THE POSE MOVES, or the hold is LOST. One wait, two outcomes, so a blur is diagnosed
+      //    rather than timing out as if the camera were dead.
+      const outcome = await page.waitForFunction(([s, k]) => {
+        if (document.querySelector(s)?.getAttribute('aria-pressed') !== 'true') return 'lost';
+        const nav = window.__atlasNav; if (!nav) return false;
+        const p = nav.pose();
+        const cur = [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(',');
+        return cur !== k ? 'moved' : false;
+      }, [padSel(code), baseline], {timeout}).then((h) => h.jsonValue()).catch(() => 'timeout');
+      await page.keyboard.up(code).catch(() => {});
+      // 3. AND IT LET GO. A row that leaves a key down poisons every row after it in the same page.
+      await page.waitForFunction(
+        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code), {timeout: 3000},
+      ).catch(() => {});
+      if (outcome === 'moved') {
+        const pose = await page.evaluate(POSE);
+        return {moved: true, attempts: n, pose, note: n > 1 ? `${n} attempts (the hold was lost ${n - 1}x to a blur)` : '1 attempt'};
+      }
+      note = `attempt ${n}: ${outcome === 'lost' ? 'the hold was cleared before the camera moved (blur)' : 'the camera did not move within 6 s'}`;
+    }
+    const pose = await page.evaluate(POSE);
+    return {moved: false, attempts, pose, note: `${attempts} attempts — ${note}`};
+  }
+  /** The same discipline for a hold whose POINT is to be held while something else is measured:
+   *  wait until the dispatcher reports it, rather than assuming 200 ms was enough. */
+  async function holdDown(page, code, {timeout = 3000} = {}) {
+    await page.keyboard.down(code);
+    return page.waitForFunction(
+      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code), {timeout},
+    ).then(() => true).catch(() => false);
+  }
+  async function releaseKey(page, code, {timeout = 3000} = {}) {
+    await page.keyboard.up(code).catch(() => {});
+    await page.waitForFunction(
+      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code), {timeout},
+    ).catch(() => {});
+  }
+
   // ── S1.1 A MANUAL POSE SURVIVES A DOCK TOGGLE ────────────────────────────────────────────────
   // The defect this is written against: `resize()` cleared the focus key and ended in an
   // unconditional `fit()`, so opening a dock threw away whatever the reader had set up. In the
@@ -1870,14 +1964,23 @@ if (variant === 'v2') {
        * This row failed intermittently in the full sweep and passed every time in isolation — at
        * 1440 but not 1920, on one run and not the next. The cause is `keys.ts` guard 6: the held
        * set is cleared on `blur`, because a keyup delivered while the window is not focused never
-       * reaches the page and the camera would otherwise pan for ever. In a sweep that opens a
-       * dozen browser contexts, an unfocused page receives exactly that blur mid-hold, the set
-       * clears, and the animation loop stops — the guard doing its job on a page no human is
-       * looking at.
+       * reaches the page and the camera would otherwise pan for ever. An unfocused page receives
+       * exactly that blur mid-hold, the set clears, and the animation loop stops — the guard doing
+       * its job on a page no human is looking at.
        *
-       * So the fix is to make the measurement resemble the situation being measured (a focused
-       * window), NOT to weaken the guard. A flake chased into the product would have cost the one
-       * protection against a stuck camera key.
+       * So the fix is to make the measurement resemble the situation being measured, NOT to weaken
+       * the guard. A flake chased into the product would have cost the one protection against a
+       * stuck camera key.
+       *
+       * ⚠️ S3 PRELUDE: `bringToFront()` ALONE WAS NOT THE FIX, and the correction is worth keeping.
+       * S1 stopped here, and the flake survived into the S2 gate — red on 2 of 5 sweep runs, a
+       * different row each time. Measured on 2026-09-12: with NO adversary at all the old
+       * timer-based arm was green only 8 of 10, and a blur delivered 12 ms after the keydown left it
+       * 8 of 10 as well; the state-waiting helper was 10 of 10 in BOTH conditions. `bringToFront()`
+       * narrows the window in which focus can be lost; it cannot close it, because the steal happens
+       * after the call returns. Only waiting on the STATE closes it. Kept here because the reasoning
+       * above is right and the conclusion drawn from it was not.
+       * Evidence: `.artifacts/L31/v21bc/s3/held-key-flake-proof.txt`.
        */
       await page.bringToFront();
       const before = await page.evaluate(POSE);
@@ -1887,14 +1990,12 @@ if (variant === 'v2') {
       // POSED THROUGH THE KEYS A HUMAN WOULD USE, never by writing the camera directly — a test
       // that sets `camera.position` passes over a dispatcher that never fires.
       await page.mouse.move(vp.width / 2, vp.height / 2);
-      await page.keyboard.down('ArrowLeft');
-      await page.waitForTimeout(500);
-      await page.keyboard.up('ArrowLeft');
-      await page.waitForTimeout(700);
-      const posed = await page.evaluate(POSE);
+      // S3 PRELUDE: state-waiting, not a 500 ms sleep. See `holdUntilMoved` above.
+      const orbit = await holdUntilMoved(page, 'ArrowLeft', before?.k ?? '');
+      const posed = orbit.pose;
       check(vp.name, `[${S1_V}] a held arrow key actually orbits the camera (the control arm)`,
-        !!posed && !!before && posed.k !== before.k && posed.manual === true,
-        `${before?.k} -> ${posed?.k} (manual=${posed?.manual})`, 'a different pose, flagged manual');
+        orbit.moved && !!posed && !!before && posed.k !== before.k && posed.manual === true,
+        `${before?.k} -> ${posed?.k} (manual=${posed?.manual}) · ${orbit.note}`, 'a different pose, flagged manual');
 
       const fieldW = () => page.evaluate(() => Math.round(document.querySelector('.v2-field').getBoundingClientRect().width));
       const w0 = await fieldW();
@@ -1963,13 +2064,11 @@ if (variant === 'v2') {
         // dispatcher that was never installed.
         await page.evaluate(() => document.querySelector('.v2-askbox')?.blur());
         await page.mouse.move(vp.width / 2, vp.height / 2);
-        await page.keyboard.down('KeyD');
-        await page.waitForTimeout(450);
-        await page.keyboard.up('KeyD');
-        await page.waitForTimeout(600);
-        const outside = await page.evaluate(POSE);
+        const outsideHold = await holdUntilMoved(page, 'KeyD', after?.k ?? '');
+        const outside = outsideHold.pose;
         check(vp.name, `[${S1_V}] the same D key OUTSIDE the box pans (the second control arm)`,
-          !!outside && !!after && outside.k !== after.k, `${after?.k} -> ${outside?.k}`, 'a different pose');
+          outsideHold.moved && !!outside && !!after && outside.k !== after.k,
+          `${after?.k} -> ${outside?.k} · ${outsideHold.note}`, 'a different pose');
       }
     } catch (e) {
       check(vp.name, `[${S1_V}] the typing pass ran`, false, String(e).slice(0, 200), 'no throw');
@@ -2122,12 +2221,12 @@ if (variant === 'v2') {
       // THE PHYSICAL KEY LIGHTS THE ON-SCREEN ONE — the direction that proves they share ONE set
       // rather than merely both working.
       await page.mouse.move(vp.width / 2, vp.height / 2);
-      await page.keyboard.down('KeyW');
-      await page.waitForTimeout(300);
-      const lit = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyW"]')?.getAttribute('aria-pressed'));
-      await page.keyboard.up('KeyW');
-      await page.waitForTimeout(300);
-      const unlit = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyW"]')?.getAttribute('aria-pressed'));
+      // S3 PRELUDE: the two readings WAIT for the attribute rather than sleeping 300 ms past it. The
+      // claim is unchanged; what changed is that a slow render now costs a wait instead of a red.
+      await holdDown(page, 'KeyW');
+      const lit = await padPressed(page, 'KeyW');
+      await releaseKey(page, 'KeyW');
+      const unlit = await padPressed(page, 'KeyW');
       check(vp.name, `[${S1_V}] a PHYSICAL W lights the on-screen W, and goes out on release`,
         lit === 'true' && unlit === 'false', `held=${lit}, released=${unlit}`, 'true then false');
     } catch (e) {
@@ -2183,11 +2282,11 @@ if (variant === 'v2') {
       // THE CONTROL ARM: the same codes UNMODIFIED still pan, so the row above is not passing
       // because the dispatcher is dead.
       await page.mouse.move(vp.width / 2, vp.height / 2);
-      await page.keyboard.down('KeyA'); await page.waitForTimeout(400); await page.keyboard.up('KeyA');
-      await page.waitForTimeout(500);
-      const bareKey = await page.evaluate(POSE);
+      const bareHold = await holdUntilMoved(page, 'KeyA', modAfter?.k ?? '');
+      const bareKey = bareHold.pose;
       check(vp.name, `[${S1_V}] the same A key UNMODIFIED still pans (the control arm)`,
-        !!bareKey && bareKey.k !== modAfter.k, `${modAfter?.k} -> ${bareKey?.k}`, 'a different pose');
+        bareHold.moved && !!bareKey && bareKey.k !== modAfter.k,
+        `${modAfter?.k} -> ${bareKey?.k} · ${bareHold.note}`, 'a different pose');
 
       /**
        * ⚠️ AND THE SAME THING WHILE A CAMERA KEY IS HELD — the case the rows above are STRUCTURALLY
@@ -2199,8 +2298,12 @@ if (variant === 'v2') {
        * invisible to round 1's own oracle. A guard added in a corrective round needs a case that
        * reaches IT, not the previous round's case.
        */
-      await page.keyboard.down('KeyS');
-      await page.waitForTimeout(200);
+      // S3 PRELUDE: the hold is OBSERVED before the synthetic events are fired. A 200 ms sleep that
+      // lost the race left this sub-test firing its modified events with the held set EMPTY — i.e.
+      // measuring the case the rows ABOVE already cover, and reporting it as the held case.
+      const sHeld = await holdDown(page, 'KeyS');
+      check(vp.name, `[${S1_V}] S is really held before the modified-while-held events (the premise)`,
+        sHeld, sHeld ? 'the dispatcher reports KeyS held' : 'KeyS never registered as held', 'held');
       const heldMod = await page.evaluate(() => {
         const out = [];
         for (const [label, init] of [
@@ -2214,8 +2317,7 @@ if (variant === 'v2') {
         }
         return out;
       });
-      await page.keyboard.up('KeyS');
-      await page.waitForTimeout(300);
+      await releaseKey(page, 'KeyS');
       const heldSwallowed = heldMod.filter((m) => m.prevented).map((m) => m.label);
       check(vp.name, `[${S1_V}] a modified key is NOT consumed even while a camera key is HELD`,
         heldSwallowed.length === 0,
@@ -2254,15 +2356,15 @@ if (variant === 'v2') {
         shot.png && shot.bytes > 20000, `data URL ${shot.png ? 'png' : 'MISSING'}, ${shot.bytes} chars`, 'a png data URL of real size');
       // THE VIEWPORT IS STILL LIVE afterwards — the actual user-visible consequence.
       const preMove = await page.evaluate(POSE);
-      await page.keyboard.down('KeyD'); await page.waitForTimeout(400); await page.keyboard.up('KeyD');
-      await page.waitForTimeout(500);
-      const postMove = await page.evaluate(POSE);
+      const postHold = await holdUntilMoved(page, 'KeyD', preMove?.k ?? '');
+      const postMove = postHold.pose;
       // ⚠️ NAMED FOR WHAT IT MEASURES. It reads `__atlasNav.pose()`, which a DOM overlay cannot
       // affect — so it passed UNDER the defect and is NOT the row that catches H2 (round 2, Medium
       // 4). The row above it, counting `.atlas-shot` canvases, is the one that bites. This one says
       // the command did not leave the dispatcher wedged, which is a different and smaller claim.
       check(vp.name, `[${S1_V}] the dispatcher still answers after a snapshot (NOT a test of the overlay)`,
-        !!postMove && !!preMove && postMove.k !== preMove.k, `${preMove?.k} -> ${postMove?.k}`, 'a different pose');
+        postHold.moved && !!postMove && !!preMove && postMove.k !== preMove.k,
+        `${preMove?.k} -> ${postMove?.k} · ${postHold.note}`, 'a different pose');
 
       // ── M7: a modifier pressed while a camera key is HELD must not fire its discrete twin ────
       // Holding `S` to pan and then pressing Shift used to enter presentation mode mid-pan. No
@@ -2274,15 +2376,17 @@ if (variant === 'v2') {
        * was green with the guard deleted. A real keyboard sends exactly that event — the auto-repeat
        * of a held key, now carrying `shiftKey` — so the oracle sends it too.
        */
-      await page.keyboard.down('KeyS');
-      await page.waitForTimeout(250);
+      // S3 PRELUDE: observed, not slept. If `KeyS` is not really held the synthetic shifted repeat
+      // below measures the UNHELD case, which is the opposite of what this row claims to test.
+      const sHeld2 = await holdDown(page, 'KeyS');
+      check(vp.name, `[${S1_V}] S is really held before the shifted repeat (the premise)`,
+        sHeld2, sHeld2 ? 'the dispatcher reports KeyS held' : 'KeyS never registered as held', 'held');
       const midPan = await page.evaluate(() => {
         const ev = new KeyboardEvent('keydown', {code: 'KeyS', key: 'S', shiftKey: true, repeat: true, bubbles: true, cancelable: true});
         window.dispatchEvent(ev);
         return {staged: document.body.classList.contains('v2-stage'), prevented: ev.defaultPrevented};
       });
-      await page.keyboard.up('KeyS');
-      await page.waitForTimeout(400);
+      await releaseKey(page, 'KeyS');
       const stagedAfter = await page.evaluate(() => document.body.classList.contains('v2-stage'));
       check(vp.name, `[${S1_V}] Shift arriving while S is HELD does not enter the stage`,
         midPan.staged === false && stagedAfter === false,
@@ -2400,13 +2504,33 @@ if (variant === 'v2') {
         isStudio === vp.studio, `.v2-studio=${isStudio} at ${vp.width}px`, String(vp.studio));
       const before = await page.evaluate(POSE);
       await page.mouse.move(vp.width / 2, vp.height / 2);
-      await page.keyboard.down('KeyD'); await page.waitForTimeout(450); await page.keyboard.up('KeyD');
+      /**
+       * S3 PRELUDE, AND THE ONE ROW WHERE THE TWO TIERS NEED TWO INSTRUMENTS.
+       *
+       * In the studio the claim is "it moved", so it waits on the state (`holdUntilMoved`). Below
+       * 1180 the claim is "it did NOT move" and there IS no pad — guard 7 withholds the camera
+       * commands and `StudioField` is unmounted — so there is no held-set reflection to wait on and
+       * nothing to wait FOR. A bounded hold is the honest instrument for a negative: hold for longer
+       * than the studio arm needs to move, then read. (Using the state-waiting helper here would
+       * spend three timeouts proving the absence of a DOM node and report it as if the camera were
+       * the thing being measured.)
+       */
+      let after, note;
+      if (vp.studio) {
+        const hold = await holdUntilMoved(page, 'KeyD', before?.k ?? '');
+        after = hold.pose; note = hold.note;
+      } else {
+        await page.keyboard.down('KeyD'); await page.waitForTimeout(900); await page.keyboard.up('KeyD');
+        await page.waitForTimeout(400);
+        after = await page.evaluate(POSE);
+        note = 'a bounded 900 ms hold — there is no pad below 1180 to observe';
+      }
       await page.keyboard.press('h');
       await page.waitForTimeout(900);
-      const after = await page.evaluate(POSE);
-      const moved = !!after && !!before && after.k !== before.k;
+      const settled = await page.evaluate(POSE);
+      const moved = !!settled && !!before && settled.k !== before.k;
       check(vp.name, `[${S1_V}] the camera keys ${vp.studio ? 'WORK in the studio' : 'are WITHHELD below 1180'}`,
-        moved === vp.studio, `${before?.k} -> ${after?.k} (moved=${moved})`,
+        moved === vp.studio, `${before?.k} -> ${after?.k} -> ${settled?.k} (moved=${moved}) · ${note}`,
         vp.studio ? 'the camera moved' : 'the camera did not move');
 
       /**
