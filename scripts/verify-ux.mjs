@@ -1599,6 +1599,83 @@ if (variant === 'v2') {
         navOk.lanes >= 2 && monotonic,
         navOk.error ?? `${navOk.lanes} lanes, ${navOk.rows} rows, DOM positions after each ArrowDown: ${walk.join(',')}`,
         '>= 2 lanes (or the check cannot fail), and positions 1,2,3,…');
+
+      /**
+       * ⚠️ THE SAME WALK, WITH THE POINTER RESTING ON THE LIST — the state the row above cannot see.
+       *
+       * The row above dispatches synthetic key events and never places a pointer, so it asserted the
+       * ordering claim in the one posture where it held. With a real cursor parked over a row, a
+       * keyboard-driven `scrollIntoView` slides a DIFFERENT row under it, Chromium fires
+       * `mouseenter`, and the hover handler clobbered the keyboard's index: 25 ArrowDowns netted +6
+       * rows, jumping backwards every fourth press (stand-in review S2 r2, HIGH-1). That is the
+       * ordinary desktop posture — the palette opens under the hand already on the mouse.
+       *
+       * So this arm parks a REAL pointer over the list once, never moves it again, and drives real
+       * key presses. It is the control arm's opposite: same claim, adversarial state.
+       */
+      const listBox = await page.$('.v2-find-list .v2-result');
+      let hoverWalk = {error: 'no result row to park on'};
+      if (listBox) {
+        const bb = await listBox.boundingBox();
+        if (bb) {
+          await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+          await page.waitForTimeout(150);
+          const seq = [];
+          for (let i = 0; i < 14; i++) {
+            await page.keyboard.press('ArrowDown');
+            await page.waitForTimeout(60);
+            seq.push(await page.evaluate(() => [...document.querySelectorAll('.v2-find-list .v2-result')]
+              .findIndex((el) => el.classList.contains('is-at'))));
+          }
+          // STRICTLY INCREASING BY ONE. A single backwards step is the defect.
+          const backwards = seq.filter((v, i) => i > 0 && v <= seq[i - 1]).length;
+          hoverWalk = {seq, backwards};
+        }
+      }
+      check(vp.name, `[${STUDIO_V}] ArrowDown still advances with the POINTER RESTING on the list`,
+        Array.isArray(hoverWalk.seq) && hoverWalk.seq.length > 0 && hoverWalk.backwards === 0,
+        hoverWalk.error ?? `positions: ${hoverWalk.seq.join(',')} (${hoverWalk.backwards} backwards steps)`,
+        'strictly increasing — no backwards step');
+
+      /**
+       * ⚠️ THE LIST IS THE SCROLLER, NOT THE BODY — asserted AFTER scrolling, which is the only
+       * state in which it was ever false.
+       *
+       * `.v2-find-list{flex:1;overflow-y:auto}` is written under a comment promising the input and
+       * the footer stay on screen at every list length. Both were false: `.v2-modal-body` is a plain
+       * block, so the palette grew to content height and the BODY scrolled. The capped footer
+       * rendered ~6,000 px below the visible modal and was never on screen in ANY evidence
+       * screenshot; after 40 ArrowDowns the search input had left the modal entirely.
+       *
+       * Screenshots could not have caught this — they are taken before any scroll. So the row
+       * measures the rects AFTER driving the list, which is where the claim lives.
+       */
+      const scroller = await page.evaluate(() => {
+        const modal = document.querySelector('.v2-modal.is-find');
+        const list = document.querySelector('.v2-find-list');
+        const input = document.querySelector('.v2-find input');
+        const foot = document.querySelector('.v2-find-foot');
+        const body = document.querySelector('.v2-modal.is-find .v2-modal-body');
+        if (!modal || !list || !input || !foot || !body) return {error: 'palette parts missing'};
+        const m = modal.getBoundingClientRect();
+        const inside = (el) => {
+          const r = el.getBoundingClientRect();
+          return r.top >= m.top - 1 && r.bottom <= m.bottom + 1;
+        };
+        return {
+          listScrolls: list.scrollHeight > list.clientHeight + 1,
+          bodyScroll: body.scrollTop,
+          bodyOverflows: body.scrollHeight > body.clientHeight + 1,
+          inputInside: inside(input), footInside: inside(foot),
+          footTop: Math.round(foot.getBoundingClientRect().top), modalBottom: Math.round(m.bottom),
+        };
+      });
+      check(vp.name, `[${STUDIO_V}] after scrolling the results, the input and the footer are STILL inside the modal`,
+        !scroller.error && scroller.inputInside && scroller.footInside && !scroller.bodyOverflows,
+        scroller.error ?? `inputInside=${scroller.inputInside} footInside=${scroller.footInside} `
+          + `listScrolls=${scroller.listScrolls} bodyOverflows=${scroller.bodyOverflows} `
+          + `foot.top=${scroller.footTop} modal.bottom=${scroller.modalBottom}`,
+        'input and footer inside the modal, the body does not overflow');
       check(vp.name, `[${STUDIO_V}] a Chinese query returns matches in the studio (interface: ${cross.lang})`,
         cross.n >= 1, `${cross.n} rows at lang=${cross.lang}`, '>= 1 row');
       /**

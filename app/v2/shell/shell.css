@@ -329,7 +329,20 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 
    NO HEX LITERALS (G1). Every colour below is a token declared in the block at the top of this
    file or in v2.css. The one apparent exception is `color-mix`, which composes two tokens. */
-.v2-find{display:flex;flex-direction:column;min-height:0}
+/* ⚠️ THE PALETTE'S BODY MUST BE A FLEX COLUMN, OR THE LIST IS NOT THE SCROLLER.
+   `.v2-modal-body` is `overflow-y:auto` but a plain BLOCK, so `.v2-find` — a flex column with no
+   height constraint — grew to its CONTENT height, `flex:1` on the list resolved against an unbounded
+   container, and `overflow-y:auto` there never engaged. The BODY scrolled instead, which means the
+   input, the cross-script line, the partial/retry banner and the CAPPED footer all scrolled out of
+   the modal.
+   MEASURED (query "inferior", 100 rows, 1440x900): the capped footer sat at top 6824 with the modal
+   ending at 810 — never on screen, in any evidence screenshot — and after 40 ArrowDowns the search
+   input had left the modal at top -1974. On the phone the input went to -1308, which is the exact
+   soft-keyboard hazard the `.v2-find-box` comment below warns about.
+   Both of the invariants stated in the comments below were FALSE as shipped (stand-in review S2 r2,
+   HIGH-2). Scoped to `.is-find` so the key map and Settings keep the body scroller they want. */
+.v2-modal.is-find .v2-modal-body{display:flex;flex-direction:column;overflow:hidden}
+.v2-find{display:flex;flex-direction:column;min-height:0;flex:1}
 /* The input sits ABOVE the scroller and never scrolls away: on the phone it must stay above the
    keyboard, which is what the Overlay's --v2-vv sizing is for. */
 .v2-find-box{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:12px;flex-shrink:0}

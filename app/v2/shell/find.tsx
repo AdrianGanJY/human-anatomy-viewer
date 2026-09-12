@@ -196,7 +196,13 @@ export default function FindPalette(p: FindProps) {
  const rows = q.trim() ? res.all : idle;
  // CLAMP, never trust. The active index survives a keystroke that shortens the list, and an index
  // past the end would make Enter commit `undefined`.
- const at = Math.min(active, Math.max(0, rows.length - 1));
+ // ⚠️ BOTH BOUNDS. The first version guarded only the upper one, so `setActive(i => Math.min(
+ // rows.length - 1, i + 1))` on an EMPTY list yielded `Math.min(-1, 1) = -1` and that -1 survived
+ // into a populated list: 17 rows on screen, no highlight, `aria-activedescendant="v2-find--1"`
+ // resolving to nothing, and Enter committing NOTHING (`commit(rows[-1])` returns at `!hit`). The
+ // unrepaired trigger is rows going 0 -> N without a keystroke — a dictionary arriving mid-session,
+ // the same cold-fetch window as H1 (stand-in review S2 r2, M1).
+ const at = Math.min(Math.max(0, active), Math.max(0, rows.length - 1));
 
  const commit = useCallback((hit: Hit | undefined, addTo: boolean) => {
   if (!hit) return;
@@ -255,6 +261,32 @@ export default function FindPalette(p: FindProps) {
   el?.scrollIntoView({block: 'nearest'});
  }, [at, rows.length]);
 
+ /**
+  * ── A SCROLL-INDUCED `mouseenter` IS NOT A POINTER MOVE ────────────────────────────────────────
+  *
+  * ⚠️ THIS IS THE OTHER HALF OF THE JITTER LOOP, and the `byKey` guard above does NOT close it
+  * (stand-in review S2 r2, HIGH-1). Stopping the runaway *scroll* was only one direction. The harm
+  * runs the other way too: a keyboard-driven `scrollIntoView` slides a DIFFERENT row under a
+  * stationary cursor, Chromium fires `mouseenter` on it, and the hover handler clobbers the
+  * keyboard's index. Executed: with the pointer parked once and never moved again, 25 ArrowDowns
+  * netted +6 rows — `5 6 7 5 6 7 8 6 7 8 9 …`, a backwards jump every fourth press, with 7
+  * `mouseenter` events logged during a keyboard-only walk. Pointer outside the list: a clean 1…20.
+  *
+  * That is the ordinary desktop posture — the palette opens centred, under the hand already on the
+  * mouse — so the defect is the common case, not an edge one.
+  *
+  * The fix is to make the handler answer the question it was always asking: DID THE POINTER MOVE?
+  * `mousemove` with unchanged coordinates is the browser telling us the content moved instead, and
+  * that must not steal the selection. Comparing the coordinates is what makes it airtight —
+  * `mouseenter` alone cannot distinguish the two, which is why it was the wrong event.
+  */
+ const ptr = useRef({x: -1, y: -1});
+ const hover = useCallback((i: number, ev: React.MouseEvent) => {
+  if (ev.clientX === ptr.current.x && ev.clientY === ptr.current.y) return;
+  ptr.current = {x: ev.clientX, y: ev.clientY};
+  setActive(i);
+ }, []);
+
  if (!p.open) return null;
 
  const laneOf = (l: Lane) => (l === 'system' ? res.system : l === 'concept' ? res.concept : res.part);
@@ -281,7 +313,7 @@ export default function FindPalette(p: FindProps) {
     // `aria-selected` on a plain button would be a lie about the widget; the active row is reported
     // through the input's `aria-activedescendant` contract instead, and the id is stable per row.
     id={`v2-find-${i}`}
-    onMouseEnter={() => setActive(i)}
+    onMouseMove={(e) => hover(i, e)}
     onClick={(e) => commit(h, e.shiftKey)}
    >
     {sys && <span className="v2-dot" style={{background: sys.color}} aria-hidden="true"/>}
@@ -388,7 +420,11 @@ export default function FindPalette(p: FindProps) {
       : <li className="v2-empty">{p.tr('status.emptyHint')}</li>}
 
     {/* STATE 3 — genuinely nothing, and only once the dictionaries are in. */}
-    {q.trim() && !res.all.length && !loading && <li className="v2-empty">{p.tr('search.empty')}</li>}
+    {/* ⚠️ AND NOT WHILE EVERY DICTIONARY IS MISSING. Gated on `!loading` alone, a total dictionary
+       failure rendered the banner AND "No structures match." underneath it — telling the reader two
+       things at once, one of them a false claim about the ATLAS (stand-in review S2 r2, M2). */}
+   {q.trim() && !res.all.length && !loading && !(zhPartial() && !loadedLanes().length) &&
+    <li className="v2-empty">{p.tr('search.empty')}</li>}
    </ul>
 
    {/* STATE 4 — CAPPED. Said, never silent. */}
