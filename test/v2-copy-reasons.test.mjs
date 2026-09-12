@@ -54,7 +54,29 @@ test('REFUSAL_KEYS is exactly the set of refusal keys the controller emits', () 
  const src = readFileSync(new URL('../app/v2/controller.ts', import.meta.url), 'utf8');
  // Only the EMITTING form — `key: 'refusal.x'` — so the declaration list itself and the prose do
  // not feed the set they are meant to be checked against.
- const emitted = new Set([...src.matchAll(/key:\s*'(refusal\.[A-Za-z.]+)'/g)].map((m) => m[1]));
+ /**
+  * ⚠️ BOTH QUOTE STYLES, AND NON-LITERAL FORMS ARE REFUSED — codex round 10's Low.
+  *
+  * It executed the narrow version: appending an emission written `key: "refusal.tamperProof"` left
+  * the scanned set UNCHANGED, and rendering that reason echoed the key. A scanner that understands
+  * only one spelling yields a green meaning "I did not look", which is worse than a red.
+  *
+  * So single, double and backtick quotes are all scanned — and a SECOND pass FAILS on any `key:`
+  * whose value is not a quoted `refusal.*` literal (computed, a variable, an interpolated template,
+  * shorthand). Rather than try to evaluate those forms, the test refuses them: the contract is that
+  * every refusal key is a visible literal, and that contract is what makes this file able to check
+  * them at all.
+  */
+ const emitted = new Set([...src.matchAll(/key:\s*['"`](refusal\.[A-Za-z.]+)['"`]/g)].map((m) => m[1]));
+ // ⚠️ ANCHORED ON `{`, because the first version of this pass flagged `key: string;` — the `Reason`
+ // INTERFACE's own type annotation. A scanner that reports a type declaration as a computed key is
+ // a guard nobody will keep. Every real emission is an object literal opening with `key:`, so the
+ // brace is the discriminator; the interface's `key` sits after a doc comment and cannot match.
+ const nonLiteral = [...src.matchAll(/\{\s*key:\s*([^,}\n]+)/g)]
+  .map((m) => m[1].trim())
+  .filter((v) => !/^['"`]refusal\.[A-Za-z.]+['"`]$/.test(v));
+ assert.deepEqual(nonLiteral, [],
+  'a refusal key must be a QUOTED LITERAL — a computed or interpolated key cannot be scanned, so it cannot be covered');
  assert.ok(emitted.size >= 10, `the scan must FIND the emissions, not silently match nothing (found ${emitted.size})`);
  const declared = new Set(REFUSAL_KEYS);
  assert.deepEqual(

@@ -64,7 +64,12 @@
  * quietly get worse while the target waits for its owning commit.
  */
 import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules/playwright-core/index.mjs';
+import {execSync} from 'node:child_process';
 import {mkdirSync, writeFileSync} from 'node:fs';
+import {dirname} from 'node:path';
+import {fileURLToPath} from 'node:url';
+/** The repo root, for the one `git` call this suite makes (the About commit assertion, S4). */
+const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 import {join} from 'node:path';
 import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
 import {POPULATION, attachRequestLedger, populationCheck, rowsByBarrier} from './request-ledger.mjs';
@@ -2006,6 +2011,47 @@ if (variant === 'v2') {
   const padSel = (code) => `.v2-cap-key[aria-label="${code}"]`;
   const padPressed = (page, code) =>
     page.evaluate((s) => document.querySelector(s)?.getAttribute('aria-pressed') ?? 'absent', padSel(code));
+
+  /**
+   * ── EVERY HOLD'S OUTCOME, IN ONE LEDGER — codex round 10, M1 ──────────────────────────────────
+   *
+   * THE REGRESSION IT FIXES, IN codex's OWN WORDS: "Nothing consumes `.released`. Previously, this
+   * branch returned `moved:false`, so the existing assertion rejected it. The new never-held branch
+   * additionally manufactures `released:true` without observing release." Both halves were true. My
+   * split made `moved` a clean camera fact and, in doing so, removed the only thing that had been
+   * rejecting a STUCK KEY — because the stuck-key case used to fail the camera assertion by
+   * accident, and nothing ever asserted release on purpose.
+   *
+   * A stuck key poisons every row after it in the same page with an invisible cause, so it needs an
+   * assertion of its own. Per-row would mean touching eleven call sites and would still miss the
+   * twelfth; a LEDGER consumes `.released` for every call there is, including any added later, and
+   * one row at the end of the S1 pass asserts none of them stuck. `releaseAndObserve` is the only
+   * place that decides, and it MEASURES on every exit path — the value is never assumed again.
+   */
+  const holdLedger = [];
+  /**
+   * Release `code` and OBSERVE the release. Returns the measured fact plus a note; never assumes.
+   *
+   * The stuck-vs-starved distinction from round 4 is preserved: the pad's `aria-pressed` is React's
+   * reflection of the dispatcher's set and can lag past any bound under twelve contexts, so a
+   * timeout takes ONE more direct reading. Still `true` (or `absent`, which is a missing pad and
+   * not a release — round 6, Medium 7) is a red; already `false` is a starved observer and says so.
+   */
+  async function releaseAndObserve(page, code) {
+    await page.keyboard.up(code).catch(() => {});
+    const seen = await page.waitForFunction(
+      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
+      {timeout: 8000, polling: 60},
+    ).then(() => true).catch(() => false);
+    if (seen) return {released: true, note: ''};
+    const finalRead = await padPressed(page, code);
+    if (finalRead === 'false') {
+      return {released: true, note: ` [the release was not observed within 8 s but reads ${finalRead} directly — a starved observer, not a stuck key]`};
+    }
+    return {released: false, note: ` [${code} did not release within 8 s and the final direct read is aria-pressed=${finalRead} — ${finalRead === 'absent' ? 'the pad key is GONE from the DOM, so this instrument is measuring nothing' : 'a stuck key'}; every row after it in this page is suspect]`};
+  }
+  /** Record and return, so no path can skip the ledger. */
+  const holdResult = (code, r) => { holdLedger.push({code, moved: r.moved, padHeld: r.padHeld, released: r.released, note: r.note}); return r; };
   /**
    * Hold `code` until the camera pose LEAVES `baseline`, then release and wait for the release to be
    * observed too. Returns `{moved, attempts, pose, note}` — never throws, because a timeout here is
@@ -2082,11 +2128,14 @@ if (variant === 'v2') {
          * calling rows assert. So the hold continues and the pose is measured on its own.
          */
         const movedAnyway = await poseLeft(baseline, timeout);
-        await page.keyboard.up(code).catch(() => {});
+        // ⚠️ MEASURED, NOT ASSUMED (codex round 10, M1). This branch used to `keyboard.up` and
+        // return `released: true` on its own authority — manufacturing the one fact a stuck key
+        // would have contradicted.
+        const rel = await releaseAndObserve(page, code);
         if (movedAnyway) {
           const pose = await page.evaluate(POSE);
-          return {moved: true, padHeld: false, released: true, attempts: n, pose,
-            note: `${n} attempt${n > 1 ? 's' : ''} — THE CAMERA MOVED, but the pad never reported ${code} held (pad=not-reported). The camera claim stands on the pose; the pad is a separate finding, asserted by the pad's own rows.`};
+          return holdResult(code, {moved: true, padHeld: false, released: rel.released, attempts: n, pose,
+            note: `${n} attempt${n > 1 ? 's' : ''} — THE CAMERA MOVED, but the pad never reported ${code} held (pad=not-reported). The camera claim stands on the pose; the pad and the release are separate facts, asserted by their own rows.${rel.note}`});
         }
         history.push(`#${n} the dispatcher never reported ${code} held AND the pose did not move`);
         note = `attempt ${n}: the dispatcher never reported ${code} held AND the pose did not move`;
@@ -2129,7 +2178,6 @@ if (variant === 'v2') {
        * One more camera reading, with the key still down, settles which of the two it was.
        */
       const settled = outcome === 'lost' && await poseLeft(baseline, 1200) ? 'moved-pad-dropped' : outcome;
-      await page.keyboard.up(code).catch(() => {});
       // 3. AND IT LET GO. A row that leaves a key down poisons every row after it in the same page.
       // ⚠️ S3b — THE RELEASE IS NO LONGER SWALLOWED (codex round 4, Medium 2). This was
       // `.catch(() => {})`: a key that never came back up produced a clean pass and then poisoned
@@ -2151,23 +2199,22 @@ if (variant === 'v2') {
        * was starved, which goes into the note as what it is rather than failing a working product.
        * A starved observer is a fact about the host; a stuck key is a fact about the app.
        */
-      const released = await page.waitForFunction(
-        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
-        {timeout: 8000, polling: 60},
-      ).then(() => true).catch(() => false);
-      let slowRelease = '';
+      // ⚠️ codex round 10, M1 — ONE OBSERVER, USED ON EVERY EXIT PATH. This logic used to be
+      // inline here and NOWHERE ELSE, so the two returns above it invented their own answer.
+      const rel2 = await releaseAndObserve(page, code);
+      const released = rel2.released;
+      let slowRelease = rel2.note;
       if (!released) {
         const finalRead = await padPressed(page, code);
         // ⚠️ `'absent'` IS A FAILURE, NOT A RELEASE — codex round 6, Medium 7. `padPressed` returns
         // the string `'absent'` when the pad key is not in the DOM, and the first version only
         // failed on `'true'`, so a REMOVED pad (the exact thing the S3 prelude said must fail
         // loudly) read as "released" and every held-key row passed without a pad at all.
-        if (finalRead !== 'false') {
-          const pose = await page.evaluate(POSE);
-          return {moved: settled === 'moved' || settled === 'moved-pad-dropped', padHeld: true, released: false, attempts: n, pose,
-            note: `${code} did not release within 8 s and the final direct read is aria-pressed=${finalRead} — ${finalRead === 'absent' ? 'the pad key is GONE from the DOM, so this instrument is measuring nothing' : 'a stuck key'}; every row after it in this page is suspect`};
-        }
-        slowRelease = ` [the release was not observed within 8 s but reads ${finalRead} directly — a starved observer, not a stuck key]`;
+        const pose = await page.evaluate(POSE);
+        // A STUCK KEY ENDS THE CALL, and the camera fact it measured is reported truthfully beside
+        // it rather than suppressed: the two are independent, which is the whole point of the split.
+        return holdResult(code, {moved: settled === 'moved' || settled === 'moved-pad-dropped',
+          padHeld: true, released: false, attempts: n, pose, note: `${finalRead === 'absent' ? 'the pad key is GONE from the DOM' : 'a stuck key'}:${rel2.note}`});
       }
       if (settled === 'moved' || settled === 'moved-pad-dropped') {
         const pose = await page.evaluate(POSE);
@@ -2189,8 +2236,8 @@ if (variant === 'v2') {
         // the pose was still moving, which is a pad finding and is carried as one.
         const padNote = settled === 'moved-pad-dropped'
           ? ` [the pad stopped reporting ${code} held while the camera was still moving — a pad-reflection drop, not a lost hold]` : '';
-        return {moved: true, padHeld: true, released: true, attempts: n, pose,
-          note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}${padNote}`};
+        return holdResult(code, {moved: true, padHeld: true, released, attempts: n, pose,
+          note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}${padNote}`});
       }
       const blursNow = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
       const blurred = blursNow > blursAt;
@@ -2229,8 +2276,13 @@ if (variant === 'v2') {
     // `padHeld` is UNKNOWN on this path — some attempts may have reported the hold and some not —
     // so it is reported as `null` rather than guessed. A row that asserts on it must treat null as
     // "not established", never as false.
-    return {moved: false, padHeld: null, released: true, attempts: history.length || attempts, pose,
-      note: `${history.length || attempts} attempt${(history.length || attempts) > 1 ? 's' : ''} — ${history.join(' · ') || note}`};
+    // ⚠️ codex round 10, M1 — THE FALLTHROUGH MEASURED NOTHING EITHER. Every loop path above has
+    // already released and observed; this path is reached when the loop ended without a return, so
+    // it takes its own reading rather than declaring success on the way out.
+    const relFinal = await releaseAndObserve(page, code);
+    return holdResult(code, {moved: false, padHeld: null, released: relFinal.released,
+      attempts: history.length || attempts, pose,
+      note: `${history.length || attempts} attempt${(history.length || attempts) > 1 ? 's' : ''} — ${history.join(' · ') || note}${relFinal.note}`});
   }
   /** The same discipline for a hold whose POINT is to be held while something else is measured:
    *  wait until the dispatcher reports it, rather than assuming 200 ms was enough. */
@@ -2908,6 +2960,34 @@ if (variant === 'v2') {
     } catch (e) {
       check(vp.name, `[${S1_V}] the tier-gate pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ THE RELEASE ASSERTION — codex round 10, M1 ═══════════════════════════════════════════════
+   *
+   * The third fact, asserted on purpose instead of by accident. Every `holdUntilMoved` call in this
+   * pass has recorded its measured release in `holdLedger`, so this consumes `.released` for all
+   * eleven call sites AND for any added later — which per-row assertions could not promise.
+   *
+   * WHY IT WAS MISSING: a stuck key used to fail the CAMERA assertion, because the stuck-key branch
+   * returned `moved:false`. Splitting `moved` into a clean camera reading removed that accident, and
+   * nothing had ever asserted release deliberately. codex executed the consequence — `moved:true,
+   * padHeld:true, released:false` with both existing assertions PASSING — and it is right that this
+   * is a demonstrated regression in the gate rather than evidence about the dispatcher.
+   *
+   * ⚠️ AN EMPTY LEDGER IS A FAILURE, NOT A PASS. A guard that cannot fire is not tested: if the S1
+   * blocks above were skipped, reordered or rewritten to stop holding keys, `every()` over `[]` is
+   * vacuously true and this row would go green having watched nothing.
+   */
+  {
+    const stuck = holdLedger.filter((h) => h.released !== true);
+    const codes = [...new Set(holdLedger.map((h) => h.code))];
+    check('s1-holds', `[${S1_V}] NO hold in the S1 pass left a key down (release, asserted on its own)`,
+      holdLedger.length > 0 && stuck.length === 0,
+      holdLedger.length === 0
+        ? 'THE LEDGER IS EMPTY — no hold was recorded, so this row watched nothing'
+        : `${holdLedger.length} holds over ${codes.length} code(s) [${codes.join(', ')}], ${stuck.length} not released${stuck.length ? `: ${stuck.map((h) => `${h.code}${h.note}`).join(' · ').slice(0, 220)}` : ''}`,
+      'a non-empty ledger, and every hold observed released');
   }
 
   // ── THE COLLAPSE LADDER, DRIVEN ───────────────────────────────────────────────────────────────
@@ -3689,10 +3769,25 @@ if (variant === 'v2') {
         const name = (member.querySelector('.v2-tree-name b')?.textContent || '').trim().slice(0, 28);
         const eye = member.querySelector('.v2-eye');
 
+        /**
+         * ⚠️ THE BLOB IS RECORDED TOO — codex round 10's Low. It executed this callback against an
+         * eye that was member-LABELLED but only changed SESSION hiding: zero blob writes, meshes
+         * 2→1→2, and the row PASSED. So "the alphas moved and came back" is a claim about the
+         * picture and not about PERSISTENCE, and the member lane's whole distinction from the
+         * session lane is that its write lands in the scene (`styles[id].opacity = 0`) and
+         * therefore in the link.
+         *
+         * So the probe now also carries the scene blob at each step. The row asserts the blob
+         * CHANGED on the Hide and RETURNED on the Show; the decode-side check that `opacity` is
+         * really 0 is done by the driver, which has the codec.
+         */
+        const blobOf = () => window.atlas?.state?.().blob ?? '';
         const before = alphas();
+        const blob0 = blobOf();
         eye.click();
         await new Promise((r) => setTimeout(r, 700));
         const hiddenMap = alphas();
+        const blob1 = blobOf();
         // The meshes this Hide actually blanked — NAMED, so the Show is checked on the same set
         // rather than on a count that could come back level by coincidence.
         const blanked = Object.keys(before).filter((id) => before[id] > 0 && hiddenMap[id] === 0);
@@ -3704,6 +3799,7 @@ if (variant === 'v2') {
 
         return {
           name, blanked: blanked.length, restored: restored.length,
+          blob0, blob1, blob2: blobOf(), id: member.getAttribute('data-id') ?? '',
           drawnBefore: drawn(before), drawnHidden: drawn(hiddenMap), drawnShown: drawn(shownMap),
           // A HIDE MUST NOT BLANK THE WHOLE PICTURE, and a Show must not add meshes that were not
           // there: the two ways this could "pass" while being wrong.
@@ -3720,6 +3816,35 @@ if (variant === 'v2') {
           ? `${probe.error}${probe.names ? ` · rows: ${JSON.stringify(probe.names)} pressed: ${JSON.stringify(probe.pressed)} titles: ${JSON.stringify(probe.titles)}` : ''}`
           : `${probe.name}: ${probe.blanked} meshes blanked (${probe.sample.join(',')}), ${probe.restored} restored · drawn ${probe.drawnBefore} -> ${probe.drawnHidden} -> ${probe.drawnShown}`,
         'blanked > 0, every blanked mesh restored to its exact prior alpha, and the drawn total returns to where it started');
+      /**
+       * ⚠️ AND IT PERSISTED — codex round 10's Low. It executed the callback above against an eye
+       * that was member-LABELLED but only changed SESSION hiding: zero blob writes, meshes 2→1→2,
+       * and the row PASSED. The picture moving is not the member lane's claim; the member lane's
+       * claim is that the write lands in the SCENE, so the link the reader copies reproduces it.
+       *
+       * So the driver DECODES the blob the page was holding at each step. `styles` must gain an
+       * `opacity: 0` for the clicked structure on the Hide and lose it on the Show — which is the
+       * same fact the eye's own tooltip promises ("Saved in this view as opacity 0"), so a pass here
+       * means the control's promise and the codec agree.
+       */
+      const persisted = (() => {
+        if (probe.error || !probe.blob0 || !probe.blob1) return {ok: false, why: 'no blob recorded'};
+        if (probe.blob1 === probe.blob0) return {ok: false, why: 'the Hide changed NO blob — a session-only write in the member lane'};
+        if (probe.blob2 !== probe.blob0) return {ok: false, why: 'the Show did not restore the blob'};
+        try {
+          const hidden = decodeScene(probe.blob1);
+          const back = decodeScene(probe.blob0);
+          const zeroed = (hidden.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
+          const stillZero = (back.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
+          return {
+            ok: zeroed.length > 0 && stillZero.length === 0,
+            why: `hidden blob styles at opacity 0: [${zeroed.join(',')}] · after Show: [${stillZero.join(',')}]`,
+          };
+        } catch (e) { return {ok: false, why: `the blob did not decode: ${String(e).slice(0, 80)}`}; }
+      })();
+      check(vp.name, `[${S4_V}] and the member Hide PERSISTED into the scene (styles opacity 0), then left it`,
+        persisted.ok, persisted.why,
+        'the blob changed, decodes to an opacity-0 style, and returns to the original on Show');
     } catch (e) {
       check(vp.name, `[S4-prelude] the member-show pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
@@ -4556,8 +4681,13 @@ if (variant === 'v2') {
         const tabs = [...document.querySelectorAll('.v2-mtab')];
         tabs.find((t) => /About|关于|關於/.test(t.textContent || ''))?.click();
         await new Promise((r) => setTimeout(r, 250));
-        const text = (document.querySelector('.v2-about')?.textContent || '').replace(/\s+/g, ' ');
-        return {focusedTab, autofocus, text, len: text.length};
+        const panel = document.querySelector('.v2-about');
+        const text = (panel?.textContent || '').replace(/\s+/g, ' ');
+        // The BUILD paragraph ALONE. `about.build` is the last `<p>` in the panel; reading it
+        // separately is what stops a sha from elsewhere in About satisfying the commit assertion.
+        const ps = [...(panel?.querySelectorAll('p') ?? [])];
+        const buildLine = (ps[ps.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim();
+        return {focusedTab, autofocus, text, len: text.length, buildLine};
       });
       check(py.name, `[${S4_V}] the Settings overlay focuses its SELECTED TAB, not the close button`,
         !about.error && about.autofocus === 1 && /v2-mtab/.test(about.focusedTab),
@@ -4571,10 +4701,31 @@ if (variant === 'v2') {
         !about.error && /react 1?\d+\.\d+\.\d+/.test(about.text) && /three \d+\.\d+\.\d+/.test(about.text),
         about.error || `react: ${/react [\d.]+[^·]*/.exec(about.text)?.[0] ?? 'NOTHING'} · three: ${/three [\d.]+[^·]*/.exec(about.text)?.[0] ?? 'NOTHING'}`,
         'each package at its RESOLVED version, read from its own manifest at build time');
-      check(py.name, `[${S4_V}] About names the deployed build and the commit`,
-        !about.error && /l31v21bc/.test(about.text) && /\b[0-9a-f]{7}\b/.test(about.text),
-        about.error || `${/(build|版本)[^·]*·[^·]*/.exec(about.text)?.[0]?.slice(0, 80) ?? 'NOTHING'}`,
-        'the SITE_BUILD from wrangler.toml and a short commit sha');
+      /**
+       * ⚠️ THE BUILD LINE SPECIFICALLY, AGAINST THE EXPECTED COMMIT — codex round 10's Low.
+       *
+       * It executed the old predicate with the deployed commit set to `dev` and got a PASS in all
+       * three languages: the `\b[0-9a-f]{7}\b` search ran over the WHOLE About text, and
+       * `about.repo` supplies the UPSTREAM sha `7a383d3`. So the row whose entire job is to say
+       * "you are looking at THIS commit" was satisfied by a different project's commit.
+       *
+       * Two changes. The text comes from the BUILD paragraph alone (the last `<p>` in `.v2-about`,
+       * the only place `about.build` renders), and the sha is compared against
+       * `git rev-parse --short HEAD` — the same source `vite.config.ts` reads. If git is
+       * unavailable the row FAILS and says why, rather than falling back to a pattern match:
+       * "some seven hex characters appear somewhere" is exactly the assertion that was wrong.
+       */
+      let expectCommit = '';
+      try {
+        expectCommit = execSync('git rev-parse --short HEAD', {cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
+      } catch { expectCommit = ''; }
+      check(py.name, `[${S4_V}] About names the deployed build and THIS commit (not the upstream sha)`,
+        !about.error && !!expectCommit && /l31v21bc/.test(about.buildLine)
+          && about.buildLine.includes(expectCommit) && !/7a383d3/.test(about.buildLine),
+        about.error || (expectCommit
+          ? `build line: "${about.buildLine.slice(0, 95)}" · expected commit ${expectCommit}`
+          : 'git rev-parse failed, so the expected commit is unknown — this row must not be satisfiable by a pattern'),
+        `SITE_BUILD l31v21bc and commit ${expectCommit || '(unknown)'}, read from the build paragraph alone`);
     } finally { await ctx.close(); }
   }
 

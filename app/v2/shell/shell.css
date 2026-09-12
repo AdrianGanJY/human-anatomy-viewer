@@ -354,11 +354,17 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
    explains why: `ROW_H` may not become a function of a setting). `font-variant` is left alone and
    the tone marks come from the same installed faces as everything else: no webfont is downloaded
    for this, which is the claim `about.fontList` already makes for the whole page. */
-.v2-py{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-accent);letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* In the tree it is its own line, and the row is 18 px taller for it (`spec.md` §Geometry, via
-   `tree.tsx` `rowHeights`). `<s>` is the element the tree already uses for its supporting lines, so
-   the default strike-through is cleared there, not here. */
-.v2-tree-name .v2-py{text-decoration:none}
+/* ⚠️ `text-decoration:none` IS ON THE SHARED CLASS, and codex round 10's M2 is why.
+   The reading is drawn inside `<s>` on three surfaces, because `<s>` is the element the tree
+   already uses for its supporting lines. `<s>` is STRUCK THROUGH by default. The reset used to sit
+   on `.v2-tree-name .v2-py`, which covered the tree and left the Find palette (find.tsx) and the
+   phone's Selection rows (page.tsx) rendering every romanisation as DELETED TEXT.
+
+   I would have caught it by LOOKING: I read the tree and About screenshots and never opened the
+   palette's or the phone's. The oracle could not catch it either — it asserts the reading's TEXT,
+   and struck-through text has the same textContent. Fixed on the shared class so no future surface
+   can inherit the defect by choosing the same element. */
+.v2-py{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-accent);letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
 /* The Settings preview reserves its 18 px line from S0, so it keeps that line-height exactly. */
 .v2-srow .v2-py{line-height:18px}
 .v2-about h3{margin:20px 0 6px;font-size:var(--v2-type-sm);font-weight:600;color:var(--v2-ink)}

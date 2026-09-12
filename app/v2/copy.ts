@@ -431,9 +431,12 @@ export const V2: Record<string, Row> = {
  // and what is still absent — the full notice TEXTS — is named as absent instead of implied to be
  // covered. A sentence that describes a pipeline is a claim, and this one was false.
  'about.notices':  {
-  en: 'The list above is read at build time from each package\'s own manifest in the resolved dependency tree — name, version and declared licence. The full notice texts are not bundled; each is published with its own project.',
-  'zh-Hans': '上面的清单在构建时从实际解析的依赖树中读取各包自身的 manifest — 名称、版本与声明的许可。完整的许可声明正文未随本站打包，各自随其项目发布。',
-  'zh-Hant': '上面的清單在建置時從實際解析的相依樹中讀取各套件自身的 manifest — 名稱、版本與宣告的授權。完整的授權聲明正文未隨本站打包，各自隨其專案發布。',
+  // ⚠️ "A SELECTED LIST" is the wording codex round 10 (M3) earned: the names are chosen, and the
+  // versions and licences are then read from the resolved tree. Calling it the resolved dependency
+  // tree implied completeness the selection cannot promise.
+  en: 'A selected list of the packages this page loads and the tools that produced its data; each name\'s version and licence are read at build time from that package\'s own manifest in the resolved tree. The full notice texts are not bundled; each is published with its own project.',
+  'zh-Hans': '上表列出本页面加载的主要依赖及生成其数据的工具（名称为人工选定）；各自的版本与许可在构建时从该包在已解析依赖树中的 manifest 读取。完整的许可声明正文未随本站打包，各自随其项目发布。',
+  'zh-Hant': '上表列出本頁面載入的主要相依套件及產生其資料的工具（名稱為人工選定）；各自的版本與授權在建置時從該套件在已解析相依樹中的 manifest 讀取。完整的授權聲明正文未隨本站打包，各自隨其專案發布。',
  },
 
  // ── the key map (`?`) ──────────────────────────────────────────────────────────────────────────

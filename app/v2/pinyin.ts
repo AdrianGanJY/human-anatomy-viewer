@@ -52,7 +52,30 @@ export function loadPinyin(): Promise<PinyinMap | null> {
    if (!res.ok) return null;
    if (!/application\/json/i.test(res.headers.get('content-type') ?? '')) return null;
    const body = await res.json() as PinyinMap;
-   if (!body || typeof body !== 'object' || !body.py || typeof body.py !== 'object') return null;
+   /**
+    * ⚠️ VALIDATED BEFORE IT IS CACHED — codex round 10, M4, which executed three counterexamples
+    * through the old guard: `{py: []}` became `ready:true` with no readings (an array IS an object,
+    * and `typeof [] === 'object'`); an object-valued reading escaped `pinyinOf` despite its
+    * `string | null` return type, so a row would have rendered `[object Object]` under a name; and
+    * wrong `version`/`source` metadata was accepted, which is the same class as a stale map.
+    *
+    * None of those is reachable from `build-pinyin.mjs`, which validates what it writes — so this
+    * is a guard against a CORRUPTED or MISMATCHED response (a partial CDN body, a hand-edited file,
+    * a future build whose shape moved), not against our own generator. That is exactly the kind of
+    * input a fetch boundary is for, and "the generator is fine" was never the question.
+    *
+    * The version check is deliberately EXACT rather than a floor: an unknown shape is a thing to
+    * refuse, not to read optimistically (the same reasoning `store.ts` uses for `v`).
+    */
+   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+   if (body.version !== 1 || body.source !== 'zh-Hans') return null;
+   if (typeof body.library !== 'string' || !body.library) return null;
+   if (!body.py || typeof body.py !== 'object' || Array.isArray(body.py)) return null;
+   const entries = Object.entries(body.py as Record<string, unknown>);
+   if (!entries.length) return null;
+   // EVERY VALUE IS A STRING, or the whole map is refused. Filtering the bad ones out would leave a
+   // silently incomplete map, which is the failure mode the completeness test exists to prevent.
+   for (const [, v] of entries) if (typeof v !== 'string' || !v) return null;
    loaded = body;
    return body;
   } catch { return null; }

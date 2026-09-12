@@ -159,6 +159,53 @@ test('a SUCCESSFUL load is fetched exactly once — the request-budget claim, at
  assert.equal(pinyinLibrary(), 'pinyin-pro@3.29.4');
 });
 
+test('A MALFORMED MAP IS REFUSED, NOT CACHED AS A SUCCESS — codex round 10, M4', async () => {
+ /**
+  * codex executed three counterexamples through the old guard, which only asked
+  * `body.py && typeof body.py === 'object'`:
+  *   · `{py: []}` became `ready:true` with zero readings — an array IS an object.
+  *   · an OBJECT-valued reading escaped `pinyinOf`, whose return type says `string | null`, so a
+  *     row would have rendered `[object Object]` under a structure's name.
+  *   · wrong `version` / `source` metadata was accepted, i.e. a stale or foreign map.
+  * And because the memo is set on success, each one was cached for the life of the page.
+  *
+  * None is reachable from `build-pinyin.mjs`, which validates what it writes. That is not the
+  * question: this is a FETCH boundary, and the inputs it has to survive are a partial CDN body, a
+  * hand-edited file and a future build whose shape moved.
+  *
+  * Each case gets a FRESH module instance, or the first success would mask the rest.
+  */
+ const cases = [
+  ['an array for py', {version: 1, source: 'zh-Hans', library: 'x@1', py: []}],
+  ['an EMPTY map', {version: 1, source: 'zh-Hans', library: 'x@1', py: {}}],
+  ['an object-valued reading', {version: 1, source: 'zh-Hans', library: 'x@1', py: {A: {no: 1}}}],
+  ['a numeric reading', {version: 1, source: 'zh-Hans', library: 'x@1', py: {A: 7}}],
+  ['an empty-string reading', {version: 1, source: 'zh-Hans', library: 'x@1', py: {A: ''}}],
+  ['a future version', {version: 2, source: 'zh-Hans', library: 'x@1', py: {A: 'a'}}],
+  ['a foreign source', {version: 1, source: 'zh-Hant', library: 'x@1', py: {A: 'a'}}],
+  ['no library stamp', {version: 1, source: 'zh-Hans', py: {A: 'a'}}],
+  ['a bare array body', []],
+  ['null', null],
+ ];
+ for (const [name, body] of cases) {
+  const mod = await import(`../app/v2/pinyin.ts?m4=${encodeURIComponent(name)}`);
+  const got = await withFetch(async () => jsonRes(body), () => mod.loadPinyin());
+  assert.equal(got, null, `${name} must be refused`);
+  assert.equal(mod.pinyinReady(), false, `${name} must not be cached as ready`);
+  assert.equal(mod.pinyinLibrary(), null, `${name} must not let About name a library`);
+  assert.equal(mod.pinyinOf('A', '胸骨体'), null, `${name} must not yield a reading`);
+ }
+ // AND A WELL-FORMED MAP IS STILL ACCEPTED, or the guard above would be satisfied by refusing
+ // everything — which is the vacuous version of this test.
+ const ok = await import('../app/v2/pinyin.ts?m4=good');
+ const good = await withFetch(
+  async () => jsonRes({version: 1, source: 'zh-Hans', library: 'pinyin-pro@3.29.4', py: {FMA7487: 'xiōng gǔ tǐ'}}),
+  () => ok.loadPinyin(),
+ );
+ assert.equal(good.py.FMA7487, 'xiōng gǔ tǐ');
+ assert.equal(ok.pinyinReady(), true);
+});
+
 test('pinyinOf gives NO reading for a Latin string — English never acquires a romanisation', async () => {
  const {loadPinyin, pinyinOf} = await import('../app/v2/pinyin.ts?case=han');
  await withFetch(async () => jsonRes({version: 1, source: 'zh-Hans', library: 'x@1', py: {FMA7487: 'xiōng gǔ tǐ'}}),
