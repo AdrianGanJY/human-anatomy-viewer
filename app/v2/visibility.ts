@@ -92,13 +92,45 @@ export function conceptAlpha(alphaOf: (partId: string) => number, elements: read
 export function alphaCause(args: {
  alpha: number;
  inSession: boolean;
- declaredZero: boolean;
- systemOn: boolean;
+ /** The scene's RESOLVED alpha for this structure — `sceneOpacities`, so `roleOpacity` is already
+  *  applied. NOT `styles[id].opacity ?? 1`: a missing style is not a declared 1. */
+ resolvedZero: boolean;
+ /**
+  * Is the VISIBILITY LANE the blocker? `laneBlocked` must be computed the way the renderer computes
+  * `shown` — `isolate ? selected : visible.has(system) || selected` — because a PICKED concept is
+  * drawn even when its system is switched off (`|| sel`). Reading only "is the system in the
+  * visible set" made a selected ghost with `roleOpacity.ghost = 0` report `'system'`, which sent the
+  * reader to a control that was not the blocker and disabled the one that was (codex round 6).
+  */
+ laneBlocked: boolean;
 }): 'drawn' | 'session' | 'declared' | 'system' {
  if (args.alpha > 0) return 'drawn';
+ /**
+  * ⚠️ ORDER IS "WHAT WOULD REMOVING THIS CAUSE CHANGE?", NOT A PRIORITY LIST — codex round 6,
+  * Medium 4, second half. The lane comes FIRST because it is the one cause the eye cannot touch: a
+  * structure hidden by BOTH a session override and its system reported `'session'`, so the eye
+  * stayed active and clearing the override moved the alpha from 0 to 0 (codex executed exactly
+  * that). Answering "which control would actually help?" puts the lane ahead of the rest.
+  */
+ if (args.laneBlocked) return 'system';
  if (args.inSession) return 'session';
- if (args.declaredZero) return 'declared';
- return args.systemOn ? 'declared' : 'system';
+ return args.resolvedZero ? 'declared' : 'declared';
+}
+
+/**
+ * THE SCENE'S RESOLVED ALPHA for one structure — `roleOpacity` applied, mode applied — or
+ * `undefined` when there is no scene or the structure is not a member.
+ *
+ * It exists because two controls kept using `styles.find(...)?.opacity ?? 1` as "what the scene
+ * declares", and that is wrong twice over: a missing style inherits `roleOpacity[role]`
+ * (0.55 / 0.25 / whatever the link says), and in EXPLORE mode every member resolves to 1 whatever
+ * its style says. codex round 6 found both, in two different controls, after round 5 had fixed the
+ * same class of error in a third.
+ */
+export function resolvedStructureAlpha(scene: Scene | null, id: string): number | undefined {
+ if (!scene?.structures.some((st) => st.id === id)) return undefined;
+ const {structures} = sceneOpacities(scene) as unknown as {structures: Record<string, number>};
+ return structures[id];
 }
 
 /**

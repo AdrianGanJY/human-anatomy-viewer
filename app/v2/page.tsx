@@ -475,7 +475,7 @@ export default function V2() {
     blob: c.blob, ids: c.picks, focus: c.focusId ?? focusedNow?.id ?? null,
     name: focusedNow ? l.t.name(focusedNow.id, focusedNow.name) : null,
     nameEn: focusedNow?.name ?? null,
-    lang: l.lang, view: c.render.view, stage: l.stage, phase: l.phase, bytes: l.bytes,
+    lang: l.lang, view: c.render.view, visible: [...c.render.visible], stage: l.stage, phase: l.phase, bytes: l.bytes,
     // Introspection the oracles read instead of scraping the DOM for something the DOM does not
     // say: how many MESHES the camera is being asked to look at and to contain. A framing
     // failure is either "the fit is wrong" or "the fit was never given anything", and only this
@@ -580,7 +580,22 @@ export default function V2() {
    // the barrier and full load it published `false` and nothing ever restored it, and before the
    // first barrier the pending barrier belonged to the scene being superseded.
    setEpoch((n) => n + 1);
-   if (u.scene) { applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), u.lang); return; }
+   /**
+    * ⚠️ THE WARM BRANCH FORWARDS `system=` AS WELL AS `lang=` — codex round 6, Medium 1. It carried
+    * the language and dropped the systems, so ONE link meant two different things depending on
+    * whether the tab was cold or warm: codex measured `#scene=<ghost>&system=none` giving
+    * `visible=['skeletal'], intentExplicit=false` warm and `visible=[], intentExplicit=true` cold.
+    * ⚠️ ROUND 6 NARROWED WHAT THIS ACHIEVES, and it is still required. `system=` no longer marks the
+    * intent EXPLICIT (see `controller.ts intentExplicit` — the app's own serialiser writes that key
+    * from the render value, so treating it as a statement let a ghost manufacture one). What it
+    * still must do is carry the SET, so one link means the same thing cold and warm — which was
+    * codex round 6's Medium 1 and is a separate defect from the statement question.
+    */
+   if (u.scene) {
+    if (u.visible) dispatch({type: 'set-visible', visible: u.visible});
+    applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), u.lang);
+    return;
+   }
    if (u.clearScene) { clearSceneState(u); return; }
    // Neither a scene nor an explicit clear: a legacy re-drive. `apply-legacy` carries BOTH the
    // picks and the camera/visibility keys, so it is one transaction rather than two.

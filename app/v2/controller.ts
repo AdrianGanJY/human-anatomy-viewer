@@ -342,11 +342,31 @@ export function initialState(
 ): {state: V2State; rejected?: string} {
  // The seed's intent is whatever the URL asked for, or the render seed's own set. `legacySceneState`
  // is not consulted here because it needs a `previous` and this IS the previous.
- // `intentExplicit` on a `system=` key: that key is what `set-visible` SERIALISES TO, so a URL
- // carrying it is the human's own earlier click coming back, and a ghost scene in the same URL must
- // not undo it (codex round 5, the High). Absent `system=` leaves it false and the ghost still wins.
+ /**
+  * ⚠️ `intentExplicit` IS **NOT** SEEDED FROM THE URL, AND CODEX ROUND 6 IS WHY.
+  *
+  * Round 5 set it from `!!url.visible`, reasoning that `system=` is the key `set-visible`
+  * serialises to and therefore a link carrying it is the reader's own click coming back. Both
+  * directions of that turned out false, each measured:
+  *
+  *   · `system=` IS OMITTED when the set equals `DEFAULT_VISIBLE` (app/url-state.ts:172). A reader
+  *     who switches a system off and back on has spoken twice and the URL says nothing, so the flag
+  *     is LOST on reload and the ghost wins again (codex round 6, the High).
+  *   · `system=` IS WRITTEN whenever the render value differs from the default — INCLUDING when a
+  *     ghost scene set it. So the app's own serialiser manufactures a statement nobody made: codex
+  *     executed an untouched ghost's automatic URL write, and with zero clicks the intent became
+  *     `['skeletal']` and the flag became true. That is the one-way door codex r9 Medium 1 closed,
+  *     coming back through this flag.
+  *
+  * The second is worse than the first: it silently corrupts a fact that was correct, whereas the
+  * first merely fails to preserve one. So the flag is set ONLY by `set-visible` — a real click in
+  * this page's lifetime — and a RELOAD therefore does not carry it. That limitation is REAL, it is
+  * reflected in the eye's tooltip (which no longer promises the hide is saved), and the durable fix
+  * needs the URL to carry the statement in its own right. Escalated, not papered over; see the
+  * worklog's "What S4 inherits".
+  */
  const blank: V2State = {scene: null, blob: '', picks: [], focusId: null, render,
-  visibleIntent: url.visible ?? render.visible, intentExplicit: !!url.visible};
+  visibleIntent: url.visible ?? render.visible};
  if (url.scene) {
   const scene = normalizeScene(url.scene) as Scene;
   const invalid = validateScene(scene);
@@ -356,7 +376,7 @@ export function initialState(
     state: {
      scene, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene),
      blob: url.sceneBlob && url.sceneBlob === encoded ? url.sceneBlob : encoded,
-     render, visibleIntent: url.visible ?? render.visible, intentExplicit: !!url.visible,
+     render, visibleIntent: url.visible ?? render.visible,
     },
    };
   }
@@ -458,7 +478,6 @@ export function reduce(state: V2State, cmd: Command): Outcome {
      // `system=` in a legacy URL IS the human speaking (it is what `set-visible` serialises to), so
      // it updates the intent; absent, the previous intent stands. See `visibleIntent`.
      visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
-     intentExplicit: cmd.url.visible ? true : state.intentExplicit,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,
@@ -475,7 +494,6 @@ export function reduce(state: V2State, cmd: Command): Outcome {
      ...state, scene: null, blob: '', focusId: null,
      picks: cleared,
      visibleIntent: cmd.url.visible ?? state.visibleIntent ?? state.render.visible,
-     intentExplicit: cmd.url.visible ? true : state.intentExplicit,
      render: legacySceneState(cmd.url, state.render),
     },
     epoch: true,

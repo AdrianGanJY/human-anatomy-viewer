@@ -170,8 +170,14 @@ export const V2: Record<string, Row> = {
  'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
  // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader
  // has to know, before clicking, whether the link they copy afterwards reproduces what they see.
- 'tree.eyeSystem': {en: 'Whole system — saved in the link (system=)', 'zh-Hans': '整个系统 — 会保存在链接中（system=）', 'zh-Hant': '整個系統 — 會保存在連結中（system=）'},
- 'tree.eyeSystemIsolate': {en: 'Whole system — saved in the link (system=). This also turns off Hide others.', 'zh-Hans': '整个系统 — 会保存在链接中（system=）。这同时会关闭“隐藏其他”。', 'zh-Hant': '整個系統 — 會保存在連結中（system=）。這同時會關閉「隱藏其他」。'},
+ // ⚠️ S3b ROUND 6 — THE PROMISE IS NARROWED TO WHAT ACTUALLY ROUND-TRIPS. These said "saved in the
+ // link (system=)" flatly, and codex round 6 measured two cases where that is false: the key is
+ // OMITTED when the set equals the default, and a saved view carrying a skeletal ghost re-applies it
+ // on arrival. RC8 refuses an eye whose tooltip misstates its serialisation, so the tooltip says
+ // what is true today — the link carries the drawn set, and a saved view can override it — rather
+ // than a promise the URL vocabulary cannot keep. The durable fix is escalated, not claimed here.
+ 'tree.eyeSystem': {en: 'Whole system — the link carries the drawn set (system=); a saved view can override it when reopened', 'zh-Hans': '整个系统 — 链接会带上当前绘制的系统集合（system=）；重新打开已保存的视图时可能被覆盖', 'zh-Hant': '整個系統 — 連結會帶上目前繪製的系統集合（system=）；重新開啟已保存的視圖時可能被覆蓋'},
+ 'tree.eyeSystemIsolate': {en: 'Whole system — the link carries the drawn set (system=); a saved view can override it when reopened. This also turns off Hide others.', 'zh-Hans': '整个系统 — 链接会带上当前绘制的系统集合（system=）；重新打开已保存的视图时可能被覆盖。这同时会关闭“隐藏其他”。', 'zh-Hant': '整個系統 — 連結會帶上目前繪製的系統集合（system=）；重新開啟已保存的視圖時可能被覆蓋。這同時會關閉「隱藏其他」。'},
  'tree.eyeMember': {en: 'Saved in this view as opacity 0 — the same setting as the Opacity slider', 'zh-Hans': '在本视图中保存为不透明度 0 — 与不透明度滑块是同一项设置', 'zh-Hant': '在本視圖中保存為不透明度 0 — 與不透明度滑桿是同一項設定'},
  'tree.eyeSession': {en: 'This session only — not saved in the link, and cleared when a view is opened', 'zh-Hans': '仅限本次会话 — 不会保存在链接中，打开视图时会清除', 'zh-Hant': '僅限本次工作階段 — 不會保存在連結中，開啟視圖時會清除'},
  'tree.sessionHidden': {en: '{n} structures hidden for this session only', 'zh-Hans': '{n} 个结构仅在本次会话中隐藏', 'zh-Hant': '{n} 個結構僅在本次工作階段中隱藏'},

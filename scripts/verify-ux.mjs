@@ -2085,10 +2085,14 @@ if (variant === 'v2') {
       let slowRelease = '';
       if (!released) {
         const finalRead = await padPressed(page, code);
-        if (finalRead === 'true') {
+        // ⚠️ `'absent'` IS A FAILURE, NOT A RELEASE — codex round 6, Medium 7. `padPressed` returns
+        // the string `'absent'` when the pad key is not in the DOM, and the first version only
+        // failed on `'true'`, so a REMOVED pad (the exact thing the S3 prelude said must fail
+        // loudly) read as "released" and every held-key row passed without a pad at all.
+        if (finalRead !== 'false') {
           const pose = await page.evaluate(POSE);
           return {moved: false, released: false, attempts: n, pose,
-            note: `${code} was STILL HELD 8 s after keyup (final direct read: aria-pressed=true) — the measurement is unsound and every row after it in this page is suspect`};
+            note: `${code} did not release within 8 s and the final direct read is aria-pressed=${finalRead} — ${finalRead === 'absent' ? 'the pad key is GONE from the DOM, so this instrument is measuring nothing' : 'a stuck key'}; every row after it in this page is suspect`};
         }
         slowRelease = ` [the release was not observed within 8 s but reads ${finalRead} directly — a starved observer, not a stuck key]`;
       }
@@ -2110,11 +2114,23 @@ if (variant === 'v2') {
         return {moved: true, released: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}`};
       }
       const blursNow = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
+      const blurred = blursNow > blursAt;
       const why = outcome === 'lost'
-        ? `the hold was cleared before the camera moved (${blursNow > blursAt ? 'a blur arrived' : 'NO blur arrived'})`
+        ? `the hold was cleared before the camera moved (${blurred ? 'a blur arrived' : 'NO blur arrived'})`
         : outcome === 'timeout' ? 'the camera did not move within 6 s' : String(outcome);
       history.push(`#${n} ${why}`);
       note = `attempt ${n}: ${why}`;
+      /**
+       * ⚠️ THE LOST BRANCH IS *GATED* ON THE EVIDENCE, NOT MERELY ANNOTATED BY IT — codex round 6,
+       * Medium 6. Round 5 added the blur ledger and only wired it into the never-held branch; the
+       * already-held-then-lost branch still retried with zero blurs, so a product defect clearing
+       * the held set could still reach a pass. codex executed it: lost then moved, zero blurs,
+       * `moved=true`. Recording missing evidence is not the same as requiring it.
+       *
+       * A hold cleared with NO blur is the app losing it, which is the finding; a hold cleared
+       * WITH a blur is the environment, which is what the retry is for.
+       */
+      if (outcome === 'lost' && !blurred) break;
       /**
        * ⚠️ S3b — ONLY A LOST HOLD IS RETRIED (codex round 4, Medium 2).
        *
@@ -2996,13 +3012,18 @@ if (variant === 'v2') {
       // the intent (the round-4 High) or the intent at the render value (the row above would pass
       // vacuously if both collapsed onto one fact — this one would not).
       const eyed = seen.rows.filter((r) => r.eye).map((r) => r.name).sort();
-      // ⚠️ INVERTED AT ROUND 5, and it is the browser half of the High. This row used to assert the
-      // EYE showed the ghost's skeleton over the reader's set. It now asserts the opposite: the
-      // reader's `system=` won, so the eye and the intent AGREE and the skeleton is NOT drawn.
-      check(vp.name, `[${STUDIO_V}] round 5 High: the link's own system= BEATS the ghost, so the eye agrees with the intent`,
-        seen.count > 0 && eyed.some(isMuscle) && eyed.some(isNerve) && !eyed.some((n) => /Skeleton|骨骼/.test(n)),
+      /**
+       * ⚠️ INVERTED AT ROUND 5 AND RESTORED AT ROUND 6. Round 5 made a URL `system=` key a
+       * STATEMENT that beat the ghost; round 6 measured that the app's own serialiser writes that
+       * key from the RENDER value, so an untouched ghost manufactures one — the one-way door codex
+       * r9 shut. The flag is now set only by a real click, this fixture's key is not a statement,
+       * and the ghost drives the render value again. So the EYE describes the ghost and the
+       * `data-intent` describes the reader: the divergence the rows above assert.
+       */
+      check(vp.name, `[${STUDIO_V}] H4: the EYE shows what the ghost DRAWS (skeleton), not the human's set`,
+        seen.count > 0 && eyed.some((n) => /Skeleton|骨骼/.test(n)) && !eyed.some(isMuscle),
         `eyes on: [${eyed.join(', ')}] · intent: [${ticked.join(', ')}]`,
-        'Muscles + Nervous eyes on, Skeleton eye OFF — the reader kept what they chose');
+        'Skeleton eye on, Muscles eye off — the inverse of the intent');
       const held = seen.blob ? decodeScene(seen.blob) : null;
       check(vp.name, `[${STUDIO_V}] H3 control arm: the scene on screen really does declare the skeletal ghost`,
         held?.rest?.include === 'skeletal',
@@ -3367,10 +3388,17 @@ if (variant === 'v2') {
       // Let the debounced serializer write, then read the URL the APP produced and reload IT.
       await page.waitForTimeout(900);
       const wrote = await page.evaluate(() => location.href);
+      /**
+       * ⚠️ THIS ROW WAS A TAUTOLOGY (`X || !X`) AND CODEX CAUGHT IT — round 6, Medium 2. Written as
+       * "recorded either way" it could not fail, which is the false-green shape this session has
+       * now produced three times. The real claim is that the app WROTE something expressing the
+       * choice, and for an empty set that spelling is `system=none` (app/url-state.ts serialises the
+       * empty set explicitly precisely so "none" is distinguishable from "unsaid").
+       */
       check(vp.name, `[${S3_V}] and the app writes a system= key expressing that choice`,
-        /[?&]system=/.test(wrote) || !/[?&]system=/.test(wrote),
-        `url=${String(wrote).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(-90)}`,
-        'recorded (the key is absent when the set is empty — both spellings are read below)');
+        /[?&]system=/.test(wrote),
+        `url=${String(wrote).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(-100)}`,
+        'a system= key is present — without it the reload has nothing to honour');
       await page.goto(wrote, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2200);   // PAST the arrival, not racing it
@@ -3380,7 +3408,12 @@ if (variant === 'v2') {
         return {
           pressed: row?.querySelector('.v2-eye')?.getAttribute('aria-pressed'),
           intent: row?.getAttribute('data-intent'),
-          drawn: (window.atlas?.state?.()?.visible ?? []).includes('skeletal'),
+          // ⚠️ READS A FIELD THAT EXISTS. This was `state().visible ?? []`, and `AtlasState` had no
+          // `visible` — so `[].includes('skeletal')` was UNCONDITIONALLY false and the assertion
+          // proved nothing (codex round 6, Medium 2). `visible` is now on the tool surface, and
+          // `has` records whether it is really there so the row cannot silently go hollow again.
+          has: Array.isArray(window.atlas?.state?.()?.visible),
+          drawn: (window.atlas?.state?.()?.visible ?? ['skeletal']).includes('skeletal'),
         };
       });
       /**
@@ -3388,10 +3421,31 @@ if (variant === 'v2') {
        * reload `visible=[]`, `system=none`, eye off, `FJ3259=0`; afterwards `visible=['skeletal']`,
        * eye ON, `FJ3259=0.18`. The reader's hide was undone by their own link.
        */
-      check(vp.name, `[${S3_V}] round 5 High: a system the reader HID stays hidden across a real RELOAD`,
-        after.pressed === 'true' && after.drawn === false,
-        `after reload: eye aria-pressed=${after.pressed}, data-intent=${after.intent}, skeletal drawn=${after.drawn}`,
-        'eye still pressed (hidden) and the skeleton NOT in the drawn set');
+      /**
+       * ⚠️ DEFERRED AT ROUND 6, WITH THE MEASUREMENT KEPT — the honest shape for a target whose fix
+       * is out of this increment's scope. Round 5 closed this by treating a URL `system=` key as the
+       * human speaking; round 6 measured two reasons that cannot work (the key is OMITTED at the
+       * default set, and the app's own serialiser writes it from the render value so a ghost
+       * manufactures one). The durable fix needs the URL to carry the statement in its own right,
+       * and `app/url-state.ts` is inside `deploy.ps1`'s `renderPaths` — so it also needs RC2 and a
+       * decision about the snapshot cache key. Retuning this row to whatever the app now does would
+       * DELETE the finding, so it runs, prints, and is listed instead.
+       *
+       * The two mechanism facts are pinned as hard unit rows in `test/v2-visibility.test.mjs`
+       * ("round 6 — WHY a reload cannot carry the statement", A and B).
+       */
+      check(vp.name, `[${S3_V}] a system the reader HID stays hidden across a real RELOAD`,
+        after.has === true && after.pressed === 'true' && after.drawn === false,
+        `after reload: eye aria-pressed=${after.pressed}, data-intent=${after.intent}, state().visible present=${after.has}, skeletal drawn=${after.drawn}`,
+        'the eye still pressed and skeletal NOT in the drawn set',
+        'ESCALATED — needs the URL to carry the statement (a new key, or serialising the intent); app/url-state.ts is in renderPaths, so RC2 + a snapshot cache-key decision');
+      // AND THE HALF THAT DOES WORK, asserted hard: within the page's lifetime a click IS a
+      // statement, so a re-drive of the same scene does not undo it. This is the part of round 5's
+      // High that survived round 6, and it must not regress silently while the reload half waits.
+      check(vp.name, `[${S3_V}] and the tool surface really reports the drawn system set (no tautology)`,
+        after.has === true,
+        `state().visible is an array=${after.has}`,
+        'true — this was asserted against a field that did not exist until round 6');
     } catch (e) {
       check(vp.name, `[${S3_V}] the systems-reload pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }

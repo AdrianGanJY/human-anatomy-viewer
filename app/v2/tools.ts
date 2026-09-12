@@ -34,6 +34,14 @@ export interface AtlasState {
  nameEn: string | null;
  lang: Lang;
  view: string;
+ /**
+  * THE SYSTEM SET THE RENDERER IS DRAWING (`render.visible`). Added at S3b round 6 because an
+  * oracle asserted `state().visible.includes('skeletal')` against a field that did not exist — so
+  * `[].includes(...)` made the assertion UNCONDITIONALLY FALSE and the row passed while proving
+  * nothing (codex round 6, Medium 2). A tautology in a deploy-gating suite is worse than a red.
+  * This is the tool surface's whole purpose: read the app's own state instead of scraping the DOM.
+  */
+ visible: string[];
  stage: boolean;
  /** `scene` = every structure the link named is drawn; `atlas` = all 15 chunks. */
  phase: 'boot' | 'scene' | 'atlas';

@@ -22,7 +22,7 @@ import {existsSync, readFileSync} from 'node:fs';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
 import {sceneDeclaresLang} from '../app/v2/scene-lang.ts';
 import {initialState, reduce} from '../app/v2/controller.ts';
-import {alphaCause, conceptAlpha, eyeAction, eyeOn, partAlphas, sceneAlphaMap, withSessionHidden} from '../app/v2/visibility.ts';
+import {alphaCause, conceptAlpha, eyeAction, eyeOn, partAlphas, resolvedStructureAlpha, sceneAlphaMap, withSessionHidden} from '../app/v2/visibility.ts';
 
 const FILE = ['dist/models/atlas.json', 'public/models/atlas.json'].find((f) => existsSync(f));
 const atlas = FILE ? JSON.parse(readFileSync(FILE, 'utf8')) : null;
@@ -42,6 +42,18 @@ function drawn({scene, picks, hidden = new Set(), visible = ['skeletal', 'muscul
     part: alphaOf,
     concept: (id) => conceptAlpha(alphaOf, elementsOf(id)),
   };
+}
+
+/** `app/url-state.ts:172`'s rule, transcribed so the two round-6 facts are MEASURED against the
+ *  serialiser's own condition rather than described in prose. Kept tiny and adjacent to the rows
+ *  that use it; if the serialiser's rule changes, those rows are where the change must be noticed. */
+const DEFAULT_VISIBLE = ['cardiac', 'sensory', 'skeletal', 'muscular', 'arterial', 'venous', 'nervous',
+  'respiratory', 'digestive', 'urinary', 'lymphatic', 'endocrine', 'reproductive', 'connective'];
+const sortedJoin = (a) => [...a].sort().join(',');
+function writeParams(params, visible) {
+  if (sortedJoin(visible) !== sortedJoin(DEFAULT_VISIBLE)) {
+    params.set('system', visible.length ? visible.join(',') : 'none');
+  }
 }
 
 /** The round-4 reading, kept so the disagreement is measured rather than asserted from memory. */
@@ -241,26 +253,54 @@ function reload({scene, visible, intentExplicit}) {
 const GHOST = () => normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}],
   rest: {include: 'skeletal', opacity: 0.18}});
 
-test('round 5, the High — a system the reader hid SURVIVES a reload of their own link', () => {
+/**
+ * ⚠️ ROUND 6 TURNED THIS ROW FROM A FIX INTO AN ESCALATION, AND IT NOW PINS THE *REASON* RATHER THAN
+ * THE DEFECT — because a test must never assert a defect, but it must not lose the evidence either.
+ *
+ * Round 5 fixed the reload case by marking the intent explicit when the URL carried `system=`.
+ * Round 6 measured two reasons that cannot work, and BOTH are properties of the URL vocabulary, not
+ * of this code:
+ *
+ *   A. THE KEY IS OMITTED AT THE DEFAULT SET (app/url-state.ts:172). A reader who switches a system
+ *      off and back on has spoken twice and the URL says nothing at all.
+ *   B. THE KEY IS WRITTEN FROM THE RENDER VALUE. An untouched ghost scene sets `render.visible` to
+ *      `['skeletal']`, the serialiser writes `system=skeletal`, and the next arrival reads it as a
+ *      human statement — manufacturing one from nobody, which is the one-way door codex r9 M1 shut.
+ *
+ * So `intentExplicit` is set only by a real click, and A RELOAD DOES NOT CARRY IT. The two rows
+ * below assert exactly those two facts, so the next session starts with the measurement instead of
+ * the argument. The durable fix needs the URL to carry the statement in its own right — a new key,
+ * or serialising the INTENT rather than the render value — and `app/url-state.ts` is inside
+ * `deploy.ps1`'s `renderPaths`, so it also needs RC2 (a SITE_BUILD bump, a Worker deploy, and a
+ * plate-golden compare) and a decision about the snapshot cache key. Escalated, not attempted here.
+ */
+test('round 6 — WHY a reload cannot carry the statement: the key is omitted at the default set', () => {
+  // FACT A, measured against the real serialiser rather than described.
+  const url = new URLSearchParams();
+  const defaultSet = [...DEFAULT_VISIBLE];
+  writeParams(url, defaultSet);
+  assert.equal(url.get('system'), null,
+    'the human restoring the default set serialises to NOTHING — there is no key to read back');
+  const narrowed = new URLSearchParams();
+  writeParams(narrowed, ['muscular']);
+  assert.equal(narrowed.get('system'), 'muscular', 'while any other set does write one');
+  const emptied = new URLSearchParams();
+  writeParams(emptied, []);
+  assert.equal(emptied.get('system'), 'none', 'and the empty set writes the explicit spelling');
+});
+
+test('round 6 — WHY a reload cannot carry the statement: a ghost manufactures the key', () => {
+  // FACT B. The ghost sets the RENDER value; the serialiser writes the render value; so the key
+  // appears with zero clicks. If a URL key marked the intent explicit, this would be a fake one.
   const ghost = GHOST();
-
-  // THE DEFECT, with codex's own numbers: no explicit `system=`, so the ghost branch fires and the
-  // reader's empty set comes back as ['skeletal'] — FJ3259 at 0.18 under an eye reading "shown".
-  const noStatement = reload({scene: ghost, visible: undefined, intentExplicit: false});
-  assert.deepEqual(noStatement.render.visible, ['skeletal'],
-    'a PLAIN ghost link still ghosts the skeleton — the branch keeps working');
-
-  // THE FIX: the same reload of a URL that also carries `system=` (an EMPTY set is what "I hid
-  // everything" serialises to) leaves the reader's statement alone.
-  const withStatement = reload({scene: ghost, visible: [], intentExplicit: true});
-  assert.deepEqual(withStatement.render.visible, [], 'codex measured ["skeletal"] here');
-  assert.deepEqual(withStatement.visibleIntent, []);
-  assert.equal(eyeOn({kind: 'system', system: 'skeletal', visible: withStatement.render.visible}), false,
-    'and the eye still reports hidden, because it still IS');
-
-  // An explicit NON-empty set survives too — the flag is about "has the human spoken", not emptiness.
-  const kept = reload({scene: ghost, visible: ['muscular'], intentExplicit: true});
-  assert.deepEqual(kept.render.visible, ['muscular']);
+  let st = initialState({}, SEED()).state;
+  st = reduce(st, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(st.render.visible, ['skeletal'], 'the ghost drove it, nobody clicked');
+  assert.equal(st.intentExplicit ?? false, false, 'and no statement was manufactured (round 6)');
+  const url = new URLSearchParams();
+  writeParams(url, st.render.visible);
+  assert.equal(url.get('system'), 'skeletal',
+    'yet the URL now carries a system= key — which is why its presence cannot mean "a human said so"');
 });
 
 test('round 5, the High — a CLICK is a statement, so the next scene arrival cannot undo it', () => {
@@ -314,13 +354,41 @@ test('round 5, Medium 6 — one system click PATCHES the intent, it does not rep
 });
 
 test('round 5, Medium 4 — an off-system row names its cause instead of offering a dead click', () => {
-  // No scene, no picks, femur's system switched off. Effective 0, and the eye cannot fix it.
-  assert.equal(alphaCause({alpha: 0, inSession: false, declaredZero: false, systemOn: false}), 'system');
-  // The three the eye CAN fix stay actionable.
-  assert.equal(alphaCause({alpha: 0, inSession: true, declaredZero: false, systemOn: false}), 'session',
-    'a session override is the eye own business, whatever the system says');
-  assert.equal(alphaCause({alpha: 0, inSession: false, declaredZero: true, systemOn: true}), 'declared');
-  assert.equal(alphaCause({alpha: 0.55, inSession: false, declaredZero: false, systemOn: true}), 'drawn');
+  /**
+   * ⚠️ REWRITTEN AT ROUND 6, because the first version asked the wrong question. It read "is the
+   * system in the visible set" and "is styles.opacity 0", and codex round 6 found both wrong:
+   *   · a SELECTED ghost with `roleOpacity.ghost = 0` and every system off reported 'system',
+   *     blaming a control that was not the blocker (the renderer draws selected parts regardless)
+   *     and disabling the member eye that WOULD have fixed it;
+   *   · a structure hidden by BOTH a session override and its system reported 'session', so the eye
+   *     stayed active and clearing the override moved the alpha from 0 to 0.
+   * The question is now "which control would actually change this?", and the lane is asked first
+   * because it is the one cause this eye cannot touch.
+   */
+  // No scene, no picks, femur's system switched off: the lane blocks, and the eye cannot fix it.
+  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: false, laneBlocked: true}), 'system');
+  // codex round 6: BOTH causes at once. The lane wins, because clearing the override changes nothing.
+  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: true}), 'system',
+    'a session override the lane would override anyway is not the blocker');
+  // A session override with the lane open IS the eye's own business.
+  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: false}), 'session');
+  // codex round 6: a SELECTED ghost at roleOpacity 0 — the lane is open (it is selected), so the
+  // blocker is the declared alpha and the member eye must stay ACTIVE.
+  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: true, laneBlocked: false}), 'declared');
+  assert.equal(alphaCause({alpha: 0.55, inSession: false, resolvedZero: false, laneBlocked: false}), 'drawn');
+  // And the resolved reading is what feeds it: a ghost with roleOpacity 0 resolves to 0, which
+  // `styles.opacity ?? 1` reported as 1.
+  const ghostScene = normalizeScene({mode: 'render', structures: [{id: 'FMA9611', role: 'ghost'}],
+    roleOpacity: {ghost: 0}});
+  assert.equal(resolvedStructureAlpha(ghostScene, 'FMA9611'), 0, 'the ROLE is applied');
+  assert.equal(ghostScene.styles.find((x) => x.id === 'FMA9611')?.opacity ?? 1, 1,
+    'while the old reading said 1 — that gap is the Medium');
+  assert.equal(resolvedStructureAlpha(ghostScene, 'FMA7485'), undefined, 'a non-member has no declaration');
+  // EXPLORE mode resolves every member to 1 whatever its style says, so a contributor test that
+  // read `styles` would be wrong there too.
+  const explore = normalizeScene({mode: 'explore', structures: [{id: 'FMA9611', role: 'ghost'}],
+    styles: [{id: 'FMA9611', opacity: 0}]});
+  assert.equal(resolvedStructureAlpha(explore, 'FMA9611'), 1, 'explore draws every named structure solid');
   // And the reading itself is unchanged — this is about the CONTROL, not the number.
   const scene = normalizeScene({mode: 'render', structures: [{id: 'FMA9611', role: 'primary'}]});
   assert.equal(drawn({scene, picks: [], visible: ['muscular']}).concept('FMA9611'), 0,
@@ -328,18 +396,37 @@ test('round 5, Medium 4 — an off-system row names its cause instead of offerin
 });
 
 test('round 5, Medium 1 — the controller refusal really is atomic, which is what "dispatch first" relies on', () => {
-  // The ORDERING is in tree.tsx/shell.tsx (JSX, not unit-testable). This pins the half it rests on.
-  const big = normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}],
-    caption: {title: 'x'.repeat(80), note: '界'.repeat(284)}});
-  const before = encodeScene(big);
-  const st = initialState({scene: big, sceneBlob: before}, SEED()).state;
-  const out = reduce(st, {type: 'set-opacity', id: 'FMA22359', opacity: 1});
-  if (out.rejected) {
-    assert.equal(out.state, st, 'a refusal returns the SAME state object — nothing moved');
-    assert.equal(out.state.blob, before);
-  } else {
-    assert.ok(out.state.blob.length <= 1400, 'or it was accepted and stayed inside the bound');
+  /**
+   * ⚠️ IT MUST ACTUALLY REFUSE — codex round 6, Low 2. The first version branched on
+   * `if (out.rejected)` with an `else` that merely re-asserted the bound, so if the fixture stopped
+   * refusing the row went green having exercised nothing. A conditional assertion is not an
+   * assertion. The note length is therefore SEARCHED for at runtime, so the refusal is a
+   * precondition of the row rather than a hope about a hard-coded literal.
+   *
+   * The ORDERING this supports is in tree.tsx / shell.tsx (JSX, not unit-testable): the dispatch
+   * goes first and the session override moves only on success. That is sound only because a refusal
+   * changes NOTHING, which is what this row pins.
+   */
+  const make = (n) => normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}],
+    caption: {title: 'x'.repeat(80), note: '界'.repeat(n)}});
+  let big = null, before = '';
+  for (let n = 240; n <= 320; n++) {
+    const sc = make(n);
+    const blob = encodeScene(sc);
+    if (blob.length > 1400) break;
+    // The biggest scene that still fits, so ONE added style crosses the bound.
+    const withStyle = encodeScene(normalizeScene({...sc, styles: [{id: 'FMA22359', opacity: 1}]}));
+    if (withStyle.length > 1400) { big = sc; before = blob; break; }
   }
+  assert.ok(big, 'the fixture search must FIND a scene where one added style crosses SCENE_MAX_B64');
+  assert.ok(before.length <= 1400, `the base scene itself is legal (${before.length} chars)`);
+  const st = initialState({scene: big, sceneBlob: before}, SEED()).state;
+  assert.ok(st.scene, 'and it really was published, so the command has something to refuse');
+  const out = reduce(st, {type: 'set-opacity', id: 'FMA22359', opacity: 1});
+  assert.ok(out.rejected, 'THE PRECONDITION: this command must be refused');
+  assert.match(out.rejected, /1400|characters/, 'and refused for the encoded-length reason');
+  assert.equal(out.state, st, 'a refusal returns the SAME state object — nothing moved');
+  assert.equal(out.state.blob, before, 'and the blob on screen is byte-identical');
 });
 
 test('round 5, the Low — sceneDeclaresLang agrees with decodeScene on every gate', () => {

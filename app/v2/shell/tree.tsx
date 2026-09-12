@@ -42,7 +42,7 @@ import {searchEntries, systemEntries, type Dicts, type T} from '../../i18n/dict'
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {atlasIndex, best, norm} from '../find.ts';
-import {alphaCause, eyeAction, eyeOn as eyeOnOf, type EyeKind} from '../visibility.ts';
+import {alphaCause, eyeAction, eyeOn as eyeOnOf, resolvedStructureAlpha, type EyeKind} from '../visibility.ts';
 
 /** Fixed heights. `spec.md` A3: "48/60 px rows"; D4 draws a 52 px system row over a 54 px child
  *  row, and the child is the taller one because it carries a second (paired-name) line. Fixed
@@ -330,10 +330,13 @@ export default function Tree(p: TreeProps) {
     * The candidate's own DECLARED alpha is what contributes to the max, so that is the test.
     */
    if (p.hidden.has(id)) continue;
-   const declared = eyeKind(row) === 'member'
-    ? (p.scene?.styles.find((st) => st.id === id)?.opacity ?? 1)
-    : 1;
-   if (declared > 0 && p.effectiveAlpha(id) > 0) return t.name(id, other.name);
+   // ⚠️ THE *RESOLVED* CONTRIBUTION — codex round 6, Medium 5. `styles.opacity ?? 1` treats a
+   // MISSING style as a declared 1, but a ghost with `roleOpacity.ghost = 0` contributes nothing;
+   // codex executed that and the note still named it. `resolvedStructureAlpha` applies the role and
+   // the mode, which is what the plate's max actually consumes. `undefined` = not a scene member,
+   // whose meshes the renderer draws at 1 when selected.
+   const contribution = resolvedStructureAlpha(p.scene, id) ?? 1;
+   if (contribution > 0 && p.effectiveAlpha(id) > 0) return t.name(id, other.name);
   }
   return null;
  }, [covered, p, eyeKind, t]);
@@ -568,8 +571,11 @@ export default function Tree(p: TreeProps) {
       const cause = row.kind === 'concept' ? alphaCause({
        alpha: p.effectiveAlpha(row.id),
        inSession: p.hidden.has(row.id),
-       declaredZero: eyeKind(row) === 'member' && (p.scene?.styles.find((st) => st.id === row.id)?.opacity ?? 1) === 0,
-       systemOn: p.visible.includes(row.system),
+       resolvedZero: resolvedStructureAlpha(p.scene, row.id) === 0,
+       // THE RENDERER'S OWN `shown` EXPRESSION, negated: a PICKED concept is drawn even when its
+       // system is off, so `picked` is the exemption that stops the lane being blamed for a role
+       // alpha (codex round 6, Medium 4).
+       laneBlocked: !(p.isolate ? picked.has(row.id) : p.visible.includes(row.system) || picked.has(row.id)),
       }) : 'drawn';
       const eyeInert = cause === 'system';
       // The system row's OTHER fact: the human's own set, which a scene's arrival does not touch.

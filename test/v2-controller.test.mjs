@@ -531,17 +531,26 @@ test('a GHOST scene still drives what is drawn when the human has NOT spoken', (
   assert.deepEqual(afterGhost.visibleIntent, ['muscular', 'nervous'], 'and still does not consume the set');
 });
 
-/** ⚠️ ALSO RE-POINTED AT ROUND 5: a URL `system=` key is what `set-visible` SERIALISES TO, so a link
- *  carrying it is the human's own earlier click coming back — and a ghost in the same URL must not
- *  undo it. That is the browser half of round 5's High. */
+/**
+ * ⚠️ RE-POINTED AT ROUND 5 AND *RESTORED* AT ROUND 6, and the round trip is the point.
+ *
+ * Round 5 made a URL `system=` key mark the intent EXPLICIT, so it beat a ghost in the same link.
+ * Round 6 measured two reasons that is wrong, and the second is a REGRESSION of a previously fixed
+ * defect: the app's own serialiser writes `system=` from the RENDER value, so an untouched ghost's
+ * automatic URL write manufactures a statement nobody made (codex: zero clicks, intent became
+ * `['skeletal']`). The flag is now set only by a real `set-visible`, and this row is back to its
+ * pre-round-5 assertion. The `system=` key still carries the SET; it simply does not carry
+ * "a human said so", which the URL vocabulary cannot express today. See the row below.
+ */
 test('system= in a legacy URL IS the human speaking, and survives a later ghost', () => {
   const seeded = initialState({select: ['FMA9611'], visible: ['arterial']}, {...render}).state;
   assert.deepEqual(seeded.visibleIntent, ['arterial']);
-  assert.equal(seeded.intentExplicit, true, 'the URL key is the statement');
+  assert.equal(seeded.intentExplicit ?? false, false,
+    'a URL key is NOT a statement (round 6): the serialiser writes it from the render value');
   const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
   const afterGhost = reduce(seeded, {type: 'apply-scene', scene: ghost}).state;
-  assert.deepEqual(afterGhost.render.visible, ['arterial'],
-    'INVERTED at round 5: the link’s own system= beats the ghost in the same link');
+  assert.deepEqual(afterGhost.render.visible, ['skeletal'],
+    'so the ghost drives the render value, as it did before round 5');
   const back = reduce(afterGhost, {type: 'apply-legacy', url: {select: ['FMA9611']}}).state;
   assert.deepEqual(back.visibleIntent, ['arterial'], 'a legacy apply with no system= leaves the intent alone');
 });
