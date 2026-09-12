@@ -3399,11 +3399,17 @@ if (variant === 'v2') {
        * GATE against the real chain; this proves the WIRING — that `page.tsx`'s probe reaches
        * `readEye` with the renderer's own material and that an inert eye carries its reason.
        *
-       * The state is reached, not stubbed: under a skeletal ghost `render.visible` is `['skeletal']`,
-       * so every UNPICKED structure in any other system is blocked by the lane and its session eye
-       * can do nothing. The row asserts BOTH directions — the blocked system produces inert eyes
-       * with reasons, and the DRAWN system produces none — because "everything is inert" would
-       * satisfy a one-sided assertion just as well as the fix does.
+       * ⚠️ THE FIRST VERSION OF THIS ROW WAS WRONG, AND MEASURING WHY IS WHAT FIXED IT. It asserted
+       * "every eye in the switched-off system is inert" and went red at 9 of 12. The three live rows
+       * were `muscle organ`, `muscle of upper limb` and `muscle of lower limb` — and
+       * `.artifacts/L31/v21bc/s3c/inert-probe.txt` shows why: a CONCEPT'S MESHES SPAN SYSTEMS.
+       * `FMA9621` holds 74 muscular meshes and **4 skeletal** ones, so with Skeleton drawn its MAX
+       * alpha is nonzero, its eye is correctly ON, and hiding it would genuinely change the picture.
+       * "Its system is switched off" is not the same claim as "it is not drawn", which is the same
+       * MAX honesty the whole S3b design rests on.
+       *
+       * So the partition is what the EYE READS, and BOTH halves must be non-empty — an assertion
+       * satisfied by "everything inert" or "nothing inert" would measure nothing either way.
        */
       const inert = await page.evaluate(async () => {
         const expand = async (re) => {
@@ -3412,8 +3418,9 @@ if (variant === 'v2') {
           if (!row) return null;
           (row.querySelector('.v2-tw[type=button]') ?? row.querySelector('.v2-tree-name'))?.click();
           await new Promise((r) => setTimeout(r, 600));
-          const eyes = [...document.querySelectorAll('.v2-tree-row.is-concept .v2-eye')];
-          const out = eyes.map((e) => ({
+          const out = [...document.querySelectorAll('.v2-tree-row.is-concept .v2-eye')].map((e) => ({
+            // `aria-pressed` is the HIDDEN state, so `on` is its negation — the eye reads the alpha.
+            on: e.getAttribute('aria-pressed') === 'false',
             inert: e.classList.contains('is-inert'),
             disabled: e.getAttribute('aria-disabled') === 'true',
             why: (e.getAttribute('title') || '').trim(),
@@ -3422,20 +3429,24 @@ if (variant === 'v2') {
           await new Promise((r) => setTimeout(r, 400));
           return out;
         };
-        const blocked = await expand(/Muscles|肌肉/);
-        const drawnSys = await expand(/Skeleton|骨骼/);
-        const bad = (blocked || []).filter((e) => e.inert && (!e.disabled || !e.why));
+        const blocked = (await expand(/Muscles|\u808c\u8089/)) || [];
+        const drawnSys = (await expand(/Skeleton|\u9aa8\u9abc/)) || [];
+        const off = blocked.filter((e) => !e.on);
+        const lit = blocked.filter((e) => e.on);
         return {
-          blocked: (blocked || []).length, blockedInert: (blocked || []).filter((e) => e.inert).length,
-          drawn: (drawnSys || []).length, drawnInert: (drawnSys || []).filter((e) => e.inert).length,
-          withoutReason: bad.length, sample: (blocked || []).find((e) => e.inert)?.why?.slice(0, 60) ?? '',
+          off: off.length, offInert: off.filter((e) => e.inert).length,
+          offWithoutReason: off.filter((e) => e.inert && (!e.disabled || !e.why)).length,
+          lit: lit.length, litInert: lit.filter((e) => e.inert).length,
+          drawn: drawnSys.length, drawnInert: drawnSys.filter((e) => e.inert).length,
+          sample: off.find((e) => e.inert)?.why?.slice(0, 48) ?? '',
         };
       });
-      check(vp.name, `[${S3_V}] an eye the LANE blocks is inert AND says why; an eye in the drawn system is not`,
-        inert.blocked > 0 && inert.blockedInert === inert.blocked && inert.withoutReason === 0
+      check(vp.name, `[${S3_V}] in the switched-off system an eye that reads OFF is inert AND says why, while one that reads ON still acts`,
+        inert.off > 0 && inert.offInert === inert.off && inert.offWithoutReason === 0
+          && inert.lit > 0 && inert.litInert === 0
           && inert.drawn > 0 && inert.drawnInert === 0,
-        `blocked system: ${inert.blockedInert}/${inert.blocked} inert, ${inert.withoutReason} without a reason ("${inert.sample}") · drawn system: ${inert.drawnInert}/${inert.drawn} inert`,
-        'every eye in the off system inert with a reason, none in the on system');
+        `off-system rows: ${inert.offInert}/${inert.off} inert (${inert.offWithoutReason} without a reason, e.g. "${inert.sample}") \u00b7 same system, eye ON: ${inert.litInert}/${inert.lit} inert \u00b7 drawn system: ${inert.drawnInert}/${inert.drawn} inert`,
+        'both partitions non-empty: every OFF eye inert with a reason, every ON eye live, none inert in the drawn system');
     } catch (e) {
       check(vp.name, `[${S3_V}] the systems-ghost pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
