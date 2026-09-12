@@ -134,6 +134,47 @@ export const V2: Record<string, Row> = {
  'panel.visibility': {en: 'Eye = visibility, this session only', 'zh-Hans': '眼睛 = 可见性，仅本次会话', 'zh-Hant': '眼睛 = 可見性，僅本次工作階段'},
  'panel.resetVisibility': {en: 'Reset visibility', 'zh-Hans': '重置可见性', 'zh-Hant': '重設可見性'},
  'panel.opacity':  {en: 'Opacity', 'zh-Hans': '不透明度', 'zh-Hant': '不透明度'},
+
+ // ══ L31 v2.1b+c, S3 — THE LAYERS / SYSTEMS TREE ════════════════════════════════════════════════
+ // ⚠️ `tree.inventory` REPLACES the hard-coded `panel.inventory` ("15 systems · 3,432 structures").
+ // That literal was correct on the day it was written and is exactly the staleness magnet the
+ // doc-authoring rule names: it would go on claiming 3,432 the first time the manifest is
+ // re-curated. The numbers now come from the atlas that is actually loaded. `panel.inventory` is
+ // KEPT, not deleted — the phone's systems panel still reads it until S6 — but nothing in the
+ // studio uses it any more.
+ 'tree.inventory': {en: '{s} systems · {c} structures', 'zh-Hans': '{s} 个系统 · {c} 个结构', 'zh-Hant': '{s} 個系統 · {c} 個結構'},
+ // BOTH DENOMINATORS, NAMED, because systems and structures are two populations and one merged
+ // "12 of 3,447" would be the specific lie the palette's footer already refuses.
+ 'tree.filtered':  {en: '{s} of {sn} systems · {c} of {cn} structures', 'zh-Hans': '{sn} 个系统中的 {s} 个 · {cn} 个结构中的 {c} 个', 'zh-Hant': '{sn} 個系統中的 {s} 個 · {cn} 個結構中的 {c} 個'},
+ 'tree.noMatch':   {en: 'Nothing in the tree matches that.', 'zh-Hans': '图层中没有匹配项。', 'zh-Hant': '圖層中沒有符合項。'},
+ 'tree.expand':    {en: 'Expand {name}', 'zh-Hans': '展开{name}', 'zh-Hant': '展開{name}'},
+ 'tree.collapse':  {en: 'Collapse {name}', 'zh-Hans': '收起{name}', 'zh-Hant': '收起{name}'},
+ 'tree.tickOn':    {en: 'Add {name} to this view', 'zh-Hans': '把{name}加入本视图', 'zh-Hant': '把{name}加入本視圖'},
+ 'tree.tickOff':   {en: 'Remove {name} from this view', 'zh-Hans': '把{name}移出本视图', 'zh-Hant': '把{name}移出本視圖'},
+ 'tree.tick':      {en: 'Tick = in this view', 'zh-Hans': '勾选 = 加入本视图', 'zh-Hant': '勾選 = 加入本視圖'},
+ 'tree.tickSystem': {en: 'Ticks every structure in this system at once — a view holds 24, so a large system is refused whole', 'zh-Hans': '一次勾选本系统的全部结构 — 视图上限为 24 个，超出时整体拒绝', 'zh-Hant': '一次勾選本系統的全部結構 — 視圖上限為 24 個，超出時整體拒絕'},
+ // "Included through {name}" — the covered child. Described, never a false checkmark.
+ 'tree.covered':   {en: 'Included through {name}', 'zh-Hans': '已随{name}一并显示', 'zh-Hant': '已隨{name}一併顯示'},
+ 'tree.hide':      {en: 'hide', 'zh-Hans': '隐藏', 'zh-Hant': '隱藏'},
+ 'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
+ // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader
+ // has to know, before clicking, whether the link they copy afterwards reproduces what they see.
+ 'tree.eyeSystem': {en: 'Whole system — saved in the link (system=)', 'zh-Hans': '整个系统 — 会保存在链接中（system=）', 'zh-Hant': '整個系統 — 會保存在連結中（system=）'},
+ 'tree.eyeSystemIsolate': {en: 'Whole system — saved in the link (system=). This also turns off Hide others.', 'zh-Hans': '整个系统 — 会保存在链接中（system=）。这同时会关闭“隐藏其他”。', 'zh-Hant': '整個系統 — 會保存在連結中（system=）。這同時會關閉「隱藏其他」。'},
+ 'tree.eyeMember': {en: 'Saved in this view as opacity 0 — the same setting as the Opacity slider', 'zh-Hans': '在本视图中保存为不透明度 0 — 与不透明度滑块是同一项设置', 'zh-Hant': '在本視圖中保存為不透明度 0 — 與不透明度滑桿是同一項設定'},
+ 'tree.eyeSession': {en: 'This session only — not saved in the link, and cleared when a view is opened', 'zh-Hans': '仅限本次会话 — 不会保存在链接中，打开视图时会清除', 'zh-Hant': '僅限本次工作階段 — 不會保存在連結中，開啟視圖時會清除'},
+ 'tree.sessionHidden': {en: '{n} structures hidden for this session only', 'zh-Hans': '{n} 个结构仅在本次会话中隐藏', 'zh-Hant': '{n} 個結構僅在本次工作階段中隱藏'},
+ 'tree.opacityOf': {en: 'Opacity of {name}', 'zh-Hans': '{name}的不透明度', 'zh-Hant': '{name}的不透明度'},
+ 'tree.hiddenWord': {en: 'Hidden', 'zh-Hans': '已隐藏', 'zh-Hant': '已隱藏'},
+
+ // ── THE ATOMIC REFUSAL (`spec.md` D11). The SENTENCE itself comes from the controller — it is the
+ //    one place that knows which bound was hit and by how much — so these are the frame around it:
+ //    a title, the limits, the unchanged count, and the corrective action. The numbers in
+ //    `refusal.limit` are the codec's own constants and are FIXED, not placeholders.
+ 'refusal.title':  {en: 'Not added — nothing was changed', 'zh-Hans': '未添加 — 当前视图未作更改', 'zh-Hant': '未加入 — 目前視圖未作更改'},
+ 'refusal.limit':  {en: 'Maximum: 24 structures · 1,400 encoded characters', 'zh-Hans': '上限：24 个结构 · 1,400 个编码字符', 'zh-Hant': '上限：24 個結構 · 1,400 個編碼字元'},
+ 'refusal.unchanged': {en: 'Your {n} structures are unchanged.', 'zh-Hans': '你的 {n} 个结构保持不变。', 'zh-Hant': '你的 {n} 個結構保持不變。'},
+ 'refusal.review': {en: 'Review selection', 'zh-Hans': '检查所选结构', 'zh-Hant': '檢查所選結構'},
  'panel.focus':    {en: 'Focus', 'zh-Hans': '聚焦', 'zh-Hant': '聚焦'},
  'panel.collapse': {en: 'Collapse the sidebar', 'zh-Hans': '收起侧栏', 'zh-Hant': '收起側欄'},
  'panel.expand':   {en: 'Expand the sidebar', 'zh-Hans': '展开侧栏', 'zh-Hant': '展開側欄'},
@@ -310,6 +351,21 @@ export const V2_ONE: Record<string, string> = {
  //   `search.capped`  — "the first {n} in each group" → `{n}` is the CAP constant (50). It is never
  //                      1 by construction, so a singular would be unreachable copy.
  // No other S2 row interpolates a count: `search.add` takes {name}, the lane names are bare.
+ // L31 v2.1b+c, S3 — the audit of the tree's `{n}`/count rows, in full (RC13 again):
+ //   `tree.sessionHidden` — "{n} structures hidden" → one hidden structure is the COMMON case, so
+ //                           it needs a singular. Listed below.
+ //   `tree.inventory` / `tree.filtered` — interpolate `{s}`/`{c}`/`{sn}`/`{cn}`, NOT `{n}`, so
+ //                           `v2t`'s singular rule (which keys on `n`) cannot reach them anyway.
+ //                           Deliberate: "1 of 15 systems · 1 of 3,432 structures" is correct
+ //                           English as written, and a per-placeholder plural would need four
+ //                           singulars and a rule that does not exist. Recorded rather than fixed.
+ //   `tree.covered` / `tree.tickOn` / `tree.tickOff` / `tree.expand` / `tree.collapse` — {name},
+ //                           not counts. No singular.
+ 'tree.sessionHidden': '{n} structure hidden for this session only',
+ //   `refusal.unchanged` — "Your {n} structures are unchanged" → one structure is reachable (a
+ //                         one-structure scene refusing a bulk add). Needed.
+ //   `refusal.limit`     — FIXED codec constants, no placeholder. Nothing to plural.
+ 'refusal.unchanged': 'Your {n} structure is unchanged.',
 };
 
 /** `{n}`-style placeholders, same contract as `i18n/ui.ts fmt`, plus the English singular above. */

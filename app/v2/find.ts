@@ -100,7 +100,7 @@ export function rankKey(key: string, q: string): number | null {
 /** The best rank across every spelling, and WHICH spelling achieved it. A structure that matches on
  *  both its English and its Chinese name shows the Chinese, because that is the one the reader
  *  cannot otherwise see. */
-function best(entries: SearchKey[], q: string): {rank: number; matched: SearchKey | null} | null {
+export function best(entries: SearchKey[], q: string): {rank: number; matched: SearchKey | null} | null {
  let rank: number | null = null, matched: SearchKey | null = null;
  for (const e of entries) {
   const r = rankKey(e.k, q);
@@ -138,13 +138,42 @@ const order = (a: Hit, b: Hit): number =>
  * MEMOISED PER ATLAS. Walking 3,432 concepts' elements on every keystroke is work proportional to
  * the whole manifest; the `WeakMap` makes it once per atlas and lets it be collected with one.
  */
-interface AtlasIndex {
+export interface AtlasIndex {
  partSystem: Map<string, SystemId>;
  conceptSystems: Map<string, Set<SystemId>>;
  conceptDominant: Map<string, SystemId | null>;
  conceptName: Map<string, string>;
+ /**
+  * ── S3. THE TREE'S GROUPING, DERIVED HERE SO THERE IS ONE COPY OF IT ───────────────────────────
+  *
+  * `shell.tsx` computed its own sidebar counts inline (three copies of one rule: here, there, and
+  * `selection.ts dominantSystem`). S3 needed a full child list per system, and adding a FOURTH is
+  * how the S2 High happened in the first place — so the grouping moves in here, beside the index it
+  * is derived from, and the sidebar reads it.
+  *
+  * ⚠️ GROUPED BY THE **DOMINANT** SYSTEM, NOT BY THE MEMBERSHIP SET, and that is a measured call
+  * rather than a convenient one. `conceptSystems` is a SET because a concept can legitimately span
+  * systems (213 of 3,432 do), and the SCOPE test in `search()` is rightly a membership test. But a
+  * TREE is a partition: every concept must appear exactly once, or the sidebar's own foot —
+  * "3,432 / 3,432" — is false. Measured on the live atlas 2026-09-12: set-grouping would draw
+  * **3,967 rows for 3,432 concepts**, while dominant-grouping draws 3,432 and its fifteen counts sum
+  * to exactly 3,432 with none unassigned. A concept that spans systems is still REACHABLE from
+  * either of them through the palette, which is a membership search.
+  *
+  * Before replacing `shell.tsx`'s inline copy, the two were compared row by row on the live atlas:
+  * all fifteen counts identical, both totals 3,432, zero unassigned. The de-duplication moves no
+  * number. (`.artifacts/L31/v21bc/s3/count-compare.txt`.)
+  *
+  * ORDER IS THE ATLAS'S OWN DECLARATION ORDER, which is static and available in frame one — the
+  * same reason `shell.tsx` does not sort the fifteen systems by count (a list that re-orders when
+  * late data lands is a CLS defect, measured at 0.0124 in S0).
+  */
+ bySystem: Map<SystemId, {id: string; name: string}[]>;
 }
 const INDEX = new WeakMap<Atlas, AtlasIndex>();
+/** The memoised index, per atlas. Exported for the S3 tree so it reads the SAME map the palette
+ *  does rather than recomputing a fourth version of the same rule. */
+export const atlasIndex = (atlas: Atlas): AtlasIndex => indexOf(atlas);
 function indexOf(atlas: Atlas): AtlasIndex {
  const cached = INDEX.get(atlas);
  if (cached) return cached;
@@ -173,7 +202,15 @@ function indexOf(atlas: Atlas): AtlasIndex {
   const set = conceptSystems.get(p.conceptId);
   if (set && set.size === 0) { set.add(p.system); conceptDominant.set(p.conceptId, p.system); }
  }
- const idx = {partSystem, conceptSystems, conceptDominant, conceptName};
+ // THE PARTITION, built AFTER the fallback above so a concept the fallback rescued lands in a
+ // system rather than nowhere. Built in `atlas.concepts` order, which is the atlas's own.
+ const bySystem = new Map<SystemId, {id: string; name: string}[]>();
+ for (const s of SYSTEMS) bySystem.set(s.id, []);
+ for (const c of atlas.concepts) {
+  const dom = conceptDominant.get(c.id);
+  if (dom) bySystem.get(dom)?.push({id: c.id, name: c.name});
+ }
+ const idx = {partSystem, conceptSystems, conceptDominant, conceptName, bySystem};
  INDEX.set(atlas, idx);
  return idx;
 }
@@ -189,7 +226,7 @@ export function search(atlas: Atlas | null, dicts: Dicts, query: string, scope: 
  const parts = atlas?.parts ?? [];
  const idx: AtlasIndex = atlas
   ? indexOf(atlas)
-  : {partSystem: new Map(), conceptSystems: new Map(), conceptDominant: new Map(), conceptName: new Map()};
+  : {partSystem: new Map(), conceptSystems: new Map(), conceptDominant: new Map(), conceptName: new Map(), bySystem: new Map()};
 
  // THE SCOPE NARROWS THE POPULATION, NOT JUST THE LIST. When the reader has scoped to a system, the
  // denominator is that system's count — otherwise the footer would report a fraction of a

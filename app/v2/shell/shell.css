@@ -122,8 +122,21 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
    reason, even though nothing sits below it today. */
 .v2-side-sub{padding:0 16px 8px;font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-2)}
 .v2-side-filter{padding:0 12px 10px;flex-shrink:0}
-.v2-side-filter div{display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);color:var(--v2-ink-3);font-size:var(--v2-type-sm)}
-.v2-tree{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 8px;list-style:none;margin:0}
+/* S3: the box became a real `<label><input>`. The geometry is unchanged from the inert `div` it
+   replaces — same 38 px, same border, same radius — so the sidebar's vertical rhythm does not move
+   when a placeholder becomes a control. */
+.v2-side-filter div,.v2-side-filter label{display:flex;align-items:center;gap:8px;height:38px;padding:0 10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);color:var(--v2-ink-3);font-size:var(--v2-type-sm)}
+.v2-side-filter label:focus-within{border-color:var(--v2-accent)}
+.v2-side-filter input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--v2-ink);outline:none}
+.v2-side-filter input::placeholder{color:var(--v2-ink-3)}
+/* ── S3. THE VIRTUALISED TREE ───────────────────────────────────────────────────────────────────
+   The SCROLLER and the CANVAS are two elements, and that separation is what virtualisation needs:
+   `.v2-tree-box` scrolls and is the only thing that knows the viewport height, while `.v2-tree` is
+   given the FULL height of every row (in an inline style, because it is data) so the scrollbar is
+   the real one for 3,447 rows even though a dozen are mounted. Rows are absolutely positioned at
+   their prefix-sum `top`, so mounting a different window never reflows the ones already there. */
+.v2-tree-box{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 8px}
+.v2-tree{list-style:none;margin:0;padding:0}
 /* ⚠️ A FIXED 36 px ROW, and this reverses my own first attempt. The mock wraps "Reproductive system"
    to two lines at 264 px, so the first build used `min-height` to let it -- and then the row heights
    became a function of the NAME, which changes twice after the first paint: once when
@@ -132,21 +145,59 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
    observer attributed 0.00067 x 4 rows against a 0.001 budget. `spec.md`'s own geometry table says
    "Tree parent 36 fine / 48 coarse" -- fixed -- so the table wins over the mock's rendering of one
    row, and a long name gets an ellipsis with its full text in `title`. */
-.v2-tree-row{display:flex;align-items:center;gap:8px;height:36px;padding:0 4px;border-radius:6px}
+/* ⚠️ S3 REPLACED THE 36 px LITERAL WITH TWO HEIGHTS SET FROM `tree.tsx`'s `ROW_H` (52 system /
+   54 structure, `spec.md` A3's "48/60 px rows" reconciled with D4's drawing), and the reason the
+   original was FIXED still stands verbatim: the row must not be a function of its NAME, which
+   changes twice after the first paint — once when `document.documentElement.lang` resolves the CJK
+   stack, and again when the Chinese dictionary lands and every row is renamed. The measured cost of
+   `min-height` was scrollHeight 560 -> 558 px and 0.00067 x 4 rows of CLS against a 0.001 budget.
+   The heights now come from the module that also computes the prefix sum, so the CSS and the
+   virtualiser cannot disagree about how tall a row is — which they would, silently, the moment one
+   of them changed. A long name still gets an ellipsis with its full text in `title`. */
+.v2-tree-row{display:flex;align-items:center;gap:8px;padding:0 4px;border-radius:6px;box-sizing:border-box}
+.v2-tree-row.is-concept{padding-left:24px}
 .v2-tree-row:hover{background:var(--v2-surface-2)}
+.v2-tree-row.is-active{background:var(--v2-surface-2)}
+.v2-tree-row:focus-visible{outline:2px solid var(--v2-accent);outline-offset:-2px}
+/* THE FOCUSED STRUCTURE, the same accent bar D4 draws beside "Left semitendinosus". */
+.v2-tree-row.is-on{background:var(--v2-accent-soft);box-shadow:inset 2px 0 0 var(--v2-accent)}
+/* HIDDEN READS AS HIDDEN. The row stays fully legible — this is not a disabled state, the structure
+   is still tickable and still focusable — but the name is dimmed so a reader scanning the column
+   can see WHICH rows are not on screen without opening every tooltip. */
+.v2-tree-row.is-hidden .v2-tree-name b,.v2-tree-row.is-hidden .v2-tree-name i{opacity:.45}
 .v2-tw{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0}
-.v2-tick{width:18px;height:18px;border-radius:4px;border:1.5px solid var(--v2-line);flex:0 0 18px;display:flex;align-items:center;justify-content:center;background:var(--v2-surface)}
-.v2-tick.is-mixed{background:var(--v2-accent);border-color:var(--v2-accent)}
-.v2-tick.is-mixed::after{content:"";width:9px;height:2px;background:var(--v2-surface);border-radius:1px}
-.v2-swatch{flex:0 0 3px;width:3px;align-self:stretch;min-height:16px;border-radius:2px}
+.v2-tick{position:relative;width:18px;height:18px;border-radius:4px;border:1.5px solid var(--v2-line);flex:0 0 18px;display:flex;align-items:center;justify-content:center;background:var(--v2-surface);color:var(--v2-surface)}
+.v2-tick.is-mixed,.v2-tick.is-on{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-swatch{flex:0 0 3px;width:3px;align-self:stretch;min-height:16px;border-radius:2px;margin:8px 0}
 /* THE NAME IS THE ONLY THING THAT GROWS, and it needs its own class: `.v2-tree-row>span` also
    matched the tick and the swatch (both spans), so `flex:1` stretched all three and every system
    name rendered as "Ske…" against a 34 px checkbox. Caught by LOOKING at the first screenshot. */
-.v2-tree-name{flex:1;min-width:0;font-size:var(--v2-type-body);line-height:20px;color:var(--v2-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* S3: the name became a BUTTON carrying up to three pinned lines — the name, the paired name, and
+   the "Included through …" coverage note. Each line has an explicit `line-height` so the row's
+   fixed height holds whichever of them are present, and the CJK stack resolving cannot change it. */
+.v2-tree-name{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden}
+.v2-tree-name b,.v2-tree-name i,.v2-tree-name s{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.v2-tree-name b{font-size:var(--v2-type-body);line-height:20px;color:var(--v2-ink);font-weight:500}
+.v2-tree-name i{font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-2);font-style:normal}
+.v2-tree-name s{font-size:var(--v2-type-xs);line-height:15px;color:var(--v2-ink-3);text-decoration:none}
 /* `min-width` RESERVES the count's column before the atlas supplies it, so the number arriving
    cannot push the name. Tabular numerals keep it steady as the value changes. */
 .v2-tree-row>em{flex-shrink:0;min-width:4ch;text-align:right;font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
 .v2-eye{width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0;border-radius:5px}
+.v2-eye:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-eye.is-off{color:var(--v2-ink-2)}
+/* ⚠️ THE SESSION EYE IS DRAWN DIFFERENTLY FROM THE OTHER TWO, and that is a REQUIREMENT rather
+   than decoration (opus-plan-review-2.md RC8: a non-member row's eye is "render-only, visibly
+   distinct"). A reader must be able to tell, without hovering, that hiding this row is the one kind
+   of hiding the link they copy afterwards will not reproduce. The dashed ring is the same
+   vocabulary S0 gave every not-in-the-link control. */
+.v2-eye.is-session.is-off{outline:1px dashed var(--v2-ink-3);outline-offset:-2px}
+/* THE OPACITY ROW — `spec.md`: "Opacity expands only on the focused Selection row; 100% puts the
+   thumb at the right endpoint." */
+.v2-opacity{display:flex;align-items:center;gap:8px}
+.v2-opacity input[type=range]{flex:1;min-width:0;accent-color:var(--v2-accent)}
+.v2-opacity input[type=range]:disabled{opacity:.4}
+.v2-opacity em{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-2);min-width:5ch;text-align:right;font-variant-numeric:tabular-nums}
 .v2-side-foot{flex-shrink:0;padding:10px 16px;border-top:1px solid var(--v2-line-2);font-size:11px;line-height:17px;color:var(--v2-ink-2)}
 .v2-side-foot button{font-size:11px;color:var(--v2-accent);padding:0}
 /* ⚠️ AN INERT CONTROL MUST NOT BE PAINTED IN THE LIVE ACCENT. `.v2-side-foot button` is (0,1,1)
@@ -156,6 +207,11 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
    is the one place the convention was implemented inconsistently; scoping it here rather than
    raising `.v2-inert`'s specificity keeps the convention a single rule. */
 .v2-side-foot button.v2-inert{color:var(--v2-ink-3);padding:2px 6px;border-radius:5px;margin-top:4px;display:inline-block}
+/* S3: "Reset visibility" is LIVE now, and `disabled` when there is nothing to reset. The rule above
+   handled the INERT case (a control that does not exist yet); this is the TRUE-disabled case (a
+   control that exists and has nothing to do), and the two must not look the same — inert is dashed
+   and neutral, disabled is the live control at reduced emphasis. */
+.v2-side-foot button:disabled{color:var(--v2-ink-3);cursor:default}
 /* THE 44 px STUB. Docks collapse to ZERO; the sidebar collapses to a stub, because there has to be
    something left to click to get it back. */
 .v2-side.is-stub{align-items:center}
@@ -303,18 +359,47 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
  .v2-studio .v2-tbtn{height:44px;min-width:44px;justify-content:center;padding:0 12px}
  .v2-studio .v2-pbtn{min-width:44px;justify-content:center}
  .v2-studio .v2-modal-x,.v2-studio .v2-mtab,.v2-modal.is-sheet .v2-modal-x{min-width:44px;min-height:44px}
- .v2-studio .v2-side-foot button,.v2-studio .v2-side-filter div{min-height:44px}
- .v2-studio .v2-tick{width:24px;height:24px;flex-basis:24px}
+ .v2-studio .v2-side-foot button,.v2-studio .v2-side-filter div,.v2-studio .v2-side-filter label{min-height:44px}
+ /* ⚠️ S3: THE TREE'S PARTS BECAME REAL BUTTONS, AND THE COARSE SWEEP SAID SO IMMEDIATELY.
+    At S0 a row held ONE interactive element (the inert eye); every other part was a `<span>`, so the
+    44 px rule had almost nothing in the tree to measure. S3 gives each row a disclosure, a
+    membership tick, a name and an eye — four real controls — and 1366×1024 (the one tier that is
+    desktop-structured AND touch) reported 47 of 117 targets under 44 px, naming exactly these.
+    That is the instrument doing its job on new code, not a regression.
+
+    THE BOX STAYS SMALL, THE TARGET GETS BIG. A 44 px teal checkbox in a 264 px sidebar would be a
+    different design; `spec.md` draws an 18–24 px box. So the BUTTON is 44 px and the painted box is
+    drawn inside it with a border on a pseudo-element — the finger gets the target the rule requires
+    and the eye gets the control the mock draws. */
+ .v2-studio .v2-tick{width:44px;height:44px;flex-basis:44px;border:0;background:none;border-radius:8px}
+ .v2-studio .v2-tick::before{content:"";position:absolute;width:24px;height:24px;border-radius:6px;border:1.5px solid var(--v2-line);background:var(--v2-surface)}
+ .v2-studio .v2-tick.is-on::before,.v2-studio .v2-tick.is-mixed::before{background:var(--v2-accent);border-color:var(--v2-accent)}
+ .v2-studio .v2-tick svg{position:relative;z-index:1}
+ /* The name is a button whose rect must be the ROW's height, not its text's — it measured 78×22
+    inside a 52 px row because a centred flex column is only as tall as its lines. */
+ .v2-studio .v2-tree-name{align-self:stretch}
+ /* The INPUT is the target, not the label that wraps it. */
+ .v2-studio .v2-side-filter input{min-height:44px}
+ .v2-studio .v2-tw{width:28px;height:44px}
+ .v2-studio .v2-tree-row{gap:6px}
+ .v2-studio .v2-tree-row>em{min-width:3ch}
  .v2-studio .v2-tbtn{height:44px;padding:0 12px}
  .v2-studio .v2-pill{height:56px}
  .v2-studio .v2-pbtn{height:44px;padding:0 12px}
  .v2-studio .v2-pad{grid-template-columns:repeat(6,48px);grid-auto-rows:48px}
  .v2-studio .v2-cap{top:86px}
  .v2-studio .v2-eye,.v2-studio .v2-pane-x,.v2-studio .v2-card-act{width:44px;height:44px}
- .v2-studio .v2-tree-row{height:48px}
- /* The inert opacity row is FOCUSABLE, so the coarse sweep counts it as a target — and is right to:
+ /* ⚠️ S3 DELETED `.v2-studio .v2-tree-row{height:48px}` RATHER THAN LEAVING IT TO LOSE SILENTLY.
+    A virtualised row's height is now an INLINE style from `tree.tsx`'s `ROW_H`, and an inline style
+    beats any rule in this file — so that declaration had become a statement the browser ignored,
+    which is worse than no statement at all: the next reader would have believed it. The coarse
+    heights are 52 and 54, both already above the 48 it asked for, so nothing is lost. If a coarse
+    tier ever needs taller rows, `ROW_H` is the one place to change and the prefix sum follows. */
+ /* The opacity row is FOCUSABLE, so the coarse sweep counts it as a target — and is right to:
     a 22 px focusable strip is not something a finger can land on. It grows with the rest. */
  .v2-studio .v2-opacity{min-height:44px}
+ /* THE RANGE INPUT IS THE TARGET, not the row that holds it: measured 155x16 inside a 44 px row. */
+ .v2-studio .v2-opacity input[type=range]{min-height:44px}
  .v2-studio .v2-tab{height:28px}
 }
 @media (prefers-reduced-motion:reduce){
@@ -423,3 +508,18 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
  border:1px solid var(--v2-warn);color:var(--v2-warn);font-size:var(--v2-type-xs)}
 .v2-find-retry:hover{background:var(--v2-warn);color:var(--v2-surface)}
 @media (pointer:coarse){.v2-find-retry{height:36px;padding:0 12px}}
+
+/* ── THE ATOMIC REFUSAL (L31 v2.1b+c, S3; `spec.md` D11) ────────────────────────────────────────
+   AMBER AND PERSISTENT, never a toast: it is the only record that an edit did not happen, and a
+   message that fades is a message the reader can miss entirely. It sits at the top of the Selection
+   pane — "near its origin" — and `page.tsx` opens the dock when one arrives, so it can never be
+   written into a panel nobody has open. The tokens are the warn pair declared in the token block;
+   no hex is typed here (G1). */
+.v2-refusal{border:1px solid var(--v2-warn);background:var(--v2-warn-soft);border-radius:var(--v2-radius-sm);padding:12px 14px;margin:0 0 12px}
+.v2-refusal b{display:block;font-size:var(--v2-type-body);font-weight:600;color:var(--v2-warn);margin-bottom:6px}
+.v2-refusal p{margin:0 0 6px;font-size:var(--v2-type-sm);line-height:1.55;color:var(--v2-ink)}
+.v2-refusal-unchanged{font-weight:500}
+.v2-refusal button{margin-top:4px;border-color:var(--v2-warn);color:var(--v2-warn)}
+/* The bounds, stated once and always — so a reader who is ABOUT to hit them can see them coming
+   rather than discovering them through a refusal. */
+.v2-limits{margin:0 0 10px;font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-3)}

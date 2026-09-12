@@ -544,3 +544,101 @@ test('the human\u2019s system set survives a ghost scene THROUGH THE UI, not onl
   const plain = reduce(afterClick, {type: 'apply-scene', scene: SCENE}).state;
   assert.deepEqual(plain.render.visible, ['muscular', 'nervous', 'arterial']);
 });
+
+// ══ L31 v2.1b+c, S3 — THE TREE'S TWO NEW TRANSACTIONS ═══════════════════════════════════════════
+// `tick` is the ONE path a single child tick and a whole-system bulk tick both take, and
+// `set-opacity` is the ONE command behind both the Selection slider and the tree's member eye. Both
+// claims are about state transitions, so they belong here rather than in a browser.
+
+test('tick adds EXACTLY the requested id and nothing else', () => {
+  const before = bare();
+  const {state, rejected} = reduce(before, {type: 'tick', ids: ['FMA22359'], on: true});
+  assert.equal(rejected, undefined);
+  assert.deepEqual(state.picks, ['FMA9611', 'FMA22359']);
+  // The existing member is untouched, and the new one is exactly one id — not its elements, not its
+  // system. `picks` is the EXACT REQUESTED IDS (R:57).
+  assert.equal(state.picks.length, before.picks.length + 1);
+});
+
+test('tick is idempotent: ticking an already-ticked id changes nothing', () => {
+  const before = bare();
+  const {state} = reduce(before, {type: 'tick', ids: ['FMA9611'], on: true});
+  assert.equal(state, before, 'the same object is returned, so no render is published');
+});
+
+test('an over-bound BULK tick refuses ATOMICALLY — not one id is committed', () => {
+  const before = bare();
+  const many = Array.from({length: LIMITS.MAX_STRUCTURES + 4}, (_, i) => `FMA9000${i}`);
+  const {state, rejected} = reduce(before, {type: 'tick', ids: many, on: true});
+  assert.ok(rejected, 'it refuses');
+  assert.ok(/maximum is 24|24 structures/.test(rejected), `the message names the bound: ${rejected}`);
+  // THE POINT OF THE ROW: the state is the INPUT, unchanged. A fold over single adds would have
+  // committed the first 24 and then refused, which is the silent truncation the contract forbids.
+  assert.deepEqual(state.picks, before.picks);
+  assert.equal(state.blob, before.blob);
+  assert.equal(state.render.reset, before.render.reset, 'and it is not a camera intent');
+});
+
+test('a bulk untick removes every requested id in one transaction', () => {
+  const s = withScene();
+  const two = ['FMA9611', 'FMA16580'];
+  const {state, rejected} = reduce(s, {type: 'tick', ids: two, on: false});
+  assert.equal(rejected, undefined);
+  for (const id of two) assert.ok(!state.picks.includes(id), `${id} is gone`);
+  assert.equal(state.picks.length, s.picks.length - 2);
+  // Rule 4: every reference to a departing structure is reconciled, or the scene cannot encode.
+  const decoded = decodeScene(state.blob);
+  assert.ok(decoded, 'the scene still encodes');
+  for (const id of two) {
+    assert.ok(!decoded.styles.some((x) => x.id === id), `no style names ${id}`);
+    assert.ok(!decoded.annotations.some((a) => a.target === id), `no annotation names ${id}`);
+    assert.ok(!decoded.camera.focus.includes(id), `the declared focus does not name ${id}`);
+  }
+});
+
+test('unticking the LAST structure in scene mode is refused, not silently a clear', () => {
+  const s = withScene();
+  const all = s.picks.slice();
+  const {state, rejected} = reduce(s, {type: 'tick', ids: all, on: false});
+  assert.ok(rejected, 'it refuses');
+  assert.ok(/at least one structure/.test(rejected), rejected);
+  assert.equal(state.blob, s.blob, 'the teaching link keeps its title, note and structures');
+});
+
+test('tick is NOT a camera intent — the pose survives it', () => {
+  const before = bare();
+  const {state} = reduce(before, {type: 'tick', ids: ['FMA22359'], on: true});
+  assert.equal(state.render.reset, before.render.reset);
+});
+
+test('set-opacity writes styles[id].opacity and re-encodes', () => {
+  const {state, rejected} = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: 0});
+  assert.equal(rejected, undefined);
+  const decoded = decodeScene(state.blob);
+  assert.equal(decoded.styles.find((s) => s.id === 'FMA9611')?.opacity, 0);
+});
+
+test('set-opacity(null) REMOVES the entry rather than writing 1', () => {
+  const withZero = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: 0}).state;
+  const {state} = reduce(withZero, {type: 'set-opacity', id: 'FMA9611', opacity: null});
+  const decoded = decodeScene(state.blob);
+  const entry = decoded.styles.find((s) => s.id === 'FMA9611');
+  // The structure keeps its other style fields; only the alpha is gone.
+  assert.equal(entry?.opacity, undefined, 'no opacity is carried');
+});
+
+test('set-opacity on a NON-MEMBER is refused with a reason, and on a scene-less page too', () => {
+  const notMember = reduce(withScene(), {type: 'set-opacity', id: 'FMA99999', opacity: 0.5});
+  assert.ok(notMember.rejected, 'a non-member is refused');
+  assert.equal(notMember.state.blob, withScene().blob);
+  const noScene = reduce(bare(), {type: 'set-opacity', id: 'FMA9611', opacity: 0.5});
+  assert.ok(noScene.rejected, 'a page with no scene is refused');
+  assert.ok(/saved view|not showing one/.test(noScene.rejected), noScene.rejected);
+});
+
+test('set-opacity clamps out-of-range values rather than storing them', () => {
+  const hi = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: 4});
+  assert.equal(decodeScene(hi.state.blob).styles.find((s) => s.id === 'FMA9611')?.opacity ?? 1, 1);
+  const lo = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: -3});
+  assert.equal(decodeScene(lo.state.blob).styles.find((s) => s.id === 'FMA9611')?.opacity, 0);
+});

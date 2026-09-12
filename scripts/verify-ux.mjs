@@ -711,12 +711,44 @@ for (const vp of SWEEP) {
     const targets = await page.evaluate(() => {
       const sel = 'button,a[href],input,select,textarea,[role=button],[role=option],[role=switch],[tabindex]:not([tabindex="-1"])';
       const seen = [];
+      /**
+       * ⚠️ S3 — CLIPPED OUT OF A SCROLLER IS NOT ON SCREEN. THIS CORRECTS THE MEASUREMENT, NOT THE
+       * CLAIM, and the distinction is the whole reason it is written out here.
+       *
+       * The claim these two rows make is "no VISIBLE target is under 44 px" and "no two VISIBLE
+       * targets overlap". The measurement was `getBoundingClientRect()`, which reports where an
+       * element WOULD be and knows nothing about an ancestor that clips it — so a row scrolled past
+       * the bottom of a `overflow-y:auto` box still reports a rect down there, on top of whatever is
+       * drawn below the box.
+       *
+       * It could not bite before S3: the tree had ONE interactive element per row and fifteen 36 px
+       * rows fitted inside their scroller, so nothing was ever clipped. S3's rows are 52/54 px and
+       * carry four controls each, so at 1366×1024 the fourteenth system row reported an overlap with
+       * the sidebar's "Reset visibility" button — two controls a finger can never confuse, because
+       * one of them is not painted at those coordinates at all.
+       *
+       * NARROW ON PURPOSE: an element is dropped ONLY when its rect lies ENTIRELY outside the client
+       * box of a scrolling ancestor. A partially visible control is still measured in full, and a
+       * genuinely overlapping pair inside the same scroller is still a defect. Red-proved in
+       * `.artifacts/L31/v21bc/s3/clip-rule-proof.txt`: with the rule applied, a deliberately
+       * mispositioned control inside the tree still reports its overlap.
+       */
+      const clippedAway = (el, r) => {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          const pcs = getComputedStyle(p);
+          if (!/(auto|scroll|hidden)/.test(pcs.overflowY + pcs.overflowX)) continue;
+          const pr = p.getBoundingClientRect();
+          if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return true;
+        }
+        return false;
+      };
       for (const el of document.querySelectorAll(sel)) {
         const r = el.getBoundingClientRect();
         if (r.width < 1 || r.height < 1) continue;
         const cs = getComputedStyle(el);
         if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
         if (el.closest('[hidden],[aria-hidden="true"]')) continue;
+        if (clippedAway(el, r)) continue;
         seen.push({
           tag: el.tagName.toLowerCase(),
           cls: (el.className && String(el.className).slice(0, 40)) || '',
@@ -1899,8 +1931,14 @@ if (variant === 'v2') {
       await page.keyboard.down(code);
       // 1. THE DISPATCHER REALLY TOOK IT. Without this the second wait cannot distinguish "the key
       //    never registered" from "it registered and the camera is not answering".
+      // ⚠️ `polling: 60`, NOT the default `raf`. Playwright polls `waitForFunction` on
+      // requestAnimationFrame by default, and Chromium THROTTLES rAF in a page that is not the
+      // frontmost one — so in a multi-context sweep the wait can time out on a condition that became
+      // true immediately. That is the same class of defect as the timer this helper replaced: a
+      // measurement whose result depends on which window the OS happened to be showing.
       const held = await page.waitForFunction(
-        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code), {timeout: 3000},
+        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code),
+        {timeout: 3000, polling: 60},
       ).then(() => true).catch(() => false);
       if (!held) {
         await page.keyboard.up(code).catch(() => {});
@@ -1915,11 +1953,12 @@ if (variant === 'v2') {
         const p = nav.pose();
         const cur = [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(',');
         return cur !== k ? 'moved' : false;
-      }, [padSel(code), baseline], {timeout}).then((h) => h.jsonValue()).catch(() => 'timeout');
+      }, [padSel(code), baseline], {timeout, polling: 60}).then((h) => h.jsonValue()).catch(() => 'timeout');
       await page.keyboard.up(code).catch(() => {});
       // 3. AND IT LET GO. A row that leaves a key down poisons every row after it in the same page.
       await page.waitForFunction(
-        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code), {timeout: 3000},
+        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
+        {timeout: 3000, polling: 60},
       ).catch(() => {});
       if (outcome === 'moved') {
         const pose = await page.evaluate(POSE);
@@ -1932,16 +1971,34 @@ if (variant === 'v2') {
   }
   /** The same discipline for a hold whose POINT is to be held while something else is measured:
    *  wait until the dispatcher reports it, rather than assuming 200 ms was enough. */
-  async function holdDown(page, code, {timeout = 3000} = {}) {
-    await page.keyboard.down(code);
-    return page.waitForFunction(
-      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code), {timeout},
-    ).then(() => true).catch(() => false);
+  async function holdDown(page, code, {timeout = 3000, attempts = 3} = {}) {
+    /**
+     * ⚠️ THE SAME BOUNDED RETRY AS `holdUntilMoved`, and its absence was a measured defect.
+     *
+     * The first version pressed once and waited. It fed two PREMISE rows in `s1-r1-fixes`, and on
+     * one sweep `S is really held before the modified-while-held events` went red with "KeyS never
+     * registered as held" while passing on the sweep before and the sweep after — the identical
+     * blur race the helper beside it exists to absorb. A premise row that flakes is worse than one
+     * that fails: it makes the sub-test beneath it measure the UNHELD case and report it as the
+     * held one.
+     */
+    for (let n = 1; n <= attempts; n++) {
+      await page.bringToFront().catch(() => {});
+      await page.keyboard.down(code);
+      const ok = await page.waitForFunction(
+        (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'true', padSel(code),
+        {timeout, polling: 60},
+      ).then(() => true).catch(() => false);
+      if (ok) return true;
+      await page.keyboard.up(code).catch(() => {});
+    }
+    return false;
   }
   async function releaseKey(page, code, {timeout = 3000} = {}) {
     await page.keyboard.up(code).catch(() => {});
     await page.waitForFunction(
-      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code), {timeout},
+      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
+      {timeout, polling: 60},
     ).catch(() => {});
   }
 
@@ -2212,8 +2269,11 @@ if (variant === 'v2') {
         // is fixed in `shell.tsx` (keyboard-only click), and the row now waits for the condition
         // so a slow render cannot resurrect the same false reading.
         let releaseSeen = true;
+        // `polling: 60` for the same reason as `holdUntilMoved`: this row reported red with a
+        // MEASURED value of `false` — i.e. the condition was true and the rAF-throttled wait never
+        // saw it. A wait that can time out on a satisfied condition is not measuring the product.
         await page.waitForFunction(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed') === 'false',
-          null, {timeout: 5000}).catch(() => { releaseSeen = false; });
+          null, {timeout: 5000, polling: 60}).catch(() => { releaseSeen = false; });
         const released = await page.evaluate(() => document.querySelector('.v2-cap-key[aria-label="KeyD"]')?.getAttribute('aria-pressed'));
         check(vp.name, `[${S1_V}] and released afterwards (no key left stuck down)`,
           releaseSeen && released === 'false', `aria-pressed=${released}${releaseSeen ? '' : ' after a 5 s wait'}`, 'false');
@@ -2687,12 +2747,32 @@ if (variant === 'v2') {
         .find((b) => (b.textContent || '').trim() === 'Systems' || (b.textContent || '').trim() === '系统' || (b.textContent || '').trim() === '系統') ?? null);
       const sysEl = sysBtn.asElement();
       if (sysEl) await press(sysEl);
+      /**
+       * ⚠️ S3 MOVED THE SURFACE, NOT THE FACT — and this pass is re-pointed rather than retired.
+       *
+       * The claim is about `visibleIntent`: after a GHOST scene, the control that represents the
+       * HUMAN's system set must still show the human's set and not the scene's. Below 768 that
+       * control used to be `.v2-systems label` (a flat checkbox list); S3 replaced it with the tree,
+       * where the same fact is the SYSTEM ROW'S EYE (`aria-pressed` is the inverse of "in the
+       * intent", because the button's pressed state means HIDDEN). The tablet keeps the old list, so
+       * both spellings are read and whichever exists is measured.
+       *
+       * Re-pointing an oracle at a moved surface is legitimate; deleting it because the selector
+       * stopped matching would have silently retired the guard for H3.
+       */
       const seen = await page.evaluate(() => {
-        const rows = [...document.querySelectorAll('.v2-systems label')].map((l) => ({
+        const legacy = [...document.querySelectorAll('.v2-systems label')].map((l) => ({
           name: (l.querySelector('span:not(.v2-box):not(.v2-dot)')?.textContent || '').trim(),
           checked: !!l.querySelector('input')?.checked,
         }));
-        return {rows, count: rows.length, blob: window.atlas?.plate?.()?.blob ?? ''};
+        const tree = [...document.querySelectorAll('.v2-tree-row.is-system')].map((r) => ({
+          name: (r.querySelector('.v2-tree-name b')?.textContent || '').trim(),
+          // eye aria-pressed === 'true' means HIDDEN, so "in the human's set" is its inverse.
+          checked: r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false',
+        }));
+        const rows = legacy.length ? legacy : tree;
+        return {rows, count: rows.length, surface: legacy.length ? 'v2-systems (tablet)' : 'the tree (phone, S3)',
+          blob: window.atlas?.plate?.()?.blob ?? ''};
       });
       const ticked = seen.rows.filter((r) => r.checked).map((r) => r.name).sort();
       // THE FIXTURE IS A zh-Hans SCENE, so the rows are labelled in Chinese — the first version of
@@ -2702,7 +2782,7 @@ if (variant === 'v2') {
       const isNerve = (n) => /Nervous system|神经系统|神經系統/.test(n);
       check(vp.name, `[${STUDIO_V}] H3: after a GHOST scene the systems panel still shows the human's own set`,
         seen.count > 0 && ticked.length === 2 && ticked.some(isMuscle) && ticked.some(isNerve),
-        seen.count ? `${seen.count} rows, ticked: [${ticked.join(', ')}]` : 'the systems panel never opened',
+        seen.count ? `${seen.count} rows on ${seen.surface}, ticked: [${ticked.join(', ')}]` : 'the systems panel never opened',
         'exactly Muscles + Nervous system ticked');
       check(vp.name, `[${STUDIO_V}] H3: and the SKELETON the ghost draws is NOT ticked (two facts, two sources)`,
         seen.count > 0 && !seen.rows.some((r) => r.checked && /Skeleton|骨骼/.test(r.name)),
@@ -2872,6 +2952,400 @@ if (variant === 'v2') {
         'the TC stack on every row');
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the CJK pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ S3 — THE LAYERS / SYSTEMS TREE AND THE LIVE SELECTION DOCK ═════════════════════════════════
+   *
+   * Every row below is about a fact the tree CLAIMS, and each is measured against the thing that
+   * owns that fact rather than against the tree's own rendering of it:
+   *   a TICK   → `window.atlas.state().ids` / the scene blob, not the checkbox's class
+   *   an EYE   → the serialised `system=` key, the scene's `styles`, or the DRAWN set
+   *   a REFUSAL→ the state being UNCHANGED, not the message being present
+   * That last one is the S3-specific discipline the kickoff names: "assert the UNCHANGED state —
+   * picks, blob, camera — not the message". A refusal that printed its sentence and committed half
+   * the operation would pass a message-shaped assertion.
+   */
+  const S3_V = 'S3-tree';
+  for (const vp of [{name: 's3-tree-1440', width: 1440, height: 900, dpr: 1, coarse: false},
+    {name: 's3-tree-390', width: 390, height: 844, dpr: 3, coarse: true}]) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    const phone = vp.width < 768;
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForSelector('html[data-atlas-ready="1"]', {timeout: 300000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.bringToFront();
+      /** The phone keeps the tree in the margin's high detent behind the Systems button (spec A3);
+       *  the studio has it in the sidebar at rest. Opening it is a PREMISE, asserted as one. */
+      if (phone) {
+        await page.evaluate(() => document.querySelector('.v2-handle')?.click());
+        await page.waitForTimeout(400);
+        await page.evaluate(() => {
+          const b = [...document.querySelectorAll('.v2-actions button')].find((x) => x.textContent && /Systems|系统|系統/.test(x.textContent));
+          b?.click();
+        });
+        await page.waitForTimeout(600);
+      }
+      const present = await page.evaluate(() => ({
+        tree: !!document.querySelector('[role="tree"]'),
+        box: !!document.querySelector('.v2-tree-box'),
+        filter: !!document.querySelector('.v2-side-filter input'),
+      }));
+      check(vp.name, `[${S3_V}] the tree is a real \`role="tree"\` with a filter (the premise — every row below is vacuous without it)`,
+        present.tree && present.box && present.filter,
+        `tree=${present.tree} box=${present.box} filter=${present.filter}`, 'all three');
+
+      // ── S3.1 VIRTUALISED, AND THE SCROLLER IS THE THING THAT IS MEASURED ──────────────────────
+      // The defect this catches is the one the phone build actually had: an unbounded box grew to
+      // its content, the MARGIN scrolled instead, and the virtualiser's `scrollTop` never changed —
+      // so expanding a system would have drawn one window and then thousands of pixels of blank.
+      /**
+       * ⚠️ EXPANDED THROUGH THE CONTROL THAT EXISTS AT THIS TIER. On a coarse pointer the disclosure
+       * chevron is presentational and the NAME owns the command (four 44 px controls do not fit a
+       * 264 px sidebar — see `TreeProps.coarse`). The first version clicked `.v2-tw` unconditionally,
+       * which on the phone clicked a `<span>`, expanded nothing, and then reported "canvas 780px"
+       * and "no unticked structure row on screen" as if the TREE were at fault. An instrument must
+       * drive the surface the reader has.
+       */
+      await page.evaluate(() => {
+        const row = document.querySelector('.v2-tree-row.is-system');
+        (row?.querySelector('.v2-tw[type=button]') ?? row?.querySelector('.v2-tree-name'))?.click();
+      });
+      await page.waitForTimeout(600);
+      const virt = await page.evaluate(() => {
+        const box = document.querySelector('.v2-tree-box');
+        const rows = [...document.querySelectorAll('.v2-tree-row')];
+        return {h: Math.round(box?.clientHeight ?? 0), scrollH: Math.round(box?.scrollHeight ?? 0), mounted: rows.length};
+      });
+      check(vp.name, `[${S3_V}] one expanded system virtualises: the canvas is far taller than the box, and a handful of rows are mounted`,
+        virt.scrollH > virt.h * 4 && virt.mounted > 0 && virt.mounted < 60 && virt.h > 0,
+        `box ${virt.h}px, canvas ${virt.scrollH}px, ${virt.mounted} rows mounted`,
+        'canvas >> box, < 60 rows mounted');
+      // AND THE WINDOW REALLY MOVES. Without this the row above passes on a list that renders its
+      // first window and nothing else — which is exactly the blank-below-the-fold defect.
+      const scrolled = await page.evaluate(async () => {
+        const box = document.querySelector('.v2-tree-box');
+        const before = document.querySelector('.v2-tree-row:last-child')?.textContent ?? '';
+        box.scrollTop = Math.round(box.scrollHeight / 2);
+        await new Promise((r) => setTimeout(r, 400));
+        const rows = [...document.querySelectorAll('.v2-tree-row')];
+        return {before, after: rows[rows.length - 1]?.textContent ?? '', n: rows.length,
+          top: Math.round(rows[0]?.getBoundingClientRect().top ?? 0)};
+      });
+      check(vp.name, `[${S3_V}] scrolling the box mounts a DIFFERENT window (the virtualiser reads the element that scrolls)`,
+        scrolled.after !== scrolled.before && scrolled.n > 0,
+        `last row "${String(scrolled.before).slice(0, 22)}" -> "${String(scrolled.after).slice(0, 22)}", ${scrolled.n} mounted`,
+        'a different last row');
+
+      /**
+       * ⚠️ A VIRTUALISED LIST MUST BE PUT BACK IN A KNOWN STATE BETWEEN SUB-TESTS, and forgetting
+       * that was an instrument defect this block found in itself TWICE.
+       *
+       * S3.1 scrolls to the middle of an expanded 634-concept system to prove the window moves.
+       * Every row after it then queried `.v2-tree-row.is-system` and found NONE — not because the
+       * tree has no systems, but because the virtualiser had correctly unmounted them. The failures
+       * read "no UNTICKED system with more than 24 structures on screen", which is a true statement
+       * about the DOM and a false one about the product.
+       *
+       * So: collapse everything and scroll home first. Stated as a helper rather than repeated,
+       * because the next sub-test added to this block will need it too.
+       */
+      const treeHome = async () => {
+        await page.evaluate(() => {
+          // Collapse via the control the tier actually has (the chevron is a span on coarse).
+          for (const r of [...document.querySelectorAll('.v2-tree-row.is-system')]) {
+            if (r.getAttribute('aria-expanded') === 'true') {
+              (r.querySelector('.v2-tw[type=button]') ?? r.querySelector('.v2-tree-name'))?.click();
+            }
+          }
+          const box = document.querySelector('.v2-tree-box');
+          if (box) box.scrollTop = 0;
+        });
+        await page.waitForTimeout(500);
+        return page.evaluate(() => document.querySelectorAll('.v2-tree-row.is-system').length);
+      };
+
+      // ── S3.2 A CHILD TICK ADDS EXACTLY THAT ID ───────────────────────────────────────────────
+      // Measured on the CONTROLLER (`window.atlas.state()`), not on the checkbox: a tick that
+      // painted itself and dispatched nothing would pass any DOM-shaped assertion.
+      const sysRowsBack = await treeHome();
+      check(vp.name, `[${S3_V}] the tree returns to a known state between sub-tests (system rows are mounted again)`,
+        sysRowsBack > 0, `${sysRowsBack} system rows mounted after collapse + scroll home`, '> 0');
+      // One system open again, so there is a structure row to tick.
+      await page.evaluate(() => {
+        const row = document.querySelector('.v2-tree-row.is-system');
+        (row?.querySelector('.v2-tw[type=button]') ?? row?.querySelector('.v2-tree-name'))?.click();
+      });
+      await page.waitForTimeout(500);
+      const tick = await page.evaluate(async () => {
+        // ⚠️ `atlas.state()` REPORTS `ids`, NOT `selected` (app/v2/tools.ts:30). The first version
+        // of this row read `.selected` and threw inside the evaluate, which surfaced as "the tree
+        // pass ran = false" — an instrument error reported in the shape of a product failure.
+        const before = window.atlas.state();
+        const row = [...document.querySelectorAll('.v2-tree-row.is-concept')]
+          .find((r) => r.getAttribute('aria-checked') === 'false');
+        if (!row) return {error: 'no unticked structure row on screen'};
+        const id = row.getAttribute('aria-describedby')?.replace('v2-cov-', '') ?? null;
+        const name = row.querySelector('.v2-tree-name b')?.textContent ?? '';
+        row.querySelector('.v2-tick')?.click();
+        await new Promise((r) => setTimeout(r, 500));
+        const after = window.atlas.state();
+        const added = after.ids.filter((x) => !before.ids.includes(x));
+        const removed = before.ids.filter((x) => !after.ids.includes(x));
+        return {name, id, beforeN: before.ids.length, afterN: after.ids.length,
+          added: added.length, removed: removed.length,
+          checkedNow: row.getAttribute('aria-checked'),
+          inSelectionDock: [...document.querySelectorAll('.v2-card b')].some((b) => b.textContent === name),
+          blobChanged: before.blob !== after.blob};
+      });
+      check(vp.name, `[${S3_V}] ticking a structure adds EXACTLY one requested id — nothing else moves`,
+        !tick.error && tick.added === 1 && tick.removed === 0 && tick.checkedNow === 'true',
+        tick.error || `picks ${tick.beforeN} -> ${tick.afterN} (+${tick.added} / -${tick.removed}), aria-checked=${tick.checkedNow}`,
+        'exactly +1, -0, checked');
+      check(vp.name, `[${S3_V}] and the same tick reaches the Selection dock and the scene blob (one fact, every surface)`,
+        !tick.error && tick.blobChanged === true && (phone || tick.inSelectionDock === true),
+        tick.error || `blob changed=${tick.blobChanged}, in Selection dock=${tick.inSelectionDock}`,
+        'the blob re-encoded, the card present');
+
+      // ── S3.3 THE PARENT'S TRI-STATE AGGREGATES THAT MEMBERSHIP ───────────────────────────────
+      await treeHome();
+      const tri = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-tree-row.is-system')];
+        const out = rows.map((r) => ({
+          name: r.querySelector('.v2-tree-name b')?.textContent ?? '',
+          checked: r.getAttribute('aria-checked'),
+        }));
+        return {out, mixed: out.filter((x) => x.checked === 'mixed').length, total: out.length};
+      });
+      check(vp.name, `[${S3_V}] the §9 scene puts at least one system in MIXED and none in fully-checked (24 picks cannot fill a 634-concept system)`,
+        tri.mixed >= 1 && tri.out.every((x) => x.checked !== 'true'),
+        `${tri.mixed} mixed of ${tri.total} system rows on screen: ${tri.out.filter((x) => x.checked === 'mixed').map((x) => x.name).join(', ') || 'none'}`,
+        '>= 1 mixed, 0 fully checked');
+
+      // ── S3.4 A BULK TICK OVER THE LIMIT REFUSES, AND THE STATE IS IDENTICAL ──────────────────
+      /**
+       * ⚠️ THE ASSERTION IS THE UNCHANGED STATE, NOT THE MESSAGE. A refusal that printed its
+       * sentence and still committed the first 24 would satisfy any "is the refusal visible?"
+       * check — and committing a truncated set is precisely the failure the controller's atomic
+       * bound exists to prevent. So picks, blob AND the camera pose are compared before and after.
+       */
+      /**
+       * ⚠️ IT MUST DRIVE THE **ADD** DIRECTION, and the first version did not — which is how this
+       * row found a defect in ITSELF rather than in the product.
+       *
+       * A system row's tick is a toggle: `off` → add every descendant (which for a 634-concept
+       * system is refused whole), `mixed`/`on` → remove the ones that are picked (which succeeds,
+       * because removal has no bound). The first version picked the first system with >24 concepts
+       * and clicked it — and on the §9 fixture that system is MIXED, so it measured a successful
+       * REMOVAL and reported "picks identical=false" as a failure to refuse. The state had changed
+       * because the product did the right thing.
+       *
+       * So the row now requires an UNTICKED system, which is the only state from which the refusal
+       * is reachable — and the removal path gets its own row below rather than being tested by
+       * accident.
+       */
+      await treeHome();
+      const bulk = await page.evaluate(async () => {
+        const pose = () => { const n = window.__atlasNav; return n ? JSON.stringify(n.pose()) : 'no-nav'; };
+        const before = {...window.atlas.state(), pose: pose()};
+        const row = [...document.querySelectorAll('.v2-tree-row.is-system')]
+          .find((r) => Number((r.querySelector('em')?.textContent ?? '0').replace(/[^0-9]/g, '')) > 24
+            && r.getAttribute('aria-checked') === 'false');
+        if (!row) return {error: 'no UNTICKED system with more than 24 structures on screen'};
+        const n = row.querySelector('em')?.textContent ?? '?';
+        row.querySelector('.v2-tick')?.click();
+        await new Promise((r) => setTimeout(r, 600));
+        const after = {...window.atlas.state(), pose: pose()};
+        return {n,
+          picksSame: JSON.stringify(before.ids) === JSON.stringify(after.ids),
+          blobSame: before.blob === after.blob,
+          poseSame: before.pose === after.pose,
+          refusalShown: !!document.querySelector('.v2-refused, [role="alert"]'),
+          count: after.ids.length};
+      });
+      check(vp.name, `[${S3_V}] a bulk tick of a ${bulk.n ?? '?'}-structure system REFUSES and leaves picks, blob and camera IDENTICAL`,
+        !bulk.error && bulk.picksSame && bulk.blobSame && bulk.poseSame,
+        bulk.error || `picks identical=${bulk.picksSame}, blob identical=${bulk.blobSame}, pose identical=${bulk.poseSame} (${bulk.count} selected)`,
+        'all three identical');
+      check(vp.name, `[${S3_V}] and it SAYS so (the refusal is visible, not silent)`,
+        !bulk.error && bulk.refusalShown === true,
+        bulk.error || `a refusal element is present=${bulk.refusalShown}`, 'visible');
+      /**
+       * THE OTHER DIRECTION, which the first version of the row above measured by accident and which
+       * deserves its own assertion: unticking a MIXED system removes exactly its picked members and
+       * leaves every other pick alone. It is the bulk operation that routinely SUCCEEDS.
+       */
+      await treeHome();
+      const unbulk = await page.evaluate(async () => {
+        const before = window.atlas.state().ids.slice();
+        const row = [...document.querySelectorAll('.v2-tree-row.is-system')]
+          .find((r) => r.getAttribute('aria-checked') === 'mixed');
+        if (!row) return {error: 'no mixed system on screen'};
+        const name = row.querySelector('.v2-tree-name b')?.textContent ?? '';
+        row.querySelector('.v2-tick')?.click();
+        await new Promise((r) => setTimeout(r, 600));
+        const after = window.atlas.state().ids.slice();
+        return {name, before: before.length, after: after.length,
+          removed: before.filter((x) => !after.includes(x)).length,
+          added: after.filter((x) => !before.includes(x)).length,
+          checkedNow: row.getAttribute('aria-checked')};
+      });
+      check(vp.name, `[${S3_V}] unticking a MIXED system removes its members and adds nothing`,
+        !unbulk.error && unbulk.removed > 0 && unbulk.added === 0 && unbulk.checkedNow === 'false',
+        unbulk.error || `${unbulk.name}: picks ${unbulk.before} -> ${unbulk.after} (-${unbulk.removed} / +${unbulk.added}), aria-checked=${unbulk.checkedNow}`,
+        'members removed, nothing added, now unchecked');
+
+      // ── S3.5 THE SYSTEM EYE ROUND-TRIPS THROUGH `system=` ────────────────────────────────────
+      // RC8's first eye. The claim is the SERIALISATION, so it is read off the address bar the
+      // reader would copy — not off the button's own aria-pressed.
+      await treeHome();
+      const sysEye = await page.evaluate(async () => {
+        const row = [...document.querySelectorAll('.v2-tree-row.is-system')][0];
+        if (!row) return {error: 'no system row'};
+        const name = row.querySelector('.v2-tree-name b')?.textContent ?? '';
+        const eye = row.querySelector('.v2-eye');
+        const title = eye?.getAttribute('title') ?? '';
+        eye?.click();
+        // The URL write is debounced at 200 ms; wait on the URL, never on a longer sleep.
+        const t0 = Date.now();
+        while (Date.now() - t0 < 4000 && !/[?&]system=/.test(location.search)) await new Promise((r) => setTimeout(r, 60));
+        return {name, title, search: location.search.match(/[?&]system=[^&]*/)?.[0] ?? '(no system= key)',
+          pressed: eye?.getAttribute('aria-pressed'),
+          visible: window.atlas.state().view};
+      });
+      check(vp.name, `[${S3_V}] the SYSTEM eye writes the serialised \`system=\` key the link carries`,
+        !sysEye.error && /system=/.test(sysEye.search),
+        sysEye.error || `${sysEye.name}: ${sysEye.search} (aria-pressed=${sysEye.pressed})`, 'a system= key');
+      // RC8 REFUSES TO SHIP AN EYE WHOSE TOOLTIP DOES NOT NAME ITS SERIALISATION. This is that row.
+      check(vp.name, `[${S3_V}] and its tooltip NAMES that serialisation (RC8: an eye that does not is refused)`,
+        !sysEye.error && /system=/.test(sysEye.title),
+        sysEye.error || `title="${String(sysEye.title).slice(0, 70)}"`, 'the tooltip contains "system="');
+
+      // ── S3.6 EVERY EYE ON SCREEN STATES ITS OWN SERIALISATION ────────────────────────────────
+      // A session eye lives on a STRUCTURE row that is not a scene member, so one system has to be
+      // open for any to exist. Without this the sub-test ran against fifteen collapsed system rows
+      // and asserted a tooltip on a row type that was not on screen — it measured "" and reported it
+      // as the product saying nothing.
+      await treeHome();
+      await page.evaluate(() => {
+        const row = document.querySelector('.v2-tree-row.is-system');
+        (row?.querySelector('.v2-tw[type=button]') ?? row?.querySelector('.v2-tree-name'))?.click();
+      });
+      await page.waitForTimeout(500);
+      const eyes = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-tree-row')];
+        const out = rows.map((r) => {
+          const eye = r.querySelector('.v2-eye');
+          const kind = eye ? [...eye.classList].find((c) => ['is-system', 'is-member', 'is-session'].includes(c)) : null;
+          return {kind, title: eye?.getAttribute('title') ?? '', label: eye?.getAttribute('aria-label') ?? ''};
+        }).filter((x) => x.kind);
+        const silent = out.filter((x) => !x.title.trim());
+        const kinds = [...new Set(out.map((x) => x.kind))];
+        return {n: out.length, silent: silent.length, kinds,
+          hasSession: out.some((x) => x.kind === 'is-session'),
+          session: out.find((x) => x.kind === 'is-session')?.title ?? '(NO SESSION EYE ON SCREEN)'};
+      });
+      check(vp.name, `[${S3_V}] EVERY eye on screen carries a tooltip (${eyes.n} eyes, kinds: ${eyes.kinds.join('/')})`,
+        eyes.n > 0 && eyes.silent === 0,
+        `${eyes.silent} of ${eyes.n} eyes have no title`, '0 silent');
+      check(vp.name, `[${S3_V}] the SESSION eye's tooltip says it is not saved in the link`,
+        eyes.hasSession && /not saved|仅|僅/.test(eyes.session),
+        `"${String(eyes.session).slice(0, 70)}"`, 'it says session-only');
+
+      // ── S3.7 THE FILTER NARROWS BOTH LANES, WITH BOTH DENOMINATORS ───────────────────────────
+      const filtered = await page.evaluate(async () => {
+        const box = document.querySelector('.v2-side-filter input');
+        const subBefore = document.querySelector('.v2-side-sub')?.textContent ?? '';
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(box, 'femur');
+        box.dispatchEvent(new Event('input', {bubbles: true}));
+        await new Promise((r) => setTimeout(r, 600));
+        const subAfter = document.querySelector('.v2-side-sub')?.textContent ?? '';
+        const rows = [...document.querySelectorAll('.v2-tree-row')];
+        // ⚠️ BOTH LINES OF THE ROW. In a Chinese interface a row matched on its ENGLISH name renders
+        // 股骨 as its title and "femur" as its PAIRED line — the first version read only the title
+        // and reported "a femur row present=false" for a filter that had worked perfectly. The
+        // §9 fixture forces zh-Hans, so the English-only reading was wrong on its own fixture.
+        const names = rows.map((r) => ((r.querySelector('.v2-tree-name b')?.textContent ?? '') + ' ' +
+          (r.querySelector('.v2-tree-name i')?.textContent ?? '')).toLowerCase());
+        const kids = rows.filter((r) => r.classList.contains('is-concept'));
+        return {subBefore, subAfter, rows: rows.length, kids: kids.length,
+          hit: names.some((n) => n.includes('femur')),
+          posinset: rows[0]?.getAttribute('aria-posinset'), setsize: rows[0]?.getAttribute('aria-setsize')};
+      });
+      check(vp.name, `[${S3_V}] the filter narrows the tree and reports BOTH denominators (systems and structures are two populations)`,
+        /\bof\b|中的/.test(filtered.subAfter) && filtered.subAfter !== filtered.subBefore && filtered.hit,
+        `"${filtered.subBefore}" -> "${filtered.subAfter}" (${filtered.rows} rows, ${filtered.kids} structures, a femur row present=${filtered.hit})`,
+        'two named denominators and a match');
+      check(vp.name, `[${S3_V}] aria-setsize reports the FILTERED collection, not the mounted window`,
+        Number(filtered.setsize) > 0 && Number(filtered.setsize) >= filtered.rows,
+        `posinset=${filtered.posinset} setsize=${filtered.setsize} against ${filtered.rows} mounted`,
+        'setsize >= mounted');
+
+      // ── S3.8 THE KEYBOARD MOVES WITHIN THE FILTERED TREE AND NEVER ORBITS ────────────────────
+      /**
+       * Guard 4 of `keys.ts` declines every arrow while focus is inside `[role="tree"]`, and until
+       * S3 that guard protected a tree that did not exist. The camera pose is the instrument: if
+       * the arrows reached the dispatcher the pose would move, and the assertion is that it did
+       * not WHILE the highlight did — a control arm on each side of one keypress.
+       */
+      const keys = await page.evaluate(async () => {
+        const box = document.querySelector('.v2-side-filter input');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(box, '');
+        box.dispatchEvent(new Event('input', {bubbles: true}));
+        await new Promise((r) => setTimeout(r, 400));
+        const row = document.querySelector('.v2-tree-row[tabindex="0"]');
+        row?.focus();
+        return {focused: document.activeElement?.getAttribute('role') ?? 'none',
+          at: row?.getAttribute('aria-posinset') ?? null,
+          pose: window.__atlasNav ? JSON.stringify(window.__atlasNav.pose()) : 'no-nav'};
+      });
+      check(vp.name, `[${S3_V}] a tree row is focusable through a roving tabindex (the premise for the keys below)`,
+        keys.focused === 'treeitem', `activeElement role=${keys.focused}, posinset=${keys.at}`, 'treeitem');
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(250);
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(250);
+      const afterArrows = await page.evaluate(() => ({
+        at: document.activeElement?.getAttribute('aria-posinset') ?? null,
+        role: document.activeElement?.getAttribute('role') ?? 'none',
+        pose: window.__atlasNav ? JSON.stringify(window.__atlasNav.pose()) : 'no-nav',
+      }));
+      check(vp.name, `[${S3_V}] ArrowDown walks the tree — and the CAMERA does not move (guard 4, measured on the pose)`,
+        afterArrows.role === 'treeitem' && Number(afterArrows.at) === Number(keys.at) + 2 && afterArrows.pose === keys.pose,
+        `posinset ${keys.at} -> ${afterArrows.at}, pose ${afterArrows.pose === keys.pose ? 'unchanged' : 'MOVED'}`,
+        '+2 rows, an unchanged pose');
+      /**
+       * ⚠️ SPACE MUST LAND ON A STRUCTURE ROW. On a SYSTEM row Space is the bulk tick, which for any
+       * system over 24 concepts correctly REFUSES and leaves membership exactly where it was — and
+       * the first version of this row read that correct refusal as "Space does nothing". The
+       * keyboard walk therefore continues until the focused row is a `treeitem` at level 2.
+       */
+      let onConcept = await page.evaluate(() => document.activeElement?.getAttribute('aria-level') === '2');
+      for (let i = 0; i < 12 && !onConcept; i++) {
+        await page.keyboard.press('ArrowRight');   // opens a system, or moves into it
+        await page.waitForTimeout(180);
+        await page.keyboard.press('ArrowDown');
+        await page.waitForTimeout(180);
+        onConcept = await page.evaluate(() => document.activeElement?.getAttribute('aria-level') === '2');
+      }
+      check(vp.name, `[${S3_V}] the keyboard can reach a STRUCTURE row from a system row (Right opens, Down enters)`,
+        onConcept, `aria-level of the focused row = ${await page.evaluate(() => document.activeElement?.getAttribute('aria-level') ?? 'none')}`, '2');
+      const beforeSpace = await page.evaluate(() => window.atlas.state().ids.length);
+      await page.keyboard.press('Space');
+      await page.waitForTimeout(500);
+      const afterSpace = await page.evaluate(() => ({n: window.atlas.state().ids.length,
+        checked: document.activeElement?.getAttribute('aria-checked')}));
+      check(vp.name, `[${S3_V}] Space toggles membership on the focused row`,
+        afterSpace.n !== beforeSpace || afterSpace.checked === 'mixed',
+        `picks ${beforeSpace} -> ${afterSpace.n} (aria-checked=${afterSpace.checked})`, 'membership moved');
+    } catch (e) {
+      check(vp.name, `[${S3_V}] the tree pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 }

@@ -38,6 +38,7 @@ import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
+import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
 
@@ -182,6 +183,36 @@ export default function V2() {
  const systemId = focused?.system ?? focusedParts[0]?.system;
  const system = SYSTEMS.find((s) => s.id === systemId);
 
+ /**
+  * ── S3. THE SESSION-ONLY HIDDEN SET — the tree's NON-MEMBER eye ────────────────────────────────
+  *
+  * The third of RC8's three eyes, and the only one that is NOT a controller command: there is no
+  * codec field for "this concept is hidden", so it is not put in one. It lives here, in React, it
+  * is merged into the renderer's opacity map below, and it is never serialised — which is exactly
+  * what its tooltip says (`tree.eyeSession`).
+  *
+  * ⚠️ CLEARED WHENEVER A SCENE ARRIVES. `spec.md`: "Opening a saved scene/tab resets these session
+  * overrides (to avoid an apparently missing saved structure)". A reader who opens a teaching link
+  * and finds one of its structures invisible for a reason nothing on screen explains is the worse
+  * failure by a distance — so the override loses to the link, deliberately.
+  *
+  * NOT PERSISTED, for the same reason S2's recents are not: RC12 froze the localStorage schema at
+  * S0 and `atlas.hidden` is not in it. A hidden set that survived a reload would also survive the
+  * reader's memory of having hidden anything.
+  */
+ const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+ const hide = useCallback((id: string, on: boolean) => {
+  setHidden((cur) => {
+   // `'*'` is the sidebar foot's Reset — one call rather than a loop, so the render-only set can
+   // never be half-cleared.
+   if (id === '*') return cur.size ? new Set<string>() : cur;
+   const next = new Set(cur);
+   if (on) next.add(id); else next.delete(id);
+   return next;
+  });
+ }, []);
+ const [treeQuery, setTreeQuery] = useState('');
+
  // `render.selected` is DERIVED (picks -> resolved basket -> mesh union), not a user intent, so it
  // is written straight onto the controller state rather than through a command. Reference equality
  // matters: the frame loop's change guard compares `selected` by identity (app/scene.tsx:336).
@@ -320,6 +351,20 @@ export default function V2() {
    return false;
   }
   if (!seedArrival) setRefused('');
+  /**
+   * ⚠️ S3. AN ARRIVING VIEW CLEARS THE SESSION-ONLY HIDDEN SET, and it is cleared HERE rather than
+   * at each call site so no future arrival path can forget.
+   *
+   * `spec.md`: "Opening a saved scene/tab resets these session overrides (to avoid an apparently
+   * missing saved structure)". The failure it prevents is a link that opens with one of its own
+   * declared structures invisible, for a reason nothing on screen explains and no control the
+   * reader can see is currently in the state that caused it. The override is worth less than the
+   * link is, so the link wins.
+   *
+   * Guarded on `size` so an ordinary arrival with nothing hidden does not publish a new Set and
+   * re-run the renderer's opacity merge for nothing.
+   */
+  if (arrival) setHidden((cur) => (cur.size ? new Set<string>() : cur));
   ctlRef.current = out.state;
   setCtl(out.state);
   if (out.epoch) { markSceneReady(false); markSettled(false); setEpoch((n) => n + 1); }
@@ -699,6 +744,54 @@ export default function V2() {
   return plate ? {focus: ids} : {focus: ids, frame: ids};
  }, [shell.studio, plate, basket]);
 
+ /**
+  * ── THE ONE STATE THE RENDERER SEES ────────────────────────────────────────────────────────────
+  *
+  * MERGED, not `plate ?? studioFrame`. The plate carries opacity, roles, padding and background and
+  * must always win on those; `studioFrame` only ever supplies `focus`/`frame`, and only when the
+  * plate has no focus of its own — so spreading it last adds the framing without touching anything
+  * else. With `??` the fallback was unreachable the moment a scene existed, which is precisely the
+  * focus-less-scene case it was extended to cover (S1 round 2, Medium).
+  *
+  * S3 adds the session-hidden layer, and it is the LAST word on `opacity` by construction: a fresh
+  * object is built from whatever the plate produced and `0` is written for every element of every
+  * hidden concept. `app/scene.tsx:765` reads `alpha > 0` into the visibility lane, so alpha 0 is
+  * NOT DRAWN rather than drawn transparent — the same mechanism a scene's own `styles` uses, which
+  * is why the member eye and the session eye look identical on screen and differ only in what the
+  * link reproduces.
+  *
+  * ⚠️ A FRESH OBJECT IDENTITY EVERY TIME THE SET CHANGES. `app/scene.tsx`'s change guard compares
+  * `s.opacity` by REFERENCE (scene.tsx:738), so a map mutated in place never reaches the GPU and
+  * the failure mode is a correct-looking render of the PREVIOUS state.
+  */
+ /**
+  * ⚠️ A REFUSAL OPENS THE PANEL IT IS WRITTEN INTO — the studio's twin of the phone's
+  * `setDetent('half')`, and for the identical reason.
+  *
+  * The controller refuses atomically and hands back a sentence; `spec.md` D11 puts that sentence at
+  * the top of the Selection dock. A dock the reader has closed is `display:none`, so without this
+  * the promised "visible message" would be written somewhere nobody can see — which is exactly the
+  * defect the phone side already fixed once (codex review 2, Medium 9) and which the studio
+  * reproduced because its copy of `refused` was never rendered at all until S3.
+  *
+  * Guarded on `!includes`, so a refusal with the dock already open does not re-publish the dock set.
+  */
+ useEffect(() => {
+  if (!refused || !shell.studio) return;
+  if (!shell.docks.includes('selection')) shell.toggleDock('selection');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, [refused, shell.studio]);
+
+ const renderState = useMemo(() => {
+  const base = {...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET};
+  if (!hidden.size) return base;
+  const opacity: Record<string, number> = {...(base.opacity ?? {})};
+  for (const id of hidden) {
+   for (const el of conceptsById.get(id)?.elements ?? [id]) opacity[el] = 0;
+  }
+  return {...base, opacity};
+ }, [state, plate, studioFrame, hidden, conceptsById]);
+
  return <main
   className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
   data-phase={phase} data-detent={detent} data-ground={background} data-tier={shell.tier}
@@ -722,6 +815,8 @@ export default function V2() {
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
    findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
+   dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide}
+   treeQuery={treeQuery} onTreeQuery={setTreeQuery}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
       In the studio it is Ctrl+K's centred modal; below 768 it is `spec.md`'s A4 bottom sheet,
@@ -768,7 +863,9 @@ export default function V2() {
     // the plate has no focus of its own — so spreading it last adds the framing without touching
     // anything else. With `??` the fallback was unreachable the moment a scene existed, which is
     // precisely the focus-less-scene case it was extended to cover (round 2, Medium).
-    state={{...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET}}
+    // S3 appends `sessionHidden` LAST, and it is a MERGE into `opacity` rather than a replacement:
+    // the plate's own per-structure alphas must survive a session override of a different structure.
+    state={renderState}
     // THE STUDIO-ONLY FRAMING OPTION (app/scene.tsx `studio`). A separate prop, never part of
     // `SceneState` and never `insets`: the phone supplies insets too, and SceneState is what the
     // codec serialises into a teaching blob.
@@ -883,18 +980,26 @@ export default function V2() {
      <button type="button" onClick={() => dispatch({type: 'reset-view'})}>{tr('view.reset')}</button>
     </div>
 
-    <div className="v2-views" role="group">
+    {/* ⚠️ S3: THE VIEWS ROW AND THE DESCRIPTION STAND DOWN WHILE THE LAYERS PANEL IS OPEN, and that
+        is a MEASURED fix rather than a tidy-up. With both of them in the scroller the tree's first
+        row started at y ≈ 790 on a 390×844 phone — inside a margin whose high detent is 405 px, so
+        the reader had to scroll past two control rows and a paragraph to reach the list they asked
+        for. `spec.md` A3 draws the tree directly beneath the name pair for exactly this reason.
+        It follows the pattern the margin already uses (`.v2-set` is hidden whenever a panel is
+        open): a panel is a MODE, and the controls it is not about step aside. Both come straight
+        back when the panel closes; nothing is unreachable. */}
+    {!(panel === 'systems' && shell.sheet) && <div className="v2-views" role="group">
      {(['three-quarter', 'front', 'side', 'back'] as View[]).map((v) => <button
       type="button" key={v} aria-pressed={state.view === v} className={state.view === v ? 'is-on' : ''}
       onClick={() => dispatch({type: 'set-view', view: v})}>{tr(`view.${v}`)}</button>)}
-    </div>
+    </div>}
 
     {/* THE DESCRIPTION SITS BELOW THE CONTROLS, and that ordering is the CLS fix rather than a
         taste call: it only exists once the atlas has resolved the focused structure, so anything
         rendered beneath it is pushed down when it arrives. Measured at 1440x900 — 0.0025, named
         by the observer as div.v2-actions and div.v2-views, i.e. exactly the two rows that used
         to follow it. */}
-    {focused && <p className="v2-desc">{describe(focused.name, systemId)}</p>}
+    {focused && !(panel === 'systems' && shell.sheet) && <p className="v2-desc">{describe(focused.name, systemId)}</p>}
 
     {/* THE IN-MARGIN SEARCH LIST IS GONE — it is the A4 sheet now (the Find button above). What
         replaced it is strictly more: three lanes instead of one, per-lane denominators, the matched
@@ -910,7 +1015,28 @@ export default function V2() {
         wrote `['skeletal', …]` straight into the intent, and the very next scene inherited the
         ghost). The one-way door still closed — it just cost a click. Found by the S0 stand-in
         review, H3, with an executed five-step counterexample. */}
-    {panel === 'systems' && <div className="v2-systems">
+    {/* ── S3: THE PHONE'S LAYERS TREE, IN THE HIGH DETENT (`spec.md` A3) ──────────────────────
+        It replaces the flat fifteen-system checkbox list. A3 draws the tree HERE — "margin tree
+        header + filter + 48/60 px rows scroll beneath the selected name" — not in a sheet, and the
+        margin is where it fits: the high detent is min(48dvh, 420), and the tree is the one new
+        surface that wants exactly a scrolling column rather than a 724 px overlay.
+
+        RC5 is satisfied by construction rather than by luck. The header (56), the rail (45) and
+        both detents (108 / min(48dvh,420)) are untouched; this changes only what the ALREADY
+        EXISTING `panel === 'systems'` branch renders INSIDE the margin's scroller, which is a
+        container that already scrolled. The oracle rows measure it rather than taking my word.
+
+        ⚠️ THE SAME COMPONENT AS THE STUDIO'S, deliberately. `spec.md` amends the kickoff to put the
+        tree on the phone too, and two implementations of a tri-state membership tick is how the two
+        would come to disagree about what a tick means. The system checkbox the reader had here is
+        not lost — it is the system row's EYE, which reads and writes the same `visibleIntent`. */}
+    {/* ── THE TABLET'S FLAT SYSTEM LIST, UNCHANGED (768–1179 until S6) ────────────────────────
+        ⚠️ THIS CONTROL IS THE HUMAN'S SYSTEM SET, SO IT READS AND WRITES THE INTENT — never
+        `render.visible`, which a scene's skeletal ghost legitimately overwrites. (S0 stand-in
+        review, H3: it both DISPLAYED `render.visible`, so after a ghost link the human's own choice
+        read as OFF, and RECOMPUTED the next set from it, so one click wrote `['skeletal', …]`
+        straight into the intent.) Kept verbatim; the phone's replacement is the tree below. */}
+    {panel === 'systems' && !shell.sheet && <div className="v2-systems">
      {SYSTEMS.filter((s) => counts[s.id] > 0).map((s) => <label key={s.id} className={visibleIntent.includes(s.id) ? 'is-on' : ''}>
       <input type="checkbox" checked={visibleIntent.includes(s.id)} onChange={() => dispatch({type: 'set-visible', visible: visibleIntent.includes(s.id) ? visibleIntent.filter((x) => x !== s.id) : [...visibleIntent, s.id]})}/>
       <span className="v2-box" aria-hidden="true"/>
@@ -918,6 +1044,31 @@ export default function V2() {
       <span>{t.system(s.id, s.name)}</span>
       <b>{counts[s.id]}</b>
      </label>)}
+    </div>}
+
+    {/* ⚠️ THE TREE IS A **PHONE** SURFACE (<768), AND THE TABLET KEEPS ITS FLAT SYSTEM LIST.
+        The first build rendered the tree for every non-studio tier and `verify-regress`'s
+        `plain-entry-widths` caught it immediately: at 1100 px and 1179 px "Systems opens the system
+        list" measured **0 system rows**, because `.v2-systems` had been replaced by the tree. That
+        is the kickoff's binding constraint doing its job — "768–1179 keeps today's behaviour until
+        S6" — and `spec.md` agrees for a different reason: T2 puts the tablet's Layers in the shared
+        RIGHT SHEET, not in the margin, so the margin tree would have been the wrong surface there
+        even if the tier had been open for changes. `shell.sheet` is exactly `width < 768`. */}
+    {panel === 'systems' && shell.sheet && <div className="v2-tree-phone">
+     {/* FILTER FIRST, per A3: "margin tree header + filter + 48/60 px rows scroll beneath the
+         selected name". The rows scroll; the filter does not scroll away from them. */}
+     <div className="v2-side-filter">
+      <label>
+       <input type="search" value={treeQuery} onChange={(e) => setTreeQuery(e.target.value)}
+        placeholder={tr('panel.filter')} aria-label={tr('panel.filter')}/>
+      </label>
+     </div>
+     <Tree
+      t={t} tr={tr} atlas={atlas} dicts={dicts} picks={picks} scene={scene}
+      visibleIntent={visibleIntent} isolate={state.isolate} dispatch={dispatch}
+      hidden={hidden} onHide={hide} focusedId={focused?.id ?? null} onFocus={focusPick}
+      query={treeQuery} phone coarse={shell.coarse}
+     />
     </div>}
 
     {panel === 'none' && basket.length > 0 && <div className="v2-set">

@@ -65,6 +65,31 @@
  *                       id so two identical scenes share one R2 entry). Presentation order is a
  *                       different concern and must never be stored as one. No drag ordering, ever.
  *
+ * ══ AMENDED BY S3 (2026-09-12) — WHAT THE EYE ACTUALLY MEANS, PER ROW TYPE ═════════════════════
+ * The deferral above was honoured: the tree ships with NO new codec field, and the eye is not one
+ * control with one meaning. It is THREE, chosen by what the row IS, and each one states its own
+ * serialisation in its own tooltip (opus-plan-review-2.md RC8 — an eye whose serialisation is not
+ * in its tooltip is refused).
+ *
+ *   A SYSTEM ROW        → `set-visible`. Page state, serialised as the legacy `system=` key. Round
+ *                         trips. ⚠️ IT ALSO FORCES `isolate:false` (see the command below), so the
+ *                         control SAYS so: the tooltip names both effects, and while isolate is on
+ *                         the eye's label carries the consequence rather than performing it
+ *                         silently. That is the RC8 requirement, discharged by disclosure.
+ *   A SCENE-MEMBER ROW  → `set-opacity`, i.e. `styles[id].opacity = 0`. Round-trips inside the
+ *                         blob. It is THE SAME FACT as the Selection panel's opacity slider — one
+ *                         fact, two controls, one command — so the two can never disagree.
+ *   A NON-MEMBER ROW    → a RENDER-ONLY override. It is not a command at all: the controller never
+ *                         sees it, nothing is serialised, and `app/v2/page.tsx` merges it into the
+ *                         renderer's `opacity` map after the plate. It is drawn visibly differently
+ *                         (a dashed eye), its tooltip says "this session only, not in the link",
+ *                         and it is DISCARDED whenever a scene is applied — because a saved view
+ *                         that opened with a structure mysteriously missing is the worse failure
+ *                         (`spec.md`: "Opening a saved scene/tab resets these session overrides").
+ *
+ * The fourth possibility — a real per-part visibility field in the codec — is still not built and
+ * still not needed: none of the three above invents one.
+ *
  * ══ WHY A PURE REDUCER ═════════════════════════════════════════════════════════════════════════
  * Every rule above is a statement about a STATE TRANSITION, so it is testable without a browser,
  * a renderer or React — and `app/v2/page.tsx` cannot be unit-tested at all (Node strips types, not
@@ -155,7 +180,27 @@ export type Command =
  | {type: 'set-view'; view: View}
  | {type: 'reset-view'}
  | {type: 'set-visible'; visible: SystemId[]}
- | {type: 'set-isolate'; on: boolean};
+ | {type: 'set-isolate'; on: boolean}
+ /**
+  * ── S3. THE TREE'S TICK — ONE ATOMIC TRANSACTION FOR ONE ROW AND FOR A WHOLE SYSTEM ───────────
+  *
+  * A child tick is `{ids: [oneId], on}`; a system's bulk tick is the same command with every
+  * descendant in it. ONE path, deliberately: `spec.md` requires the bulk form to "add/remove exact
+  * descendant requests atomically" and to refuse the WHOLE operation over either bound, and a
+  * separate single-tick path is how the two would drift into disagreeing about that.
+  *
+  * NOT A CAMERA INTENT (rule 5). Ticking a structure in a list must not throw away the reader's
+  * pose — that is the same reason `add` and `remove` do not refit.
+  */
+ | {type: 'tick'; ids: readonly string[]; on: boolean}
+ /**
+  * ── S3. PER-STRUCTURE ALPHA — the Selection slider and the member row's eye, one command ───────
+  * `styles[id].opacity`. Scene members only; a non-member is refused rather than silently added to
+  * the scene (`validateScene` rejects a style naming a non-member, so this is the codec's rule
+  * surfaced rather than a policy invented here). `null` REMOVES the style entry, which is how
+  * "back to normal" differs from "explicitly 100%".
+  */
+ | {type: 'set-opacity'; id: string; opacity: number | null};
 
 export interface Outcome {
  state: V2State;
@@ -439,6 +484,68 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    };
   }
 
+  // ── S3: the tree's membership transaction ─────────────────────────────────────────────────
+  case 'tick': {
+   const asked = uniq(cmd.ids);
+   if (!asked.length) return {state};
+   const have = new Set(state.picks);
+   // THE OPERATION IS COMPUTED FIRST AND COMMITTED ONCE. Not a fold over single adds: a fold that
+   // hits the bound halfway leaves HALF the system ticked, which is the silent truncation this
+   // whole file exists to refuse. Either every requested id moves or none does.
+   const picks = cmd.on
+    ? [...state.picks, ...asked.filter((id) => !have.has(id))]
+    : state.picks.filter((id) => !asked.includes(id));
+   if (picks.length === state.picks.length && cmd.on) return {state};   // nothing to add
+   if (picks.length === state.picks.length && !cmd.on) return {state};  // nothing to remove
+   const tooMany = overBound(picks);
+   if (tooMany) return {state, rejected: tooMany};
+   if (!state.scene) {
+    // Untick-to-empty is a legitimate end state OUTSIDE scene mode: it is what `Clear` does, and
+    // the page renders the empty state for it. `focusId` follows what is left.
+    return {state: {...state, picks, focusId: picks.includes(state.focusId ?? '') ? state.focusId : (picks[0] ?? null)}};
+   }
+   if (!picks.length) {
+    // IN SCENE MODE IT IS REFUSED, not silently turned into a clear. `validateScene` rejects a
+    // scene with no structures, and emptying a teaching link by unticking the last row would
+    // discard its title and note as a side effect of a checkbox.
+    return {state, rejected: 'a view needs at least one structure — use Clear to leave this view'};
+   }
+   const inScene = new Set(state.scene.structures.map((s) => s.id));
+   const structures = cmd.on
+    // Joining structures are CONTEXT, exactly as `add` rules: a primary is a claim about what the
+    // link teaches, and a row the reader ticked afterwards is not that.
+    ? [...state.scene.structures, ...asked.filter((id) => !inScene.has(id)).map((id) => ({id, role: 'context' as Role}))]
+    : state.scene.structures.filter((s) => !asked.includes(s.id));
+   // Every reference to a departing structure is reconciled, or the scene cannot encode (rule 4).
+   const gone = new Set(structures.map((s) => s.id));
+   const out = commitScene(state, {
+    ...state.scene,
+    structures,
+    camera: {...state.scene.camera, focus: state.scene.camera.focus.filter((f) => gone.has(f))},
+    styles: state.scene.styles.filter((s) => gone.has(s.id)),
+    annotations: state.scene.annotations.filter((a) => {
+     const targets = (a.type === 'arrow' ? [a.from, a.to] : [a.target]).filter((x): x is string => !!x);
+     return targets.length > 0 && targets.every((x) => gone.has(x));
+    }),
+   }, state.render);
+   return out;
+  }
+  case 'set-opacity': {
+   if (!state.scene) {
+    // NO SCENE, NO STYLE. `styles` is a scene field; outside scene mode there is nowhere to put it
+    // and the render-only override in the page is the honest surface. Said, not silently ignored.
+    return {state, rejected: 'opacity is part of a saved view — this page is not showing one'};
+   }
+   if (!state.scene.structures.some((s) => s.id === cmd.id)) {
+    return {state, rejected: 'opacity applies to a structure in this view — add it first'};
+   }
+   const styles = state.scene.styles.filter((s) => s.id !== cmd.id);
+   // `null` removes the entry rather than writing 1: an explicit 1 and an absent style render the
+   // same today, but they are different facts, and the blob should carry the smaller one.
+   if (cmd.opacity !== null) styles.push({...(state.scene.styles.find((s) => s.id === cmd.id) ?? {}), id: cmd.id, opacity: Math.min(1, Math.max(0, cmd.opacity))});
+   return commitScene(state, {...state.scene, styles}, state.render);
+  }
+
   // ── camera intent ─────────────────────────────────────────────────────────────────────────
   case 'focus': {
    if (!state.picks.includes(cmd.id)) return {state};
@@ -488,9 +595,15 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // Not a camera intent: turning a system off must not refit.
    //
    // THE HUMAN IS SPEAKING, so this writes BOTH the render value and the intent it came from.
-   // ⚠️ S3: this command also clears `isolate` unconditionally, so a system eye silently
-   // un-isolates an isolated scene. Surface that in the control's text or refuse the toggle while
-   // isolate is on — opus-plan-review-2.md RC8.
+   //
+   // ⚠️ S3, RC8 DISCHARGED BY DISCLOSURE, NOT BY A BEHAVIOUR CHANGE. This command clears `isolate`
+   // unconditionally, and that is CORRECT: isolate means "draw only the selection", so a system
+   // the reader just switched on would be invisible and the control would read as broken. What was
+   // wrong was that nothing SAID so. The tree's system eye now carries both effects in its tooltip
+   // (`tree.eyeSystem` / `tree.eyeSystemIsolate` in copy.ts), so the reader is told before the
+   // click rather than surprised after it. The alternative RC8 allows — refusing the toggle while
+   // isolate is on — was weighed and rejected: it makes a working control unusable in the exact
+   // mode where a reader most wants to add context back.
    return {state: {...state, visibleIntent: cmd.visible, render: {...state.render, isolate: false, visible: cmd.visible}}};
   }
   case 'set-isolate': {

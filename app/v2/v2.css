@@ -283,3 +283,56 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
 @media (prefers-reduced-motion:reduce){
  *,::before,::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
 }
+
+/* ══ THE PHONE'S LAYERS TREE (L31 v2.1b+c, S3) ══════════════════════════════════════════════════
+   `spec.md` A3: the tree lives in the HIGH DETENT, under the selected name — "margin tree header +
+   filter + 48/60 px rows scroll beneath the selected name" — not in a sheet. The margin is where it
+   fits: the high detent is min(48dvh, 420) and the tree wants a scrolling column, not a 724 px
+   overlay.
+
+   ⚠️ THE MARGIN'S GEOMETRY IS UNTOUCHED (RC5). This styles the INSIDE of `.v2-margin-scroll`, a
+   container that already scrolled, in the branch that already existed (`panel === 'systems'`). The
+   header (56), the rail (45) and both detents are declared elsewhere in this file and are not
+   redeclared here.
+
+   `min-height` rather than a fixed height, because the tree is one of several things that can be in
+   the scroller and the detent is a dvh fraction: a fixed height would either overflow the margin on
+   a short phone or leave a gap on a tall one. The 260 px floor is what makes it a LIST rather than a
+   peephole; the scroller above it absorbs the rest. */
+/* ⚠️ THE PHONE'S TREE BOX IS ITS OWN BOUNDED SCROLLER, and the first build got that wrong in a way
+   that only a virtualised list makes fatal. `.v2-margin-scroll` already scrolls, so an unbounded
+   `.v2-tree-box` simply grew to its content (MEASURED: clientHeight 780 = scrollHeight 780 with the
+   fifteen systems collapsed) and let the MARGIN do the scrolling. The virtualiser reads
+   `.v2-tree-box`'s own `scrollTop`, which then never changes — so expanding one system would have
+   drawn the first window and several thousand pixels of BLANK below it, while the scrollbar promised
+   content. A bounded box makes the element that scrolls and the element that is measured the same
+   element. Caught by reading the measurement beside the screenshot, not by the screenshot: with
+   every system collapsed the whole tree fits and the defect is invisible. */
+.v2-tree-phone{display:flex;flex-direction:column;margin-top:10px;min-height:0}
+.v2-tree-phone .v2-side-filter{padding:0 0 8px}
+.v2-tree-phone .v2-side-filter label{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:1px solid var(--v2-line);border-radius:10px;background:var(--v2-paper-2,#f4f2ee);font-size:14px}
+.v2-tree-phone .v2-side-filter input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--v2-ink);outline:none}
+.v2-tree-phone .v2-side-sub{padding:0 0 8px;margin:0;font-size:12px;line-height:16px;color:var(--v2-ink-2)}
+/* The high detent is min(48dvh, 420); the handle (44), the name pair (64), the action row and the
+   filter take about half of it. `32dvh` capped at 260 is what is left, and it is expressed in dvh
+   rather than px so a short phone gets a shorter list instead of an overflowing margin. */
+.v2-tree-phone .v2-tree-box{flex:0 0 auto;height:min(32dvh,260px);min-height:160px;overflow-y:auto;overscroll-behavior:contain;padding:0}
+.v2-tree-phone .v2-tree{list-style:none;margin:0;padding:0}
+.v2-tree-phone .v2-tree-row{display:flex;align-items:center;gap:10px;padding:0 4px;border-radius:8px;box-sizing:border-box}
+.v2-tree-phone .v2-tree-row.is-concept{padding-left:22px}
+.v2-tree-phone .v2-tree-row.is-on{background:var(--v2-accent-soft,#e6f4f4)}
+.v2-tree-phone .v2-tree-row.is-hidden .v2-tree-name b,.v2-tree-phone .v2-tree-row.is-hidden .v2-tree-name i{opacity:.45}
+.v2-tree-phone .v2-tw{width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0}
+/* 24 px TICK AND 44 px EYE — the coarse-target rule, applied here rather than inherited: this tree
+   is below 768 and `shell.css`'s coarse block is scoped to `.v2-studio`, which does not exist here. */
+.v2-tree-phone .v2-tick{width:24px;height:24px;border-radius:6px;border:1.5px solid var(--v2-line);flex:0 0 24px;display:flex;align-items:center;justify-content:center;background:var(--v2-surface,#fff);color:var(--v2-surface,#fff)}
+.v2-tree-phone .v2-tick.is-on,.v2-tree-phone .v2-tick.is-mixed{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-tree-phone .v2-swatch{flex:0 0 3px;width:3px;align-self:stretch;margin:10px 0;border-radius:2px}
+.v2-tree-phone .v2-tree-name{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden;background:none;border:0;padding:0;font:inherit;color:inherit}
+.v2-tree-phone .v2-tree-name b,.v2-tree-phone .v2-tree-name i,.v2-tree-phone .v2-tree-name s{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.v2-tree-phone .v2-tree-name b{font-size:14px;line-height:20px;font-weight:500;color:var(--v2-ink)}
+.v2-tree-phone .v2-tree-name i{font-size:12px;line-height:16px;font-style:normal;color:var(--v2-ink-2)}
+.v2-tree-phone .v2-tree-name s{font-size:11px;line-height:15px;text-decoration:none;color:var(--v2-ink-3)}
+.v2-tree-phone .v2-tree-row>em{flex-shrink:0;min-width:4ch;text-align:right;font-style:normal;font-size:12px;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-tree-phone .v2-eye{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0;border-radius:8px;background:none;border:0}
+.v2-tree-phone .v2-eye.is-session.is-off{outline:1px dashed var(--v2-ink-3);outline-offset:-8px}

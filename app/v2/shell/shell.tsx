@@ -36,7 +36,9 @@
  */
 import {useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
-import type {T} from '../../i18n/dict';
+import type {Dicts, T} from '../../i18n/dict';
+import {atlasIndex} from '../find.ts';
+import Tree from './tree.tsx';
 import {LANGS, LANG_LABELS, type Lang} from '../../i18n/ui';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
@@ -119,6 +121,15 @@ export interface ShellProps {
   *  (the A4 sheet) and this component renders only at >=1180. The shell owns the button, the page
   *  owns the surface, and `useShell` owns the single piece of state both read. */
  findOpen: boolean; onFind(open: boolean): void;
+ /** ── S3 ─────────────────────────────────────────────────────────────────────────────────── */
+ dicts: Dicts;
+ visibleIntent: SystemId[];
+ /** The session-only hidden set — the NON-MEMBER eye. Owned by `page.tsx` (it merges it into the
+  *  renderer's opacity map), never serialised, cleared when a scene is applied. */
+ hidden: ReadonlySet<string>;
+ onHide(id: string, on: boolean): void;
+ /** The sidebar's filter box. Lifted here so the head can render it and the tree can read it. */
+ treeQuery: string; onTreeQuery(q: string): void;
  /** Sheet presentation below 768 — the phone path for the `?` map. */
  sheet: boolean;
 }
@@ -256,48 +267,32 @@ export default function Shell(p: ShellProps) {
  const [tab, setTab] = useState<'general' | 'language' | 'about'>('general');
 
  /**
-  * THE SIDEBAR'S NUMBERS, DERIVED — never the fifteen literals the mock printed.
+  * ⚠️ S3 REMOVED THE FOURTH COPY OF THE GROUPING RULE. This component used to derive its own
+  * `systemConcepts` inline — a concept's system is the MODAL system of its elements — which made
+  * FOUR implementations of one rule: here, `find.ts indexOf()`, `selection.ts dominantSystem` and
+  * (wrongly) the palette's first `parts[].conceptId` version, whose disagreement with the other
+  * three was S2's High 2. The rule now lives once, in `find.ts`, memoised per atlas in a `WeakMap`,
+  * and both the tree and this header read it.
   *
-  * `Concept` carries no `system` (app/anatomy.ts:20); only `Part` does. So a concept's system is the
-  * MODAL system of its elements — "assigned once by dominant system", which is exactly what
-  * `spec.md` §Fixture truth specifies those counts to be. Computing it means the column can never
-  * disagree with the atlas that ships beside it, which a hardcoded 634 would do the first time a
-  * grouping is re-curated. Ties go to the first element's system: deterministic, and the case is
-  * vanishingly rare because a concept's parts are almost always one system by construction.
+  * MEASURED BEFORE REPLACING, because a count that moves silently is the defect: on the live atlas
+  * all fifteen counts are identical between the two implementations, both total 3,432, and neither
+  * leaves a concept unassigned (`.artifacts/L31/v21bc/s3/count-compare.txt`). The de-duplication
+  * moves no number.
+  *
+  * DETERMINISTIC ORDER = `anatomy.ts`'s declaration order, and that is a MEASURED decision rather
+  * than the obvious one. The mock's column is sorted by concept count descending, and so was S0's
+  * first build — but the counts are derived from the ATLAS, which arrives ~1 s after the first
+  * paint, so every row was in one place before it landed and somewhere else after. The CLS oracle
+  * measured it immediately: 0.0124 at 1440×900 and 0.0062 at 1920×860, attributed by the browser's
+  * own observer to `li.v2-tree-row`, against a budget of 0.001. The declaration order is static and
+  * available in frame one. `spec.md` asks for "deterministic order", which this is; it is simply
+  * not the mock's order, and the trade is a visual nicety for the CLS property the design rests on.
   */
- const systemConcepts = useMemo(() => {
-  const out = Object.fromEntries(SYSTEMS.map((s) => [s.id, 0])) as Record<SystemId, number>;
-  if (!p.atlas) return out;
-  const partSystem = new Map<string, SystemId>(p.atlas.parts.map((x: Part) => [x.id, x.system]));
-  for (const c of p.atlas.concepts) {
-   const tally = new Map<SystemId, number>();
-   for (const el of c.elements) {
-    const s = partSystem.get(el);
-    if (s) tally.set(s, (tally.get(s) ?? 0) + 1);
-   }
-   let best: SystemId | null = null, bestN = 0;
-   for (const [s, n] of tally) if (n > bestN) { best = s; bestN = n; }
-   if (best) out[best] += 1;
-  }
-  return out;
+ const liveSystems = useMemo(() => {
+  if (!p.atlas) return SYSTEMS.length;
+  const idx = atlasIndex(p.atlas);
+  return SYSTEMS.filter((s) => (idx.bySystem.get(s.id)?.length ?? 0) > 0).length;
  }, [p.atlas]);
- const conceptTotal = useMemo(() => Object.values(systemConcepts).reduce((a, b) => a + b, 0), [systemConcepts]);
- /**
-  * DETERMINISTIC ORDER = THE DECLARATION ORDER IN `anatomy.ts`, and that is a MEASURED decision
-  * rather than the obvious one.
-  *
-  * ⚠️ The mock's column is sorted by concept count descending, and so was the first build. But the
-  * counts are derived from the ATLAS, which arrives ~1 s after the first paint — so every one of the
-  * fifteen rows was in one place before it landed and somewhere else after. The CLS oracle measured
-  * it immediately: 0.0124 at 1440×900 and 0.0062 at 1920×860, attributed by the browser's own
-  * observer to `li.v2-tree-row`, against a budget of 0.001. This page's whole layout thesis is that
-  * nothing moves after the first frame; a sorted-by-late-data list cannot hold that.
-  *
-  * The declaration order is static, deterministic and available in frame one. `spec.md` asks for
-  * "deterministic order", which this is — it simply is not the mock's order, and the trade is a
-  * visual nicety for the CLS property the design is built on. Recorded in the worklog.
-  */
- const ordered = SYSTEMS;
 
  /**
   * THE CHIP'S TWO NUMBERS ARE THE BARRIER'S OWN FROZEN STAMPS — the same pair `verify-ux.mjs`
@@ -328,6 +323,9 @@ export default function Shell(p: ShellProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [p.basket, p.scene]);
  const title = p.caption.title || (p.focused ? t.name(p.focused.id, p.focused.name) : tr('app.title'));
+ /** A scene member's declared alpha, defaulting to 1 when it has no style entry. Read from the
+  *  CONTROLLER's scene, never from local state, so the slider and the tree's eye are one reading. */
+ const alphaOf = (id: string): number => p.scene?.styles.find((s) => s.id === id)?.opacity ?? 1;
 
  const dockTitle: Record<DockKey, string> = {
   selection: tr('panel.selection'), info: tr('panel.info'), json: tr('panel.json'), ask: tr('panel.ask'),
@@ -420,7 +418,11 @@ export default function Shell(p: ShellProps) {
   <div className="v2-side-head">
    {!p.sideStub && <>
     <h2>{tr('panel.layers')}</h2>
-    <em>{SYSTEMS.length}</em>
+    {/* THE COUNT IS THE ATLAS'S, not `SYSTEMS.length`: a system the manifest has no structures for
+        is not a row in the tree, so counting the declaration would announce fifteen and draw
+        fourteen. Before the atlas lands it falls back to the declaration, which is the same number
+        it has always been on this manifest and does not move when the real one arrives. */}
+    <em>{liveSystems}</em>
    </>}
    <span className="v2-grow"/>
    <button type="button" className="v2-tbtn" onClick={p.onToggleSide}
@@ -430,68 +432,67 @@ export default function Shell(p: ShellProps) {
      style={{transform: p.sideStub ? 'none' : 'scaleX(-1)'}}><path d={P.chev}/></svg>
    </button>
   </div>
-  <p className="v2-side-sub">{tr('panel.inventory')}</p>
-  {/* ⚠️ STILL INERT AT S2, AND ITS OWNER MOVES S2 → S3. `spec.md`'s table pairs "Find / filter" on
-      one row and assigns both to S2; S2 delivers the FIND half (the palette, which is live) and
-      deliberately leaves this one, because of what it filters.
-
-      The tree below is fifteen presentational system rows until S3 replaces them. A filter wired to
-      those would honour "Filter systems or structures…" for the systems and silently do nothing for
-      the structures — a control that half-works against its own placeholder, which reads as broken
-      rather than as forthcoming. The palette already searches all three populations (find.ts), so
-      nothing is unreachable in the meantime; this box is the S3 tree's filter and now names the
-      group that actually brings it. Recorded in the worklog as a deliberate departure from the
-      spec table's owner column. */}
-  <div className="v2-side-filter"><div className="v2-inert" title="S3" tabIndex={0} aria-disabled="true">
-   <Ico d={P.find} size={14}/>{tr('panel.filter')}
-  </div></div>
-  {/* PURE PRESENTATION. S3 replaces every row here with a virtualised tree carrying roving
-      tabindex, aria-posinset/setsize over the FILTERED collection and tri-state checkboxes — so
-      this deliberately builds no row component and holds no state. `role="tree"` is NOT claimed:
-      announcing a tree whose keyboard contract is not implemented is worse than announcing a list.
-      The eyes and ticks are `aria-disabled` controls, not decorations, because a reader must be
-      able to reach one and be told which group brings it. */}
-  <ul className="v2-tree">
-   {ordered.map((s) => {
-    // `state.visible` DELIBERATELY, and it is not the stale-reader defect the intent field exists to
-    // end. The EYE describes what is DRAWN — the effective visibility, which a scene's skeletal
-    // ghost legitimately overrides — where the TICK would describe the human's membership choice.
-    // Two facts, two sources; the eye reads the render and says so. (The phone's system CHECKBOX is
-    // the human's choice and reads `visibleIntent`; see page.tsx.)
-    const on = p.state.visible.includes(s.id);
-    return <li key={s.id} className="v2-tree-row">
-     <span className="v2-tw"><Ico d={P.chev} size={13}/></span>
-     {/* THE TICK IS EMPTY AT S0, and that is a correctness decision rather than laziness. The tick
-         means MEMBERSHIP ("in this view") and membership per system is not computed until S3;
-         driving it from `state.visible` would draw VISIBILITY in the membership control — which is
-         precisely the confusion the eye/tick split exists to prevent (RC8). The EYE does show real
-         system visibility, because that fact is live today and true. */}
-     <span className="v2-tick" title="S3" aria-hidden="true"/>
-     <span className="v2-swatch" style={{background: s.color}}/>
-     <span className="v2-tree-name" title={t.system(s.id, s.name)}>{t.system(s.id, s.name)}</span>
-     <em>{systemConcepts[s.id].toLocaleString()}</em>
-     <button type="button" className="v2-eye v2-inert" aria-disabled="true" title="S3"
-      aria-label={`${t.system(s.id, s.name)} — ${tr('panel.visibility')}`}>
-      <Ico d={on ? P.eye : P.eyeOff} size={14}/>
-     </button>
-    </li>;
-   })}
-  </ul>
+  {/* ⚠️ THE FILTER IS LIVE AS OF S3, and it took until S3 because of WHAT it filters. S2 owned it
+      on `spec.md`'s table and deliberately left it inert: the tree beneath it was fifteen
+      presentational rows, so a wired filter would have honoured "systems or structures" for the
+      systems and silently done nothing for the structures — a control that half-works against its
+      own placeholder reads as broken rather than as forthcoming. It now narrows BOTH populations
+      through the palette's own matcher (`find.ts best()`), so "胸骨" narrows this tree in an
+      English interface exactly as it narrows the palette. */}
+  {!p.sideStub && <div className="v2-side-filter">
+   <label>
+    <Ico d={P.find} size={14}/>
+    <input type="search" value={p.treeQuery} onChange={(e) => p.onTreeQuery(e.target.value)}
+     placeholder={tr('panel.filter')} aria-label={tr('panel.filter')}/>
+   </label>
+  </div>}
+  {!p.sideStub && <Tree
+   t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
+   visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
+   hidden={p.hidden} onHide={p.onHide} focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
+   query={p.treeQuery} coarse={p.coarse}
+  />}
   {/* ⚠️ NOTHING LATE-ARRIVING IN THE FOOT. It printed the derived concept total, which is 0 until
       the atlas lands and 3,432 after — a longer string that re-wrapped the foot, shrank the tree's
       flex box and moved every row. The CLS oracle attributed 0.0124 to `li.v2-tree-row` for exactly
-      that reason. The total is already on screen, at the top of the sidebar, in a line whose text is
-      static. */}
-  <div className="v2-side-foot">
+      that reason. The total is already on screen, at the top of the sidebar.
+      (The sub-line the tree renders is a count too — but it lives ABOVE the scroller, so its arrival
+      cannot move a row inside it. Measured again in S3's CLS rows rather than assumed.) */}
+  {!p.sideStub && <div className="v2-side-foot">
    <div>{tr('panel.membership')}</div>
    <div>{tr('panel.visibility')}</div>
-   <button type="button" className="v2-inert" aria-disabled="true" title="S3">{tr('panel.resetVisibility')}</button>
-  </div>
+   {/* LIVE AT S3, and it clears exactly ONE of the three visibility facts — the session-only
+       overrides. It deliberately does not touch the system set (that is serialised, and silently
+       re-enabling fifteen systems is not "reset") or a scene's declared opacities (those belong to
+       the link). `disabled` rather than inert when there is nothing to reset: the control works,
+       it simply has nothing to do. */}
+   <button type="button" disabled={p.hidden.size === 0}
+    title={p.hidden.size ? tr('tree.sessionHidden', {n: p.hidden.size}) : undefined}
+    onClick={() => p.onHide('*', false)}>{tr('panel.resetVisibility')}</button>
+  </div>}
  </aside>;
 
  // ── the right docks ─────────────────────────────────────────────────────────────────────────
  const selectionPane = <>
   <div className="v2-pane-body">
+   {/* ── THE ATOMIC REFUSAL (`spec.md` D11) — AND THE STUDIO HAD NO SURFACE FOR IT AT ALL ───────
+       ⚠️ FOUND BY S3's OWN ORACLE, and it is a defect S0 shipped rather than one S3 introduced:
+       `refused` has been a `ShellProp` since S0 and was never rendered anywhere at ≥1180. Nothing
+       noticed because until S3 no studio control could produce a refusal — the phone's margin drew
+       it (`.v2-refused`) and the studio's copy of the same fact went nowhere. The first bulk tick of
+       a 634-structure system refused correctly, changed nothing correctly, and said NOTHING.
+
+       `spec.md`: "Refusal is amber and persistent near its origin (D11), not a fleeting toast:
+       title, limit, unchanged count, corrective action." All four are here, and the dock is OPENED
+       when a refusal arrives (page.tsx) so the message can never land in a closed panel — the same
+       discipline as the phone's `setDetent('half')`. */}
+   {p.refused && <div className="v2-refusal" role="alert">
+    <b>{tr('refusal.title')}</b>
+    <p>{p.refused}</p>
+    <p className="v2-refusal-unchanged">{tr('refusal.unchanged', {n: p.picks.length})}</p>
+    <button type="button" className="v2-tbtn" onClick={() => p.focused && p.focusPick(p.focused.id)}>{tr('refusal.review')}</button>
+   </div>}
+   {p.basket.length > 0 && <p className="v2-limits">{tr('refusal.limit')}</p>}
    {p.basket.length === 0
     ? <p className="v2-empty-state">{tr('status.empty')}<br/>{tr('status.emptyHint')}</p>
     : <>
@@ -517,11 +518,25 @@ export default function Shell(p: ShellProps) {
         {role && <span className={`v2-badge role-${role}`}>{tr(`role.${role}`)}</span>}
         <em>{tr('margin.pieces', {n: b.elements.length.toLocaleString()})}</em>
        </div>
-       {/* The opacity slider is S3's — it is the same fact as the member eye (one fact, two
-           controls), so shipping it before the tree exists would put the two out of step. */}
-       {on && <div className="v2-card-row v2-opacity v2-inert" title="S3" tabIndex={0} aria-disabled="true">
-        <span className="v2-badge">{tr('panel.opacity')}</span><em>100%</em>
+       {/* ── THE OPACITY SLIDER (S3) — THE SAME FACT AS THE TREE'S MEMBER EYE ──────────────────
+           `spec.md`: "Opacity expands only on the focused Selection row; 100% puts the thumb at the
+           right endpoint." One fact, two controls, ONE command (`set-opacity`): the eye is the
+           0 / restore end of this slider, so the two cannot report different numbers.
+
+           ⚠️ IT IS A SCENE FIELD, so it exists only in scene mode. Outside one there is no `styles`
+           to write and the controller says so rather than accepting the drag and dropping it — the
+           row is `disabled` with the reason adjacent, which is the true-disabled case rather than
+           the inert one. */}
+       {on && <div className="v2-card-row v2-opacity">
+        <span className="v2-badge">{tr('panel.opacity')}</span>
+        <input type="range" min={0} max={100} step={5} value={Math.round(alphaOf(b.id) * 100)}
+         disabled={!p.scene}
+         aria-label={tr('tree.opacityOf', {name: t.name(b.id, b.name)})}
+         onChange={(e) => p.dispatch({type: 'set-opacity', id: b.id,
+          opacity: Number(e.target.value) >= 100 ? null : Number(e.target.value) / 100})}/>
+        <em>{alphaOf(b.id) === 0 ? tr('tree.hiddenWord') : `${Math.round(alphaOf(b.id) * 100)}%`}</em>
        </div>}
+       {on && !p.scene && <div className="v2-card-row"><s className="v2-note-sm">{tr('json.none')}</s></div>}
       </div>;
      })}
     </>}
