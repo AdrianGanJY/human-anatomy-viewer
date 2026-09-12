@@ -642,3 +642,31 @@ test('set-opacity clamps out-of-range values rather than storing them', () => {
   const lo = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: -3});
   assert.equal(decodeScene(lo.state.blob).styles.find((s) => s.id === 'FMA9611')?.opacity, 0);
 });
+
+// ══ codex round 3 — the corrective assertions ═══════════════════════════════════════════════════
+// Each is written against the DEFECT codex executed, not against the fix.
+
+test('codex r3 M2: restoring opacity keeps every OTHER style field', () => {
+  // The fixture's FMA9611 carries `emphasis:'secondary'`; FMA22359 carries `emphasis:'highlight'`.
+  const hidden = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: 0}).state;
+  const mid = decodeScene(hidden.blob).styles.find((s) => s.id === 'FMA9611');
+  assert.equal(mid?.opacity, 0);
+  assert.equal(mid?.emphasis, 'secondary', 'the sibling field survives the hide');
+  const {state} = reduce(hidden, {type: 'set-opacity', id: 'FMA9611', opacity: null});
+  const after = decodeScene(state.blob).styles.find((s) => s.id === 'FMA9611');
+  // THE DEFECT: the whole entry was dropped, so `emphasis` disappeared when the reader pressed show.
+  assert.ok(after, 'the style entry still exists');
+  assert.equal(after.opacity, undefined, 'only the opacity is gone');
+  assert.equal(after.emphasis, 'secondary', 'and the emphasis is NOT collateral damage');
+});
+
+test('codex r3 M2: an entry with nothing left but its id IS dropped', () => {
+  // FMA22449 has no style in the fixture, so setting and clearing must leave `styles` as it was.
+  const before = withScene();
+  const hidden = reduce(before, {type: 'set-opacity', id: 'FMA22449', opacity: 0.5}).state;
+  assert.ok(decodeScene(hidden.blob).styles.some((s) => s.id === 'FMA22449'));
+  const {state} = reduce(hidden, {type: 'set-opacity', id: 'FMA22449', opacity: null});
+  assert.ok(!decodeScene(state.blob).styles.some((s) => s.id === 'FMA22449'),
+    'an id-only entry is not carried in the blob');
+  assert.equal(state.blob, before.blob, 'and the scene is byte-identical to where it started');
+});

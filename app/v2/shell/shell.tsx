@@ -529,14 +529,21 @@ export default function Shell(p: ShellProps) {
            the inert one. */}
        {on && <div className="v2-card-row v2-opacity">
         <span className="v2-badge">{tr('panel.opacity')}</span>
+        {/* ⚠️ `mode === 'render'`, NOT merely "a scene exists" — codex round 3, H1. In EXPLORE mode
+            `sceneOpacities` draws every named structure solid (scene-codec.js:427-430), so a slider
+            at 0 would write 0 into the blob and change nothing on screen. Disabled with the reason
+            adjacent, which is the true-disabled case: the control exists and this scene cannot
+            express what it does. The tree's member eye is gated on the same fact. */}
         <input type="range" min={0} max={100} step={5} value={Math.round(alphaOf(b.id) * 100)}
-         disabled={!p.scene}
+         disabled={p.scene?.mode !== 'render'}
          aria-label={tr('tree.opacityOf', {name: t.name(b.id, b.name)})}
          onChange={(e) => p.dispatch({type: 'set-opacity', id: b.id,
           opacity: Number(e.target.value) >= 100 ? null : Number(e.target.value) / 100})}/>
         <em>{alphaOf(b.id) === 0 ? tr('tree.hiddenWord') : `${Math.round(alphaOf(b.id) * 100)}%`}</em>
        </div>}
-       {on && !p.scene && <div className="v2-card-row"><s className="v2-note-sm">{tr('json.none')}</s></div>}
+       {on && p.scene?.mode !== 'render' && <div className="v2-card-row">
+        <s className="v2-note-sm">{tr(p.scene ? 'panel.opacityExplore' : 'json.none')}</s>
+       </div>}
       </div>;
      })}
     </>}

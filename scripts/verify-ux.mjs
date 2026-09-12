@@ -734,8 +734,33 @@ for (const vp of SWEEP) {
        * mispositioned control inside the tree still reports its overlap.
        */
       const clippedAway = (el, r) => {
-        for (let p = el.parentElement; p; p = p.parentElement) {
+        /**
+         * ⚠️ AN ELEMENT WHOSE CONTAINING BLOCK ESCAPES THE SCROLLER IS NOT CLIPPED BY IT — codex
+         * round 3, Medium 6. The first version walked every overflow ancestor and assumed each one
+         * clips each descendant. A `position:fixed` control is laid out against the VIEWPORT unless
+         * an ancestor establishes a fixed containing block (transform / filter / perspective /
+         * will-change / contain / backdrop-filter), so it stays visible outside a scroller that the
+         * predicate would have said clipped it — and it would then vanish from BOTH the 44 px gate
+         * and the overlap gate. codex executed the extracted predicate with an overflow-auto
+         * ancestor at (0,200)-(264,500) and a fixed 20x20 button at (20,20): `CLIPPED true`.
+         *
+         * So the walk stops at the first ancestor that cannot contain this element. `sticky` is
+         * deliberately NOT exempt: it is laid out in flow and IS clipped by its scroller.
+         */
+        const contains = (p) => {
           const pcs = getComputedStyle(p);
+          return pcs.transform !== 'none' || pcs.perspective !== 'none' || pcs.filter !== 'none'
+            || pcs.backdropFilter !== 'none' || pcs.willChange !== 'auto' || pcs.contain !== 'none';
+        };
+        const pos = getComputedStyle(el).position;
+        let escaping = pos === 'fixed';
+        for (let p = el.parentElement; p; p = p.parentElement) {
+          if (escaping) {
+            if (!contains(p)) continue;   // still laid out against the viewport: this one cannot clip it
+            escaping = false;             // this ancestor IS its containing block; clipping resumes
+          }
+          const pcs = getComputedStyle(p);
+          if (pos === 'absolute' && pcs.position === 'static' && !contains(p)) continue;
           if (!/(auto|scroll|hidden)/.test(pcs.overflowY + pcs.overflowX)) continue;
           const pr = p.getBoundingClientRect();
           if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return true;
@@ -1448,7 +1473,14 @@ if (variant === 'v2') {
        * every binding" and a weak one, because it passes on nineteen rows of anything. Naming the
        * keys S1 bound is the direct reading.
        */
-      const KEY_ROWS = 20;
+      /**
+       * ⚠️ 20 -> 21, AND THAT IS S3 ADDING A ROW, NOT A RETUNE. The tree's eye had no keyboard path
+       * at all (codex round 3, Medium 3), so S3 bound `V` and put it in `KEY_MAP` under the tree
+       * group — a key the map must ADVERTISE, or it is a shortcut only the source knows about. The
+       * exact bound is what makes an accidental addition visible too, which is why it is a literal
+       * that has to be edited deliberately rather than a `>=`.
+       */
+      const KEY_ROWS = 21;
       check(vp.name, `[${STUDIO_V}] "?" opens the key map, traps focus inside it, and lists every binding`,
         !!modal && modal.focusInside && modal.rows === KEY_ROWS,
         modal ? `${modal.rows} rows, focusInside=${modal.focusInside}, sheet=${modal.sheet}` : 'no overlay opened',
@@ -1468,7 +1500,14 @@ if (variant === 'v2') {
        * promises and nothing answers, which is the defect keys.ts exists to prevent.
        */
       const S2_KEYS = ['Ctrl K / ⌘K', '/'];
-      const BOUND = [...S1_KEYS, ...S2_KEYS];
+      /**
+       * S3's THREE, on the same arithmetic. The tree's arrows and Space stopped being promises when
+       * the tree became real, and `V` is new. Wiring them drops the forthcoming count 6 -> 4, and
+       * the expression below is what makes that a MEASUREMENT rather than a literal: "21 rows,
+       * minus the 2 live at S0, minus S1's, minus S2's, minus S3's".
+       */
+      const S3_KEYS = ['↑ ↓ ← →', 'Space', 'V'];
+      const BOUND = [...S1_KEYS, ...S2_KEYS, ...S3_KEYS];
       const missingKeys = BOUND.filter((k) => !(modal?.keys ?? []).includes(k));
       /**
        * ⚠️ AND THE MAP SAYS WHICH KEYS THIS TIER ACTUALLY HAS. Guard 7 withholds the seven
@@ -1925,6 +1964,8 @@ if (variant === 'v2') {
    */
   async function holdUntilMoved(page, code, baseline, {attempts = 3, timeout = 6000} = {}) {
     let note = '';
+    /** Every attempt's OUTCOME, verbatim — see the note-building comment below (codex r3, M5). */
+    const history = [];
     for (let n = 1; n <= attempts; n++) {
       await page.bringToFront().catch(() => {});
       await page.mouse.move(200, 200).catch(() => {});
@@ -1942,6 +1983,7 @@ if (variant === 'v2') {
       ).then(() => true).catch(() => false);
       if (!held) {
         await page.keyboard.up(code).catch(() => {});
+        history.push(`#${n} the dispatcher never reported ${code} held`);
         note = `attempt ${n}: the dispatcher never reported ${code} held`;
         continue;
       }
@@ -1962,12 +2004,29 @@ if (variant === 'v2') {
       ).catch(() => {});
       if (outcome === 'moved') {
         const pose = await page.evaluate(POSE);
-        return {moved: true, attempts: n, pose, note: n > 1 ? `${n} attempts (the hold was lost ${n - 1}x to a blur)` : '1 attempt'};
+        /**
+         * ⚠️ THE NOTE REPORTS WHAT HAPPENED, NOT ONE ASSUMED CAUSE — codex round 3, Medium 5.
+         *
+         * It used to read "the hold was lost Nx to a blur" for EVERY retry, including retries where
+         * the hold was never lost and the CAMERA simply did not move within six seconds. codex
+         * executed the helper against an adapter that reported held-then-timeout on attempt 1 and
+         * held-then-moved on attempt 2, with ZERO blur events, and got
+         * `"2 attempts (the hold was lost 1x to a blur)"`. A real first-press failure would have
+         * been laundered into a deploy-gating pass with a fabricated environmental explanation —
+         * which is the same class of defect as the flake this helper was written to end, one level
+         * up. The outcomes are now carried verbatim.
+         */
+        const detail = n > 1 ? ` (attempt ${n} of ${attempts}; earlier: ${history.join(', ')})` : '';
+        return {moved: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}`};
       }
-      note = `attempt ${n}: ${outcome === 'lost' ? 'the hold was cleared before the camera moved (blur)' : 'the camera did not move within 6 s'}`;
+      const why = outcome === 'lost'
+        ? 'the hold was cleared before the camera moved (blur)'
+        : outcome === 'timeout' ? 'the camera did not move within 6 s' : String(outcome);
+      history.push(`#${n} ${why}`);
+      note = `attempt ${n}: ${why}`;
     }
     const pose = await page.evaluate(POSE);
-    return {moved: false, attempts, pose, note: `${attempts} attempts — ${note}`};
+    return {moved: false, attempts, pose, note: `${attempts} attempts — ${history.join(' · ') || note}`};
   }
   /** The same discipline for a hold whose POINT is to be held while something else is measured:
    *  wait until the dispatcher reports it, rather than assuming 200 ms was enough. */
@@ -3286,6 +3345,85 @@ if (variant === 'v2') {
         `posinset=${filtered.posinset} setsize=${filtered.setsize} against ${filtered.rows} mounted`,
         'setsize >= mounted');
 
+      /**
+       * ══ S3.9 — THE codex ROUND-3 CORRECTIVES, one row per finding, each written against the
+       *    DEFECT rather than against the fix ══════════════════════════════════════════════════
+       */
+      await treeHome();
+      // ── H1: in an EXPLORE scene the codec draws every member solid, so a member row's eye must
+      //    be the SESSION eye. The defect had it claim "saved in this view" over a visible mesh.
+      /**
+       * ⚠️ REACHED THROUGH THE FILTER, because the tree is VIRTUALISED. The first version expanded
+       * each system and looked for a ticked child — but a 634-row system mounts its first fifteen
+       * rows, and the §9 scene's structures are nowhere near the top of `atlas.concepts` order. It
+       * measured "no ticked structure row reachable in the tree" for a tree in which all of them are
+       * perfectly reachable, which is a statement about the mounted window and not about the
+       * product. The filter is the surface a reader would use, so the oracle uses it too.
+       */
+      const h1 = await page.evaluate(async () => {
+        const st = window.atlas.state();
+        const mode = window.atlas.plate?.()?.scene?.mode ?? 'explore';
+        const name = st.nameEn || st.name;
+        if (!name) return {error: 'the page reports no focused structure', mode};
+        const box = document.querySelector('.v2-side-filter input');
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        setter.call(box, name);
+        box.dispatchEvent(new Event('input', {bubbles: true}));
+        await new Promise((x) => setTimeout(x, 700));
+        const row = [...document.querySelectorAll('.v2-tree-row.is-concept')]
+          .find((c) => c.getAttribute('aria-checked') === 'true');
+        if (!row) return {error: `no ticked structure row after filtering to "${name}"`, mode, ids: st.ids.length};
+        const eye = row.querySelector('.v2-eye');
+        const kind = [...eye.classList].find((c) => c.startsWith('is-') && c !== 'is-off');
+        return {mode, kind, title: eye.getAttribute('title') ?? '', ids: st.ids.length, via: name};
+      });
+      check(vp.name, `[${S3_V}] in an EXPLORE scene a MEMBER row gets the SESSION eye (the codec draws members solid there)`,
+        !h1.error && h1.mode !== 'render' && h1.kind === 'is-session',
+        h1.error || `scene mode=${h1.mode}, eye kind=${h1.kind}`, 'is-session in explore mode');
+      check(vp.name, `[${S3_V}] and its tooltip does NOT claim the link reproduces it`,
+        !h1.error && !/saved in this view|保存在本视图|保存在本視圖/.test(h1.title) && h1.title.length > 0,
+        h1.error || `title="${String(h1.title).slice(0, 64)}"`, 'no "saved in this view" claim');
+
+      // ── M1: the BOTTOM of an expanded system must not be blank. The defect returned an empty
+      //    window because `firstAt` answered 0 past the end.
+      const bottom = await page.evaluate(async () => {
+        const row = document.querySelector('.v2-tree-row.is-system');
+        (row?.querySelector('.v2-tw[type=button]') ?? row?.querySelector('.v2-tree-name'))?.click();
+        await new Promise((r) => setTimeout(r, 400));
+        const box = document.querySelector('.v2-tree-box');
+        box.scrollTop = box.scrollHeight;            // all the way down, not halfway
+        await new Promise((r) => setTimeout(r, 450));
+        const rows = [...document.querySelectorAll('.v2-tree-row')];
+        const inView = rows.filter((r) => {
+          const a = r.getBoundingClientRect(), b = box.getBoundingClientRect();
+          return a.bottom > b.top && a.top < b.bottom;
+        });
+        return {scrollTop: Math.round(box.scrollTop), scrollH: Math.round(box.scrollHeight),
+          mounted: rows.length, inView: inView.length};
+      });
+      check(vp.name, `[${S3_V}] the BOTTOM of an expanded system is not blank (the window boundary, not its middle)`,
+        bottom.mounted > 0 && bottom.inView > 0,
+        `scrollTop ${bottom.scrollTop} of ${bottom.scrollH}: ${bottom.mounted} mounted, ${bottom.inView} inside the box`,
+        '> 0 rows visible');
+
+      // ── M3: the eye has a keyboard path of its own, and Space on a focused eye is left alone.
+      await treeHome();
+      const vKey = await page.evaluate(() => {
+        const row = document.querySelector('.v2-tree-row[tabindex="0"]') ?? document.querySelector('.v2-tree-row');
+        row?.focus();
+        const eye = row?.querySelector('.v2-eye');
+        return {before: eye?.getAttribute('aria-pressed'), name: row?.querySelector('.v2-tree-name b')?.textContent ?? ''};
+      });
+      await page.keyboard.press('v');
+      await page.waitForTimeout(400);
+      const vAfter = await page.evaluate(() => {
+        const row = document.activeElement?.closest?.('.v2-tree-row') ?? document.querySelector('.v2-tree-row');
+        return row?.querySelector('.v2-eye')?.getAttribute('aria-pressed');
+      });
+      check(vp.name, `[${S3_V}] V toggles the focused row's visibility (the eye's only keyboard path)`,
+        !!vKey.before && vAfter !== vKey.before,
+        `${vKey.name}: eye aria-pressed ${vKey.before} -> ${vAfter}`, 'it changed');
+
       // ── S3.8 THE KEYBOARD MOVES WITHIN THE FILTERED TREE AND NEVER ORBITS ────────────────────
       /**
        * Guard 4 of `keys.ts` declines every arrow while focus is inside `[role="tree"]`, and until
@@ -3341,6 +3479,28 @@ if (variant === 'v2') {
       await page.waitForTimeout(500);
       const afterSpace = await page.evaluate(() => ({n: window.atlas.state().ids.length,
         checked: document.activeElement?.getAttribute('aria-checked')}));
+      if (phone) {
+        /**
+         * ⚠️ MEASURED WITH THE TREE OPEN — codex round 3, Medium 4. The suite's own §5 TARGETS pass
+         * runs on the ENTRY state, where the tree is behind the Systems button and none of its
+         * controls exist; it reported "0 under 44px" while the phone's membership tick was 24x24.
+         * A target gate that never sees the surface is not a gate for it.
+         */
+        const small = await page.evaluate(() => {
+          const out = [];
+          for (const el of document.querySelectorAll('.v2-tree-phone button, .v2-tree-phone input')) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            if (r.width < 44 || r.height < 44) {
+              out.push(`${(el.getAttribute('aria-label') || el.className || el.tagName).slice(0, 26)}@${Math.round(r.width)}x${Math.round(r.height)}`);
+            }
+          }
+          return {small: out, total: document.querySelectorAll('.v2-tree-phone button, .v2-tree-phone input').length};
+        });
+        check(vp.name, `[${S3_V}] every control in the OPEN phone tree is >= 44x44`,
+          small.small.length === 0,
+          `${small.small.length} of ${small.total} under 44px${small.small.length ? ': ' + small.small.slice(0, 5).join(', ') : ''}`, '0');
+      }
       check(vp.name, `[${S3_V}] Space toggles membership on the focused row`,
         afterSpace.n !== beforeSpace || afterSpace.checked === 'mixed',
         `picks ${beforeSpace} -> ${afterSpace.n} (aria-checked=${afterSpace.checked})`, 'membership moved');

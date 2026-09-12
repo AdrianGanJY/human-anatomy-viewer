@@ -311,7 +311,7 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
 .v2-tree-phone{display:flex;flex-direction:column;margin-top:10px;min-height:0}
 .v2-tree-phone .v2-side-filter{padding:0 0 8px}
 .v2-tree-phone .v2-side-filter label{display:flex;align-items:center;gap:8px;min-height:44px;padding:0 12px;border:1px solid var(--v2-line);border-radius:10px;background:var(--v2-paper-2,#f4f2ee);font-size:14px}
-.v2-tree-phone .v2-side-filter input{flex:1;min-width:0;border:0;background:transparent;font:inherit;color:var(--v2-ink);outline:none}
+.v2-tree-phone .v2-side-filter input{flex:1;min-width:0;min-height:44px;border:0;background:transparent;font:inherit;color:var(--v2-ink);outline:none}
 .v2-tree-phone .v2-side-sub{padding:0 0 8px;margin:0;font-size:12px;line-height:16px;color:var(--v2-ink-2)}
 /* The high detent is min(48dvh, 420); the handle (44), the name pair (64), the action row and the
    filter take about half of it. `32dvh` capped at 260 is what is left, and it is expressed in dvh
@@ -325,10 +325,21 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
 .v2-tree-phone .v2-tw{width:24px;height:24px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0}
 /* 24 px TICK AND 44 px EYE — the coarse-target rule, applied here rather than inherited: this tree
    is below 768 and `shell.css`'s coarse block is scoped to `.v2-studio`, which does not exist here. */
-.v2-tree-phone .v2-tick{width:24px;height:24px;border-radius:6px;border:1.5px solid var(--v2-line);flex:0 0 24px;display:flex;align-items:center;justify-content:center;background:var(--v2-surface,#fff);color:var(--v2-surface,#fff)}
-.v2-tree-phone .v2-tick.is-on,.v2-tree-phone .v2-tick.is-mixed{background:var(--v2-accent);border-color:var(--v2-accent)}
+/* ⚠️ A 44 px TARGET WITH A 24 px PAINTED BOX — codex round 3, Medium 4. The first version made the
+   button itself 24x24, i.e. exactly the undersized target the studio's coarse rule had already been
+   corrected for, on the tier where every pointer is a finger. The box is drawn on a pseudo-element
+   so the control still LOOKS like the 24 px checkbox `spec.md` draws. */
+.v2-tree-phone .v2-tick{position:relative;width:44px;height:44px;border:0;background:none;flex:0 0 44px;display:flex;align-items:center;justify-content:center;border-radius:10px;color:var(--v2-surface,#fff)}
+.v2-tree-phone .v2-tick::before{content:"";position:absolute;width:24px;height:24px;border-radius:6px;border:1.5px solid var(--v2-line);background:var(--v2-surface,#fff)}
+.v2-tree-phone .v2-tick.is-on::before,.v2-tree-phone .v2-tick.is-mixed::before{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-tree-phone .v2-tick svg{position:relative;z-index:1}
+/* The disclosure is presentational on the phone for the same reason it is on coarse desktop — the
+   name owns the command — so it needs no target of its own. */
+.v2-tree-phone .v2-tw{width:26px}
 .v2-tree-phone .v2-swatch{flex:0 0 3px;width:3px;align-self:stretch;margin:10px 0;border-radius:2px}
-.v2-tree-phone .v2-tree-name{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden;background:none;border:0;padding:0;font:inherit;color:inherit}
+/* `align-self:stretch` so the button's RECT is the row's height (52/54), not its text's (20 px) —
+   the same correction the studio's coarse rule needed (codex round 3, Medium 4). */
+.v2-tree-phone .v2-tree-name{flex:1;align-self:stretch;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden;background:none;border:0;padding:0;font:inherit;color:inherit}
 .v2-tree-phone .v2-tree-name b,.v2-tree-phone .v2-tree-name i,.v2-tree-phone .v2-tree-name s{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 .v2-tree-phone .v2-tree-name b{font-size:14px;line-height:20px;font-weight:500;color:var(--v2-ink)}
 .v2-tree-phone .v2-tree-name i{font-size:12px;line-height:16px;font-style:normal;color:var(--v2-ink-2)}

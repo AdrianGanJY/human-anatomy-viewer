@@ -218,10 +218,28 @@ export default function Tree(p: TreeProps) {
   return n === 0 ? 'off' : n === kids.length ? 'on' : 'mixed';
  }, [idx, picked]);
 
- /** WHICH EYE THIS ROW HAS — the RC8 three-way split, decided by what the row IS. */
+ /**
+  * WHICH EYE THIS ROW HAS — the RC8 three-way split, decided by what the row IS **and by whether the
+  * codec actually honours the fact in this scene's MODE**.
+  *
+  * ⚠️ THE MODE CLAUSE IS A HIGH (codex round 3, H1), and the audit in `controller.ts` had already
+  * written the rule down: "PER-STRUCTURE ALPHA `styles[id].opacity`, resolved per MODE (explore
+  * draws every named structure solid)". I quoted that sentence and then built a control on top of it
+  * anyway. `sceneOpacities` (scene-codec.js:427-430) returns `{id: 1}` for EVERY member in explore
+  * mode, so in an explore scene `set-opacity` writes 0 into the blob and the renderer keeps drawing
+  * the structure at full alpha. codex executed it: `decodedStyle=[…"opacity":0]`, `uiEyeOn=false`,
+  * `slider=0`, `rendererAlpha=1`, `shown=true` — two controls saying "hidden" over a visible
+  * structure, which is the single worst thing a visibility control can do.
+  *
+  * So a scene member is a MEMBER row only in RENDER mode, where the style is honoured and
+  * round-trips. In EXPLORE mode it is a SESSION row: the override is applied by the page's opacity
+  * merge (so the picture always matches the control), nothing is written to the blob (so no
+  * unhonoured style is saved), and the tooltip says session-only — which is the truth there.
+  */
  const eyeKind = useCallback((row: TreeRow): EyeKind => {
   if (row.kind === 'system') return 'system';
-  return p.scene?.structures.some((s) => s.id === row.id) ? 'member' : 'session';
+  const isMember = p.scene?.structures.some((s) => s.id === row.id) ?? false;
+  return isMember && p.scene?.mode === 'render' ? 'member' : 'session';
  }, [p.scene]);
 
  const eyeOn = useCallback((row: TreeRow): boolean => {
@@ -281,7 +299,20 @@ export default function Tree(p: TreeProps) {
  /** Binary search for the first row whose bottom is below the scroll position. */
  const firstAt = useCallback((y: number) => {
   const a = rows.list;
-  let lo = 0, hi = a.length - 1, out = 0;
+  if (!a.length) return 0;
+  /**
+   * ⚠️ THE PAST-THE-END ANSWER IS THE LAST ROW, NOT ROW ZERO — codex round 3, Medium 1.
+   *
+   * The seed was `out = 0`, so when no row's bottom exceeded `y` — which is every query at or past
+   * the final row's bottom — the search returned 0. At the BOTTOM of the tree that made
+   * `from = firstAt(scrollTop)` large and `to = firstAt(scrollTop + height)` zero, i.e. an end
+   * before its start and an EMPTY window: the last screenful of the list rendered blank while the
+   * scrollbar promised content. codex executed the unchanged body over the real expanded-Skeleton
+   * sequence (649 rows, 35,016 px) at the phone's `height=260`, `scrollTop=34756`:
+   * `from=640, to=5, mounted=0`. The supplied virtualisation evidence scrolls to the MIDDLE, so it
+   * could not see the boundary.
+   */
+  let lo = 0, hi = a.length - 1, out = a.length - 1;
   while (lo <= hi) {
    const mid = (lo + hi) >> 1;
    if (a[mid].top + a[mid].h > y) { out = mid; hi = mid - 1; } else lo = mid + 1;
@@ -305,7 +336,19 @@ export default function Tree(p: TreeProps) {
    * virtualiser that un-virtualises exactly when the list is long enough to need it, and the row
    * that caught it was the one asserting "< 60 rows mounted". Pinning ONE row costs one node.
    */
-  const pinned = (active < from || active >= to) ? active : -1;
+  /**
+   * ⚠️ CLAMPED HERE, IN THE PURE COMPUTATION — a HIGH (codex round 3, H2).
+   *
+   * `active` was clamped in an EFFECT, which runs AFTER the render that uses it. Narrow the filter
+   * while the active index is past the end of the new collection and this memo appended
+   * `rows.list[active]` === `undefined`, and the row renderer dereferenced `row.system`. codex
+   * executed it through a real render harness with `expanded={skeletal}`, `active=100`,
+   * `query='femur'`: `TypeError: Cannot read properties of undefined (reading 'system')`. The
+   * reachable interaction is ordinary — expand Skeleton, arrow down past row 100, type in the
+   * filter. An effect cannot protect the render that schedules it.
+   */
+  const at = Math.min(active, a.length - 1);
+  const pinned = (at < from || at >= to) ? at : -1;
   return {from, to, pinned};
  }, [rows, scrollTop, height, firstAt, active]);
 
@@ -362,6 +405,26 @@ export default function Tree(p: TreeProps) {
    }
    e.preventDefault(); return;
   }
+  /**
+   * ⚠️ THE EYE HAS ITS OWN KEY, AND ACTIVATION KEYS ON THE EYE ARE LEFT ALONE — codex round 3,
+   * Medium 3.
+   *
+   * Every control inside a row carries `tabIndex={-1}` so the roving tabindex stays on the ROW, and
+   * the handler below bound Space and Enter unconditionally. Two consequences codex executed: a
+   * keyboard reader could change MEMBERSHIP but had no way at all to reach VISIBILITY (the separate
+   * control `spec.md` §Accessibility requires to be separately identifiable), and Enter/Space
+   * delivered while the eye itself held focus performed the row's action instead of the eye's —
+   * `Enter → ["focus FMA22359","preventDefault"]`, `Space → ["tick","preventDefault"]`.
+   *
+   * `V` is the visibility key. `spec.md`'s Tree row names Up/Down/Right/Left/Space and no more, so
+   * this is an ADDITION — recorded in `KEY_MAP` under the tree group so the `?` overlay lists it,
+   * rather than a shortcut only the source knows about. And when the event's target IS a button
+   * inside the row, the handler declines: the button is a button and owns its own activation.
+   */
+  const onOwnControl = e.target instanceof Element && e.target !== e.currentTarget
+    && !!e.target.closest('.v2-eye, .v2-tick, .v2-tw, .v2-tree-name');
+  if (k === 'v' || k === 'V') { toggleEye(row); e.preventDefault(); return; }
+  if (onOwnControl && (k === ' ' || k === 'Spacebar' || k === 'Enter')) return;
   if (k === ' ' || k === 'Spacebar') { toggleTick(row); e.preventDefault(); return; }
   if (k === 'Enter') {
    if (row.kind === 'system') toggleOpen(row.system);

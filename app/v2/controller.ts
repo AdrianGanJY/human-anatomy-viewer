@@ -79,6 +79,16 @@
  *   A SCENE-MEMBER ROW  → `set-opacity`, i.e. `styles[id].opacity = 0`. Round-trips inside the
  *                         blob. It is THE SAME FACT as the Selection panel's opacity slider — one
  *                         fact, two controls, one command — so the two can never disagree.
+ *                         ⚠️ **ONLY IN `mode:'render'`** (codex round 3, H1). The PER-STRUCTURE
+ *                         ALPHA row above says it in passing — "resolved per MODE (explore draws
+ *                         every named structure solid)" — and S3 built a control on top of it
+ *                         anyway: `sceneOpacities` returns `{id: 1}` for every member of an EXPLORE
+ *                         scene, so the eye wrote 0 into the blob while the renderer kept drawing
+ *                         the structure at full alpha, and TWO controls said "hidden" over a
+ *                         visible mesh. In explore mode a member is therefore treated as a
+ *                         NON-MEMBER row: the override is render-only, nothing unhonoured is
+ *                         written, and the tooltip says session-only — which is the truth there.
+ *                         Enforced in `tree.tsx eyeKind` and in the Selection slider's `disabled`.
  *   A NON-MEMBER ROW    → a RENDER-ONLY override. It is not a command at all: the controller never
  *                         sees it, nothing is serialised, and `app/v2/page.tsx` merges it into the
  *                         renderer's `opacity` map after the plate. It is drawn visibly differently
@@ -539,10 +549,27 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    if (!state.scene.structures.some((s) => s.id === cmd.id)) {
     return {state, rejected: 'opacity applies to a structure in this view — add it first'};
    }
+   /**
+    * ⚠️ `null` REMOVES THE OPACITY, NOT THE WHOLE STYLE ENTRY — codex round 3, Medium 2.
+    *
+    * The first version dropped the entry and re-pushed it only when a number was given, so
+    * restoring a structure to full alpha DELETED its `emphasis` — a saved scene field this command
+    * has no business touching. codex executed it on a fixture carrying `emphasis:'highlight'`:
+    * `before=[{id,emphasis:'highlight'}]` → `hidden=[{id,emphasis:'highlight',opacity:0}]` →
+    * `restored=[]`. Contract rule 1 is that a transaction patches the scene and leaves every field
+    * it does not own alone; this owned one field and took two.
+    *
+    * An entry with nothing left in it but its id IS dropped: an explicit 1 and an absent style
+    * render identically, so the blob should carry the smaller one.
+    */
+   const prior = state.scene.styles.find((s) => s.id === cmd.id);
    const styles = state.scene.styles.filter((s) => s.id !== cmd.id);
-   // `null` removes the entry rather than writing 1: an explicit 1 and an absent style render the
-   // same today, but they are different facts, and the blob should carry the smaller one.
-   if (cmd.opacity !== null) styles.push({...(state.scene.styles.find((s) => s.id === cmd.id) ?? {}), id: cmd.id, opacity: Math.min(1, Math.max(0, cmd.opacity))});
+   if (cmd.opacity !== null) {
+    styles.push({...(prior ?? {}), id: cmd.id, opacity: Math.min(1, Math.max(0, cmd.opacity))});
+   } else if (prior) {
+    const {opacity: _dropped, ...rest} = prior;
+    if (Object.keys(rest).length > 1) styles.push(rest);
+   }
    return commitScene(state, {...state.scene, styles}, state.render);
   }
 

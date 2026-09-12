@@ -478,7 +478,10 @@ export const KEY_MAP: KeyRow[] = [
  // (↑ ↓) rather than a second pair of keys, and there is no per-structure hide until the tree's
  // eyes arrive in S3. A key map that lists a key nobody bound is the thing this file exists to
  // prevent, so they are removed rather than left promising S1.
- {keys: 'I / Shift ⌫', cmd: 'keys.hideClear', group: 'tree', owner: 'S3'},
- {keys: '↑ ↓ ← →', cmd: 'keys.treeMove', group: 'tree', owner: 'S3'},
- {keys: 'Space', cmd: 'keys.treeTick', group: 'tree', owner: 'S3'},
+ {keys: 'I / Shift ⌫', cmd: 'keys.hideClear', group: 'tree', owner: 'S6'},
+ {keys: '↑ ↓ ← →', cmd: 'keys.treeMove', group: 'tree'},
+ {keys: 'Space', cmd: 'keys.treeTick', group: 'tree'},
+ // S3 addition, recorded here so the `?` overlay lists it. `spec.md`'s Tree row names the arrows and
+ // Space; the eye is a SEPARATE control with no keyboard path at all without this (codex r3, M3).
+ {keys: 'V', cmd: 'keys.treeVis', group: 'tree'},
 ];

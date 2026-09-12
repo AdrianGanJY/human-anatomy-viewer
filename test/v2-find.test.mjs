@@ -326,13 +326,24 @@ test('the key map marks Find as LIVE at every tier, and guard 7 does not withhol
   assert.equal(HOLD_CODES.includes('KeyK'), false, 'K is not a held key');
 });
 
-test('exactly six key-map rows are still forthcoming after S2 binds Find', () => {
-  // The arithmetic the S1 worklog handed over: 20 rows, 2 live at S0 (Esc, ?), 10 bound by S1, 2
-  // bound by S2 => 6 still owned by S3/S4/S5/S6. The oracle asserts the same number against the
-  // RENDERED overlay; this asserts it against the data, so a row added without an owner cannot
-  // drift the two apart silently.
+test('exactly four key-map rows are still forthcoming after S3 binds the tree', () => {
+  // The arithmetic, carried forward one group: 21 rows, 2 live at S0 (Esc, ?), 10 bound by S1, 2 by
+  // S2, 3 by S3 (the tree's arrows, Space, and the new `V`) => 4 still owned by S4/S5/S6. The oracle
+  // asserts the same number against the RENDERED overlay; this asserts it against the DATA, so a row
+  // added without an owner cannot drift the two apart silently — and it is exactly the row that went
+  // red when S3 wired the tree, which is the point of having it.
+  //
+  // ⚠️ 20 -> 21 IS AN ADDITION, NOT A RETUNE: the tree's eye had no keyboard path at all (codex
+  // round 3, Medium 3), so `V` was bound and had to be advertised in the map.
   const forthcoming = KEY_MAP.filter((r) => r.owner);
-  assert.equal(KEY_MAP.length, 20);
-  assert.equal(forthcoming.length, 6, forthcoming.map((r) => `${r.keys}=${r.owner}`).join(' '));
-  assert.deepEqual([...new Set(forthcoming.map((r) => r.owner))].sort(), ['S3', 'S4', 'S5', 'S6']);
+  assert.equal(KEY_MAP.length, 21);
+  assert.equal(forthcoming.length, 4, forthcoming.map((r) => `${r.keys}=${r.owner}`).join(' '));
+  assert.deepEqual([...new Set(forthcoming.map((r) => r.owner))].sort(), ['S4', 'S5', 'S6']);
+  // And the three S3 bound are present and UNOWNED — a row whose owner survived its wiring would
+  // tell the reader a live key is still a promise.
+  for (const keys of ['↑ ↓ ← →', 'Space', 'V']) {
+    const row = KEY_MAP.find((r) => r.keys === keys);
+    assert.ok(row, `the map lists ${keys}`);
+    assert.equal(row.owner, undefined, `${keys} is no longer marked forthcoming`);
+  }
 });

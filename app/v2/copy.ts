@@ -175,6 +175,12 @@ export const V2: Record<string, Row> = {
  'refusal.limit':  {en: 'Maximum: 24 structures · 1,400 encoded characters', 'zh-Hans': '上限：24 个结构 · 1,400 个编码字符', 'zh-Hant': '上限：24 個結構 · 1,400 個編碼字元'},
  'refusal.unchanged': {en: 'Your {n} structures are unchanged.', 'zh-Hans': '你的 {n} 个结构保持不变。', 'zh-Hant': '你的 {n} 個結構保持不變。'},
  'refusal.review': {en: 'Review selection', 'zh-Hans': '检查所选结构', 'zh-Hant': '檢查所選結構'},
+
+ // Why the opacity slider is disabled in an EXPLORE scene: the codec draws every named structure
+ // solid there, so the control cannot express what it looks like it expresses (codex round 3, H1).
+ 'panel.opacityExplore': {en: 'This view draws every selected structure solid — use the eye in Layers to hide one for this session.', 'zh-Hans': '本视图会把所选结构全部实心绘制 — 如需临时隐藏，请使用图层中的眼睛。', 'zh-Hant': '本視圖會把所選結構全部實心繪製 — 如需暫時隱藏，請使用圖層中的眼睛。'},
+ 'tree.visKey':    {en: 'V', 'zh-Hans': 'V', 'zh-Hant': 'V'},
+ 'keys.treeVis':   {en: 'Show or hide the focused row', 'zh-Hans': '显示/隐藏当前行', 'zh-Hant': '顯示/隱藏目前列'},
  'panel.focus':    {en: 'Focus', 'zh-Hans': '聚焦', 'zh-Hant': '聚焦'},
  'panel.collapse': {en: 'Collapse the sidebar', 'zh-Hans': '收起侧栏', 'zh-Hant': '收起側欄'},
  'panel.expand':   {en: 'Expand the sidebar', 'zh-Hans': '展开侧栏', 'zh-Hant': '展開側欄'},
