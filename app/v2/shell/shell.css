@@ -121,6 +121,11 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
    cannot change height when the font under it does. Same treatment for the foot, for the same
    reason, even though nothing sits below it today. */
 .v2-side-sub{padding:0 16px 8px;font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-2)}
+/* S3b round 7 — ONE statement about the view, replacing a note that repeated on every diverging
+   system row and truncated to a fragment (found by LOOKING at the screenshot). It WRAPS, because
+   the whole reason it moved here is that the row could not hold it. */
+.v2-side-note{margin:0 16px 8px;padding:6px 8px;border-left:2px solid var(--v2-accent);
+ background:var(--v2-surface-2);font-size:var(--v2-type-xs);line-height:15px;color:var(--v2-ink-2)}
 .v2-side-filter{padding:0 12px 10px;flex-shrink:0}
 /* S3: the box became a real `<label><input>`. The geometry is unchanged from the inert `div` it
    replaces — same 38 px, same border, same radius — so the sidebar's vertical rhythm does not move

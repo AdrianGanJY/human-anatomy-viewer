@@ -158,9 +158,13 @@ export const V2: Record<string, Row> = {
  // ⚠️ S3b — THE THREE NOTES AN HONEST EYE NEEDS (codex round 4, H3 + H4). Each explains a case where
  // the control now reports what the RENDERER draws rather than its own declaration, and where the
  // difference would otherwise read as a broken control.
- 'tree.drawnThrough': {en: 'Still drawn through {name} — they share a part', 'zh-Hans': '仍通过{name}绘制 — 两者共用同一部件', 'zh-Hant': '仍透過{name}繪製 — 兩者共用同一部件'},
- 'tree.sysShownByView': {en: 'Shown by this view, not by your setting', 'zh-Hans': '由本视图显示，而非你的设置', 'zh-Hant': '由本視圖顯示，而非你的設定'},
- 'tree.sysHiddenByView': {en: 'Hidden by this view — your setting has it on', 'zh-Hans': '被本视图隐藏 — 你的设置是开启', 'zh-Hant': '被本視圖隱藏 — 你的設定是開啟'},
+ // SHORTENED so it FITS the 264 px sidebar row — the first wording truncated to "Still drawn
+ // through …", which names nothing, and the whole point of the note is the name.
+ 'tree.drawnThrough': {en: 'Drawn through {name}', 'zh-Hans': '通过{name}绘制', 'zh-Hant': '透過{name}繪製'},
+ // ONE STATEMENT ABOUT THE VIEW, replacing a note that repeated on every diverging system row (which
+ // after a ghost scene is all of them). `{n}` is MEASURED, and both singulars are in V2_ONE.
+ 'tree.viewOverridesShow': {en: 'This view is showing {n} systems its own way — your own set is unchanged', 'zh-Hans': '本视图以自己的方式显示了 {n} 个系统 — 你的设置未改动', 'zh-Hant': '本視圖以自己的方式顯示了 {n} 個系統 — 你的設定未改動'},
+ 'tree.viewOverridesHide': {en: 'This view is hiding {n} systems your set has on — your own set is unchanged', 'zh-Hans': '本视图隐藏了你设置中开启的 {n} 个系统 — 你的设置未改动', 'zh-Hant': '本視圖隱藏了你設定中開啟的 {n} 個系統 — 你的設定未改動'},
  // S3b round 5, Medium 4: the eye owns the session override and the scene's style, and it owns
  // NEITHER the system switch — so on that cause it says so instead of offering a click that cannot
  // work. The note names the system, because that IS the control the reader needs.
@@ -363,6 +367,10 @@ export const V2_ONE: Record<string, string> = {
  //   `panel.close` / `inert.pending`— {name} / {s}     → not counts. No singular.
  //   `panel.inventory` / `panel.meshes` / `json.limit` — FIXED numbers from the manifest, no
  //                                                        placeholder at all, so nothing to plural.
+ // S3b round 7: the two new view-override rows interpolate {n} systems and their English singular
+ // differs, so both belong here (RC13).
+ 'tree.viewOverridesShow': 'This view is showing {n} system its own way — your own set is unchanged',
+ 'tree.viewOverridesHide': 'This view is hiding {n} system your set has on — your own set is unchanged',
  'status.ready': 'Scene ready · {mb} MB · {n} chunk',
  'status.all': 'Whole body loaded · {n} chunk',
  'panel.structures': '{n} structure',

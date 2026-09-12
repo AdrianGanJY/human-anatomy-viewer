@@ -542,6 +542,18 @@ export default function Tree(p: TreeProps) {
   <p className="v2-side-sub">{q
    ? tr('tree.filtered', {s: filtered.systems, sn: nSystems, c: filtered.concepts.toLocaleString(), cn: total.toLocaleString()})
    : tr('tree.inventory', {s: nSystems, c: total.toLocaleString()})}</p>
+  {/* ⚠️ ONE STATEMENT, NOT FOURTEEN ROW NOTES — FOUND BY LOOKING AT THE SCREENSHOT (S3b round 7).
+      The divergence note started life on each diverging row, and after a ghost scene that is EVERY
+      system: fourteen rows all reading "Hidden by this…", truncated to a fragment by the 264 px
+      sidebar. The fact is about the VIEW, not about each row, so it is said once, in full, where
+      the sub-line already is. `data-intent` stays on every row — it is the machine-readable half
+      and the oracle reads it there. */}
+  {(() => {
+   const diverging = liveSystems(idx).filter((sysRow) => p.visible.includes(sysRow.id) !== p.visibleIntent.includes(sysRow.id));
+   if (!diverging.length) return null;
+   const shownByView = diverging.filter((sysRow) => p.visible.includes(sysRow.id)).length;
+   return <p className="v2-side-note" role="note">{tr(shownByView ? 'tree.viewOverridesShow' : 'tree.viewOverridesHide', {n: diverging.length})}</p>;
+  })()}
   <div className="v2-tree-box" ref={boxRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
    {rows.list.length === 0
     ? <p className="v2-empty-state">{tr('tree.noMatch')}</p>
@@ -637,7 +649,6 @@ export default function Tree(p: TreeProps) {
             a truthful control looks like a broken one: the reader clicks hide and the eye stays on
             (a shared mesh), or the eye is on for a system they never asked for (a ghost scene). */}
         {via && <s id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</s>}
-        {intent !== undefined && intent !== on && <s>{tr(intent ? 'tree.sysHiddenByView' : 'tree.sysShownByView')}</s>}
         {cause === 'system' && <s>{tr('tree.hiddenWithSystem', {name: t.system(row.system, SYSTEMS.find((x) => x.id === row.system)?.name ?? row.system)})}</s>}
        </button>
        {row.kind === 'system' && <em>{(row.count ?? 0).toLocaleString()}</em>}

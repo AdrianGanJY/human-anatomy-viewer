@@ -1034,7 +1034,23 @@ for (const vp of SWEEP) {
      * so 胸骨体 is legitimately further down and a head-of-list check would fail on correct output.
      */
     await barePage.keyboard.type('胸骨');
-    await barePage.waitForTimeout(800);
+    /**
+     * ⚠️ WAIT ON THE STATE, NOT ON 800 ms — S3b round 7, and this is the S3 prelude's own lesson
+     * landing on a row the prelude did not touch. The row above proves the two dictionaries
+     * STARTED; started is not parsed, and under a twelve-context sweep the parse plus re-render can
+     * exceed a fixed sleep. MEASURED: this row went red twice at 1366×1024 with `0 rows` while the
+     * same viewport returned 19 rows 3/3 in isolation with both dictionaries at HTTP 200
+     * (`.artifacts/L31/v21bc/s3b/` dict probe). A nondeterministic red in a deploy-gating suite
+     * trains its reader to re-run until green, which is how a real red gets waved through.
+     *
+     * The wait target is the product's own rendered result list, bounded — so a genuine "no matches"
+     * still fails, with the measurement, after the bound rather than after a guess. `polling: 60`
+     * for the same reason as the held-key helper: Chromium throttles rAF in a background page.
+     */
+    const crossReady = await barePage.waitForFunction(
+      () => document.querySelectorAll('.v2-find-list .v2-result').length > 0,
+      undefined, {timeout: 9000, polling: 60},
+    ).then(() => true).catch(() => false);
     const enCross = await barePage.evaluate(() => {
       const rows = [...document.querySelectorAll('.v2-find-list .v2-result')];
       const input = document.querySelector('.v2-find input');
@@ -1056,7 +1072,7 @@ for (const vp of SWEEP) {
       'focused, and the query landed in it');
     check(vp.name, 'in an ENGLISH interface, 胸骨 returns matches AND a row shows the 胸骨体 it matched',
       enCross.lang === 'en' && enCross.n >= 1 && enCross.body.length >= 1,
-      `lang=${enCross.lang}, ${enCross.n} rows, first: ${enCross.first ?? '(none)'}; 胸骨体 row: ${enCross.body[0] ?? 'ABSENT'}`,
+      `lang=${enCross.lang}, ${enCross.n} rows${crossReady ? '' : ' (the 9 s wait for a first row TIMED OUT)'}, first: ${enCross.first ?? '(none)'}; 胸骨体 row: ${enCross.body[0] ?? 'ABSENT'}`,
       'lang=en, >= 1 row, and 胸骨体 rendered');
     await barePage.screenshot({path: join(outDir, `${label}-find-en-${vp.name}.png`), timeout: SHOT_MS});
     await barePage.keyboard.press('Escape');
@@ -3351,11 +3367,32 @@ if (variant === 'v2') {
        * OTHER system stops being drawn — so Muscles is the row where the reader's set (on) and the
        * picture (off) disagree, and it is the row that must say so.
        */
-      check(vp.name, `[${S3_V}] and the row still publishes the human's own set beside it, with the note`,
-        !!other && other.intent === 'on' && other.eye === false && other.note.length > 0
-          && !!skel && skel.intent === 'on' && skel.eye === true && skel.note.length === 0,
-        other ? `Muscles intent=${other.intent} eye=${other.eye} note="${other.note.slice(0, 46)}" · Skeleton intent=${skel?.intent} eye=${skel?.eye} note="${skel?.note}"` : 'no rows',
-        'Muscles intent=on but eye=off WITH a note; Skeleton agrees and stays silent');
+      /**
+       * ⚠️ RE-POINTED AT THE ONE STATEMENT (S3b round 7), and the reason is a SCREENSHOT rather than
+       * a review. The note used to render on every diverging row; after a ghost scene that is all
+       * fourteen, each truncated by the 264 px sidebar to "Hidden by this…", which names nothing.
+       * The fact is about the VIEW, so it is said ONCE above the scroller, in full. `data-intent`
+       * stays on every row — the machine-readable half, which is what this pass reads.
+       */
+      check(vp.name, `[${S3_V}] and the row still publishes the human's own set beside it`,
+        !!other && other.intent === 'on' && other.eye === false
+          && !!skel && skel.intent === 'on' && skel.eye === true,
+        other ? `Muscles intent=${other.intent} eye=${other.eye} · Skeleton intent=${skel?.intent} eye=${skel?.eye}` : 'no rows',
+        'Muscles intent=on but eye=off; Skeleton agrees — the divergence, per row');
+      const note = await page.evaluate(() => {
+        const el = document.querySelector('.v2-side-note');
+        if (!el) return {present: false};
+        const r = el.getBoundingClientRect();
+        // TRUNCATION IS THE DEFECT THIS REPLACED, so the row measures it: the note must not be
+        // clipped by its own box, and it must be exactly ONE of them.
+        return {present: true, text: (el.textContent || '').trim(), count: document.querySelectorAll('.v2-side-note').length,
+          clipped: el.scrollWidth > Math.ceil(r.width) + 1 || el.scrollHeight > Math.ceil(r.height) + 1,
+          rowNotes: [...document.querySelectorAll('.v2-tree-row.is-system s')].length};
+      });
+      check(vp.name, `[${S3_V}] the divergence is stated ONCE, in full, and not repeated per row`,
+        note.present && note.count === 1 && note.clipped === false && note.rowNotes === 0 && /\d/.test(note.text),
+        note.present ? `${note.count} note(s), clipped=${note.clipped}, ${note.rowNotes} per-row notes, text="${note.text.slice(0, 78)}"` : 'no .v2-side-note rendered',
+        'exactly 1, not clipped, 0 per-row system notes, and it carries a measured count');
     } catch (e) {
       check(vp.name, `[${S3_V}] the systems-ghost pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
