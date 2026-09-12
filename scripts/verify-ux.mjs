@@ -4599,17 +4599,30 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?select=${BARE_ID}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      const en = await page.evaluate(() => {
+      const en = await page.evaluate(async () => {
+        // ⚠️ THE TREE OPENS WITH EVERY SYSTEM COLLAPSED, so there are no concept rows to measure
+        // until one is expanded. The first version of this row measured `0 concept rows, first is
+        // 0px` and FAILED — correctly, because `en.n > 0` is in the condition, but it failed about
+        // the instrument rather than about the product. Third time this increment that a probe
+        // could not reach its own subject; the pattern is worth naming: a row that asserts on a
+        // virtualised or collapsed surface has to DRIVE it to the state it is about first.
+        for (const sys of [...document.querySelectorAll('.v2-tree-row.is-system')].slice(0, 2)) {
+          (sys.querySelector('.v2-tw[type=button]') ?? sys.querySelector('.v2-tree-name'))?.click();
+          await new Promise((r) => setTimeout(r, 250));
+        }
         const rows = [...document.querySelectorAll('.v2-tree-row.is-concept')];
         return {
           n: rows.length,
           h: rows[0] ? Math.round(rows[0].getBoundingClientRect().height) : 0,
           readings: document.querySelectorAll('.v2-py').length,
+          // The PREMISE, asserted: this row's whole claim is about an ENGLISH interface, and if the
+          // language were Chinese the 54 it expects would be wrong rather than merely unmet.
+          lang: document.documentElement.lang || '(none)',
         };
       });
       check(py.name, `[${S4_V}] pinyin ON in an ENGLISH interface: no reading, and the row stays 54 px`,
-        en.n > 0 && en.h === 54 && en.readings === 0,
-        `${en.n} concept rows, first is ${en.h}px (want 54), ${en.readings} readings`,
+        en.n > 0 && en.h === 54 && en.readings === 0 && !en.lang.startsWith('zh'),
+        `${en.n} concept rows, first is ${en.h}px (want 54), ${en.readings} readings, document.lang=${en.lang}`,
         'no empty 18px band where there is no Chinese name to read');
     } catch (e) {
       check(py.name, `[${S4_V}] the English-with-pinyin pass ran`, false, String(e).slice(0, 200), 'no throw');
