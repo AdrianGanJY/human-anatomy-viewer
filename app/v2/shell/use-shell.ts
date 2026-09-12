@@ -53,6 +53,11 @@ export interface ShellState {
  toggleSide(): void;
  keysOpen: boolean; setKeysOpen(v: boolean): void;
  settingsOpen: boolean; setSettingsOpen(v: boolean): void;
+ /** ── S2 ─────────────────────────────────────────────────────────────────────────────────── */
+ /** The Find palette. It lives HERE rather than in the page because the dispatcher opens it and the
+  *  dispatcher is installed here — and because `modalOpen()` has to count it, or the camera keys
+  *  would fire behind an open palette. */
+ findOpen: boolean; setFindOpen(v: boolean): void;
  /** ── S1 ─────────────────────────────────────────────────────────────────────────────────── */
  /** The drag mode the field is in. The pill shows it; `O`/`P` and the pill both set it. */
  navMode: NavMode; setNavMode(m: NavMode): void;
@@ -130,6 +135,7 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
 
  const [keysOpen, setKeysOpen] = useState(false);
  const [settingsOpen, setSettingsOpen] = useState(false);
+ const [findOpen, setFindOpen] = useState(false);
  const [navMode, setNavModeState] = useState<NavMode>('orbit');
  const [holdN, setHoldN] = useState(0);
 
@@ -146,8 +152,12 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   * The cost of getting this order wrong is not a crash — it is a camera that stops answering W
   * after somebody opens Settings once, which nobody would attribute to the keyboard layer.
   */
+ // EVERY OVERLAY COUNTS, and the palette is the one most likely to be forgotten because it is not a
+ // "dialog" in the everyday sense. If it were missing here, W A S D typed into the Find box would
+ // reach guard 1 (which declines inside an editor) but a bare `1` or `R` pressed with focus on a
+ // RESULT ROW — a button, not an editor — would change the camera behind the open palette.
  const modalRef = useRef(false);
- modalRef.current = keysOpen || settingsOpen;
+ modalRef.current = keysOpen || settingsOpen || findOpen;
  const studioRef = useRef(false);
  studioRef.current = studio;
  const cmdRef = useRef<((cmd: KeyCommand) => boolean | void) | null>(null);
@@ -160,6 +170,7 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
    // has to close the thing on top.
    if (keysOpen) { setKeysOpen(false); return true; }
    if (settingsOpen) { setSettingsOpen(false); return true; }
+   if (findOpen) { setFindOpen(false); return true; }
    // ⚠️ FALLS THROUGH TO THE PAGE, which leaves the stage. The comment here used to say
    // "declined: `?stage=1`'s own exit still owns Escape (page.tsx)" and there was NO Escape
    // handler in page.tsx — `grep -rn Escape app/v2/` found only the overlay's own trap and that
@@ -169,6 +180,22 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
    return onCommandRef.current?.('escape') ?? false;
   }
   if (cmd === 'keymap') { setKeysOpen(true); return true; }
+  /**
+   * S2. Consumed at EVERY tier — the palette is a modal in the studio and the A4 sheet on the
+   * phone, so unlike the camera commands it has somewhere to go below 1180.
+   *
+   * ⚠️ AND IT ADJUDICATES THE MODAL CASE, because `keys.ts` guard 3 now lets `find` through (M2).
+   * A second Ctrl+K with the PALETTE open is consumed — it re-focuses rather than doing nothing
+   * visible, and crucially it does not escape to the browser, which is what it used to do. With the
+   * key map or Settings open it is DECLINED: stacking a palette on another modal is worse than
+   * leaving the chord alone, and declining hands the event back untouched.
+   */
+  if (cmd === 'find') {
+   if (keysOpen || settingsOpen) return false;
+   if (findOpen) { document.querySelector<HTMLElement>('.v2-find [data-autofocus]')?.focus(); return true; }
+   setFindOpen(true);
+   return true;
+  }
   // ── S1's OWN COMMANDS. The camera ones are answered here because the renderer's surface is a
   //    global rather than React state; the ones that change the SCENE (a named view, Reset,
   //    Stage) go out to the page, which owns the controller. ──
@@ -257,7 +284,7 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
  // OPENING A MODAL CLEARS THE HELD SET — one of the six ways a keyup goes missing. The dispatcher
  // clears on blur / pointercancel / visibilitychange itself; a modal that takes focus within the
  // same document fires none of those.
- useEffect(() => { if (keysOpen || settingsOpen) window.dispatchEvent(new Event('blur')); }, [keysOpen, settingsOpen]);
+ useEffect(() => { if (keysOpen || settingsOpen || findOpen) window.dispatchEvent(new Event('blur')); }, [keysOpen, settingsOpen, findOpen]);
 
  return {
   tier, studio, sheet: vp.w < 768, coarse: vp.coarse,
@@ -267,6 +294,7 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   steps: lad.steps, sideW: lad.sideW, dockW: lad.dockW,
   toggleDock, toggleSide,
   keysOpen, setKeysOpen, settingsOpen, setSettingsOpen,
+  findOpen, setFindOpen,
   navMode, setNavMode,
   // `held` is the dispatcher's OWN set — the stable one. `holdN` is what makes React re-render
   // when it changes; reading `.size` off a mutated Set would never re-render the pad.

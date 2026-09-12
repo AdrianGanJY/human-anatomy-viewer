@@ -50,9 +50,29 @@ export default function Overlay({open, onClose, title, sheet, labelClose, childr
   if (!open) return;
   invoker.current = document.activeElement;
   const el = panel.current;
-  // Autofocus the first real control, or the panel itself. `spec.md` asks for the input on Find and
-  // the selected tab on Settings; both are simply the first focusable in their own markup.
-  const first = el?.querySelector<HTMLElement>(FOCUSABLE);
+  /**
+   * ⚠️ "THE FIRST FOCUSABLE" IS NOT WHAT `spec.md` ASKS FOR, AND IT BROKE FIND (S2).
+   *
+   * The note here used to read: "`spec.md` asks for the input on Find and the selected tab on
+   * Settings; both are simply the first focusable in their own markup." They are not. The panel's
+   * own header — with its `×` close button — precedes the body in DOM order, so `querySelector`
+   * returned `.v2-modal-x` in EVERY overlay. React's `autoFocus` on the palette input ran first and
+   * this effect then took the focus away from it.
+   *
+   * MEASURED, not reasoned: with the palette open at 1440x900, `document.activeElement` was
+   * `BUTTON.v2-modal-x`, the input's `value` stayed `""` after typing `gluteus`, and the result list
+   * had 0 rows. Ctrl+K gave the reader a palette they had to click into before they could type —
+   * the single most important interaction in the feature, and the oracle that caught it went green
+   * for CJK because Playwright commits non-ASCII through `Input.insertText`, which reaches the
+   * nearest editable regardless of focus. ASCII was simply lost.
+   *
+   * So the autofocus TARGET is now declared by the overlay's content (`data-autofocus`) rather than
+   * inferred from document order. Find marks its input; Settings will mark its selected tab (S4).
+   * An overlay that marks nothing keeps the old behaviour, which is right for the key map — there is
+   * nothing to type into it, and the close button is a reasonable place to land.
+   */
+  const wanted = el?.querySelector<HTMLElement>('[data-autofocus]');
+  const first = wanted ?? el?.querySelector<HTMLElement>(FOCUSABLE);
   (first ?? el)?.focus();
   return () => {
    const back = invoker.current as HTMLElement | null;

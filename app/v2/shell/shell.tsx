@@ -115,6 +115,10 @@ export interface ShellProps {
  coarse: boolean;
  keysOpen: boolean; onKeys(open: boolean): void;
  settingsOpen: boolean; onSettings(open: boolean): void;
+ /** S2. The palette itself is rendered by `page.tsx`, not here: it must exist at the PHONE tier too
+  *  (the A4 sheet) and this component renders only at >=1180. The shell owns the button, the page
+  *  owns the surface, and `useShell` owns the single piece of state both read. */
+ findOpen: boolean; onFind(open: boolean): void;
  /** Sheet presentation below 768 — the phone path for the `?` map. */
  sheet: boolean;
 }
@@ -390,12 +394,11 @@ export default function Shell(p: ShellProps) {
   {panelBtn('layers')}
   {DOCK_KEYS.map(panelBtn)}
   <span className="v2-sep"/>
-  {/* FIND is S2's. It is inert rather than disabled: the palette is not "unavailable right now",
-      it is not built yet, and those read differently to anyone trying to use the app. */}
-  {/* `aria-label` as well as the visible label: the button's textContent is "Find" + its shortcut
-      chip, so a reachability oracle matching on an exact name needs the accessible name to BE the
-      name. A screen reader needed it anyway. */}
-  <button type="button" className="v2-tbtn v2-findbtn v2-inert" aria-disabled="true" title="S2" aria-label={tr('search.open')}>
+  {/* FIND IS LIVE AS OF S2. The `aria-label` stays alongside the visible label: the button's
+      textContent is "Find" + its shortcut chip, so a reachability oracle matching on an exact name
+      needs the accessible name to BE the name. A screen reader needed it anyway. */}
+  <button type="button" className="v2-tbtn v2-findbtn" aria-label={tr('search.open')}
+   aria-haspopup="dialog" aria-expanded={p.findOpen} onClick={() => p.onFind(true)}>
    <Ico d={P.find}/><span className="v2-grow">{tr('search.open')}</span><span className="v2-kbd">Ctrl K</span>
   </button>
   <span className="v2-sep"/>
@@ -428,9 +431,18 @@ export default function Shell(p: ShellProps) {
    </button>
   </div>
   <p className="v2-side-sub">{tr('panel.inventory')}</p>
-  {/* INERT: the filter is S2's, and it shares S2's matcher and denominators. Rendered as a real
-      box rather than an input, so a keyboard reader cannot type into something that does nothing. */}
-  <div className="v2-side-filter"><div className="v2-inert" title="S2" tabIndex={0} aria-disabled="true">
+  {/* ⚠️ STILL INERT AT S2, AND ITS OWNER MOVES S2 → S3. `spec.md`'s table pairs "Find / filter" on
+      one row and assigns both to S2; S2 delivers the FIND half (the palette, which is live) and
+      deliberately leaves this one, because of what it filters.
+
+      The tree below is fifteen presentational system rows until S3 replaces them. A filter wired to
+      those would honour "Filter systems or structures…" for the systems and silently do nothing for
+      the structures — a control that half-works against its own placeholder, which reads as broken
+      rather than as forthcoming. The palette already searches all three populations (find.ts), so
+      nothing is unreachable in the meantime; this box is the S3 tree's filter and now names the
+      group that actually brings it. Recorded in the worklog as a deliberate departure from the
+      spec table's owner column. */}
+  <div className="v2-side-filter"><div className="v2-inert" title="S3" tabIndex={0} aria-disabled="true">
    <Ico d={P.find} size={14}/>{tr('panel.filter')}
   </div></div>
   {/* PURE PRESENTATION. S3 replaces every row here with a virtualised tree carrying roving

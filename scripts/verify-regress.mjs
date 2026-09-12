@@ -1121,25 +1121,47 @@ if (want('plain-entry-widths')) {
       assert(`[${width}px] every control on a ZERO-selection entry is reachable`,
         missing.length === 0, missing.length ? missing.join(' | ') : 'all 7 reachable', '0 unreachable');
 
-      // AND THEY WORK. Reachability without operation is the vacuous half of the check.
-      // FIND IS INERT IN THE STUDIO AT S0 (the palette is S2), so 'it opens a search field' is a
-      // claim about the phone/tablet tree only. Asserting it in the studio would assert that an
-      // unbuilt feature works; asserting nothing would let a broken phone search through. So the
-      // operation check runs where the feature exists, and the studio gets its own: present,
-      // focusable, and declaring itself inert rather than merely looking broken.
+      /**
+       * AND THEY WORK. Reachability without operation is the vacuous half of the check.
+       *
+       * ⚠️ THIS IS S2's ONE NAMED CHECK WHOSE POLARITY FLIPS — the parallel of RC3 in S1, and it is
+       * recorded rather than quietly edited. It used to BRANCH: in the studio it asserted that Find
+       * declared itself INERT (`aria-disabled=true`, `title=S2`), because at S0 the palette did not
+       * exist and "it opens a search field" would have been a claim about an unbuilt feature; only
+       * the phone/tablet branch asserted the operation.
+       *
+       * S2 built it, so the inert assertion is now false BY CONSTRUCTION, and the two branches
+       * collapse into the one claim that is true at every tier: pressing Find opens a search field.
+       * It is the SAME assertion the phone branch has carried since v2 P0 — the surface under it
+       * changed from an in-margin list to the A4 sheet, and keeping `.v2-search` on the palette's
+       * container is what lets this row go on testing the product claim it was written about rather
+       * than being rewritten to match whatever shipped.
+       *
+       * Closing differs by tier and that is not cosmetic: in the studio the palette is a modal above
+       * a scrim, so the Find button is no longer clickable — Escape is the only way out, and a row
+       * that tried to click it again would hang rather than fail.
+       */
       const findBtn = await reachable('Find');
-      if (findBtn.ok && inStudio) {
-        const st = await findBtn.el.evaluate((el) => ({inert: el.getAttribute('aria-disabled') === 'true', owner: el.getAttribute('title'), focusable: el.tabIndex >= 0}));
-        assert(`[${width}px] Find declares itself inert and names the group that brings it`,
-          st.inert && st.owner === 'S2' && st.focusable,
-          `aria-disabled=${st.inert} title=${st.owner} focusable=${st.focusable}`, 'inert, S2, focusable');
-      }
-      if (findBtn.ok && !inStudio) {
+      if (findBtn.ok) {
+        const inert = await findBtn.el.evaluate((el) => el.getAttribute('aria-disabled') === 'true');
+        assert(`[${width}px] Find is LIVE, not inert (S2 built the palette)`,
+          !inert, `aria-disabled=${inert}`, 'not inert');
         await clickAt(page, findBtn.el);
-        await page.waitForTimeout(500);
-        const searchOpen = await page.evaluate(() => !!document.querySelector('.v2-search input'));
-        assert(`[${width}px] Find opens a search field`, searchOpen, `search input present=${searchOpen}`, 'true');
-        await clickAt(page, findBtn.el);   // close it again
+        await page.waitForTimeout(600);
+        const opened = await page.evaluate(() => {
+          const input = document.querySelector('.v2-search input');
+          return {
+            present: !!input,
+            // The autofocus defect S2 shipped and fixed: focus landed on the overlay's close button,
+            // so the palette opened and then silently swallowed every ASCII keystroke. Asserting
+            // "an input exists" alone went green through the whole of that.
+            focused: !!input && document.activeElement === input,
+          };
+        });
+        assert(`[${width}px] Find opens a search field, and the cursor is IN it`,
+          opened.present && opened.focused,
+          `search input present=${opened.present} focused=${opened.focused}`, 'present and focused');
+        await page.keyboard.press('Escape');
         await page.waitForTimeout(300);
       }
       if (inStudio) {
@@ -1602,6 +1624,78 @@ if (want('prerender-population')) {
     }
   } catch (e) { prereq('the prerender fixture ran', false, String(e).slice(0, 200), 'no throw'); }
   finally { await cx.close(); await new Promise((r) => srv.close(r)); }
+}
+
+// ══ CASE 15 — THE PALETTE COMMITS: Enter REPLACES, Shift+Enter ADDS ═══════════════════════════
+// L31 v2.1b+c, S2. `spec.md`: "Enter replaces; Shift+Enter adds; visible + adds."
+//
+// WHY A NEW CASE RATHER THAN AN EXTENSION OF CASE 10. This one CHANGES THE SELECTION, and case 10's
+// later assertions (the Layers toggle, the Side view's camera axis) run against a page whose state
+// it controls. Bolting a selecting action into the middle of it would couple two cases through a
+// shared page for no gain — a new context costs seconds and cannot disturb anything.
+//
+// AND IT IS THE CLAIM NO OTHER INSTRUMENT MAKES. The oracle sweep proves the palette OPENS, matches
+// across scripts, counts honestly and does not fire camera keys. Not one row proves that pressing
+// Enter on a result actually changes what the reader is looking at — which is the entire point of
+// the feature. A palette that searched beautifully and committed nothing would have shipped green.
+if (want('palette-commit')) {
+  openCase('palette-commit', 'C2', 'the Find palette commits: Enter replaces the selection, Shift+Enter adds to it', 'spec.md §Search');
+  const {context, page, errors} = await fresh(1440, 900);
+  try {
+    await page.goto(`${base}/v2/`, {waitUntil: 'domcontentloaded', timeout: 180000});
+    await waitAll(page);
+    await page.waitForTimeout(2500);
+
+    // `ids`, which is what `window.atlas.state()` actually exposes (app/v2/tools.ts:30). There is no
+    // `picks` on that surface — asserting against a field that does not exist would have made every
+    // comparison below `null === null` and the case a tautology.
+    const sel = () => page.evaluate(() => (window.atlas?.state?.() ?? {}).ids ?? null);
+    const openPalette = async () => {
+      await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control');
+      await page.waitForTimeout(500);
+    };
+    const rowsFor = () => page.evaluate(() => document.querySelectorAll('.v2-find-list .v2-result').length);
+
+    const before = await sel();
+    await openPalette();
+    // A query with an EXACT match, so the first row — the one Enter commits — is deterministic
+    // rather than whatever the ranking happened to put on top.
+    await page.keyboard.type('sternum');
+    await page.waitForTimeout(700);
+    const n1 = await rowsFor();
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(1200);
+    const afterEnter = await sel();
+    const closed = await page.evaluate(() => !document.querySelector('.v2-modal.is-find'));
+    prereq('the palette opened and matched something', n1 > 0, `${n1} rows for "sternum"`, '> 0');
+    assert('Enter commits the active row to the selection, and closes the palette',
+      Array.isArray(afterEnter) && afterEnter.length > 0
+        && JSON.stringify(afterEnter) !== JSON.stringify(before) && closed,
+      `ids ${JSON.stringify(before)} -> ${JSON.stringify(afterEnter)}, closed=${closed}`,
+      'a non-empty selection that differs from the entry state, palette closed');
+
+    // SHIFT+ENTER ADDS — and the palette STAYS OPEN, because building a set of five structures
+    // should not be five round trips through Ctrl+K.
+    await openPalette();
+    await page.keyboard.type('gluteus maximus');
+    await page.waitForTimeout(700);
+    await page.keyboard.down('Shift'); await page.keyboard.press('Enter'); await page.keyboard.up('Shift');
+    await page.waitForTimeout(1200);
+    const afterAdd = await sel();
+    const stillOpen = await page.evaluate(() => !!document.querySelector('.v2-modal.is-find'));
+    assert('Shift+Enter ADDS rather than replacing, and leaves the palette open',
+      // A STRICT SUPERSET, not "length + 1". `ids` may be the requested picks or their expanded
+      // meshes depending on the structure, so counting is the wrong assertion; what ADD means,
+      // in either vocabulary, is that nothing already selected was dropped and something arrived.
+      Array.isArray(afterAdd) && Array.isArray(afterEnter)
+        && afterAdd.length > afterEnter.length
+        && afterEnter.every((id) => afterAdd.includes(id))
+        && stillOpen,
+      `ids ${JSON.stringify(afterEnter)} -> ${JSON.stringify(afterAdd)}, palette still open=${stillOpen}`,
+      'every previous id survives, the set grew, palette open');
+    prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
+  } catch (e) { prereq('the palette-commit case ran', false, String(e).slice(0, 200), 'no throw'); }
+  finally { await context.close(); }
 }
 
 await browser.close();

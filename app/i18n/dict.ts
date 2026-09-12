@@ -36,23 +36,52 @@ async function fetchDict(lang:Lang):Promise<Dict|null>{
  }catch{return null;}
 }
 
-let inflight:Promise<Dicts>|null=null;
-/** Both Chinese dictionaries, fetched once per page load and then reused. */
-export function loadZhDicts():Promise<Dicts>{
- if(!inflight){
-  inflight=Promise.all([fetchDict('zh-Hans'),fetchDict('zh-Hant')])
-   .then(([hans,hant])=>{
-    const out:Dicts={};
-    if(hans)out['zh-Hans']=hans;
-    if(hant)out['zh-Hant']=hant;
-    // A failed load must not be cached as "there is no Chinese" forever -- a flaky network
-    // would then leave the switch permanently dead until a reload.
-    if(!hans&&!hant)inflight=null;
-    return out;
-   })
-   .catch(()=>{inflight=null;return {};});
+/**
+ * ── PER-LANE, NOT PER-PAIR (L31 v2.1b+c, S2 — opus-plan-review-2.md RC9) ────────────────────────
+ *
+ * The first version memoised the PAIR: one `inflight` promise for both dictionaries, cleared only
+ * when BOTH lanes failed. So a PARTIAL failure — zh-Hant 500s, zh-Hans succeeds, which is the
+ * ordinary shape of a CDN hiccup because the two are separate requests — was cached as success for
+ * the life of the page. `繁體` search then stayed silently broken until a reload, and nothing in the
+ * UI could retry it: the memo said the load had already happened.
+ *
+ * Each lane now memoises itself, and a lane that FAILED drops its memo, so the next palette open
+ * retries exactly the missing one and leaves the loaded one alone. `loadedLanes()` is what lets the
+ * palette say "one script is missing, retrying" instead of quietly returning fewer matches.
+ */
+const LANES:Lang[]=['zh-Hans','zh-Hant'];
+const loaded:Dicts={};
+const inflight:Partial<Record<Lang,Promise<Dict|null>>>={};
+
+/** One lane. Resolved from cache when it has already succeeded; retried when it has not. */
+function loadLane(lang:Lang):Promise<Dict|null>{
+ const have=loaded[lang];
+ if(have)return Promise.resolve(have);
+ let p=inflight[lang];
+ if(!p){
+  p=fetchDict(lang).then((d)=>{
+   if(d)loaded[lang]=d;
+   // A FAILED LANE FORGETS ITSELF. Without this the rejection is memoised as "there is no
+   // 繁體", which is a claim a 500 does not license.
+   else inflight[lang]=undefined;
+   return d;
+  }).catch(()=>{inflight[lang]=undefined;return null;});
+  inflight[lang]=p;
  }
- return inflight;
+ return p;
+}
+
+/** The lanes that are loaded RIGHT NOW, without starting a fetch. The palette reads this to decide
+ *  whether it may say "no results" yet: `spec.md` — "No 'no results' before dictionaries finish." */
+export const loadedLanes=():Lang[]=>LANES.filter((l)=>!!loaded[l]);
+/** True when at least one lane is still missing, so the next open has something to retry. */
+export const zhPartial=():boolean=>loadedLanes().length<LANES.length;
+
+/** Both Chinese dictionaries. Safe to call repeatedly: loaded lanes are reused, missing ones retried.
+ *  The returned map is a SNAPSHOT — a fresh object each call, so React sees a new reference and a
+ *  lane that arrived on a retry actually re-renders the results. */
+export function loadZhDicts():Promise<Dicts>{
+ return Promise.all(LANES.map(loadLane)).then(()=>({...loaded}));
 }
 
 /** Reading side. Every lookup takes the English as its fallback, so a name the dictionary
@@ -111,14 +140,49 @@ export function makeT(lang:Lang,dict:Dict|null|undefined,all?:Dicts):T{
  };
 }
 
+/**
+ * A SEARCH KEY AND THE SCRIPT IT IS WRITTEN IN (L31 v2.1b+c, S2).
+ *
+ * `searchKeys` returns bare strings, which is all the v1 page and v2's phone list ever needed. The
+ * palette needs one thing more: WHICH spelling matched, so an English interface can show the reader
+ * the 胸骨体 their query actually hit rather than an English row with no visible reason to be there
+ * (codex-plan-review.md §A.8, "display the matched Chinese spelling in an English UI").
+ *
+ * It is a NEW function rather than a changed signature on purpose — `searchKeys` has two live call
+ * sites, one of them in v1 (`app/page.tsx:86`), and v1 is untouched this increment.
+ */
+export interface SearchKey {k:string;script:Lang|'id'}
+export function searchEntries(id:string,en:string,dicts:Dicts):SearchKey[]{
+ const out:SearchKey[]=[{k:en.toLowerCase(),script:'en'},{k:id.toLowerCase(),script:'id'}];
+ for(const key of Object.keys(dicts) as Lang[]){
+  const n=dicts[key]?.concepts[id]??dicts[key]?.parts[id];
+  if(n)out.push({k:n.toLowerCase(),script:key});
+ }
+ return out;
+}
+
 /** Every string a concept or part can be FOUND by, lowercased: its English name, its id, and
  *  its name in every dictionary loaded so far. Both Chinese scripts are searched at once, so
  *  the query does not have to match the interface language. */
 export function searchKeys(id:string,en:string,dicts:Dicts):string[]{
- const out=[en.toLowerCase(),id.toLowerCase()];
+ return searchEntries(id,en,dicts).map((e)=>e.k);
+}
+
+/**
+ * THE SYSTEM LANE'S OWN MATCHER, and it is separate because the POPULATION is separate.
+ *
+ * A system's name lives in `dict.systems[id].name`, not in `concepts`/`parts` — so `searchEntries`
+ * returns NOTHING for it and a system would only ever have matched on its English name and its id.
+ * Worse, folding systems into the structure lane would have put 15 rows into a denominator of 3,432
+ * and reported "16 of 3,432" for a query that matched one system and fifteen structures. Three
+ * populations, three denominators (opus-plan-review-2.md RC9; `spec.md`: "never combine them into
+ * '3,432 results'").
+ */
+export function systemEntries(id:string,en:string,dicts:Dicts):SearchKey[]{
+ const out:SearchKey[]=[{k:en.toLowerCase(),script:'en'},{k:id.toLowerCase(),script:'id'}];
  for(const key of Object.keys(dicts) as Lang[]){
-  const n=dicts[key]?.concepts[id]??dicts[key]?.parts[id];
-  if(n)out.push(n.toLowerCase());
+  const n=dicts[key]?.systems[id]?.name;
+  if(n)out.push({k:n.toLowerCase(),script:key});
  }
  return out;
 }

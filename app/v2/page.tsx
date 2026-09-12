@@ -30,7 +30,7 @@ import AnatomyScene from '../scene';
 import {DEFAULT_VISIBLE,SYSTEMS,explanation,type Atlas,type Concept,type SceneState,type SystemId,type View} from '../anatomy';
 import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
-import {loadZhDicts,makeT,searchKeys,type Dicts} from '../i18n/dict';
+import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
 import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
@@ -38,6 +38,7 @@ import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
+import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
 
 /** THE STATIC SAFE INSET, in CSS pixels. A CONSTANT, never a DOM measurement — the critic's
@@ -116,8 +117,10 @@ export default function V2() {
  // merely wrong, with the explanation present in the DOM and invisible. Same treatment a later
  // refusal gets (see `dispatch`).
  const [detent, setDetent] = useState<'peek' | 'half'>(seed.rejected ? 'half' : 'peek');
+ // `'search'` remains a legal value so `setPanel('none')` keeps its meaning, but nothing sets it any
+ // more: the phone's Find is the A4 sheet as of S2, and the sheet is not a margin panel. The query
+ // state that fed the old in-margin list is deleted with it — the palette owns its own.
  const [panel, setPanel] = useState<'none' | 'search' | 'systems'>('none');
- const [query, setQuery] = useState('');
  const [stage, setStage] = useState(() => {
   const p = new URLSearchParams(location.search.replace(/^\?/, ''));
   return p.get('stage') === '1';
@@ -332,9 +335,15 @@ export default function V2() {
   emitAtlas({type: 'select', ids: next});
   return true;
  }, [known, dispatch]);
- const addToPicks = useCallback((id: string) => {
-  if (!known(id)) return;
-  if (dispatch({type: 'add', id})) setDetent('half');
+ /** Returns the CONTROLLER'S VERDICT as of S2 — it was `void`, and the palette needs to know. An
+  *  add can be refused (the 24-structure / 1,400-character atomic bounds), and a palette that closed
+  *  or cleared its query on a refused add would report an edit that did not happen. Existing callers
+  *  ignore the value, so this widens the contract without changing any of them. */
+ const addToPicks = useCallback((id: string): boolean => {
+  if (!known(id)) return false;
+  const ok = dispatch({type: 'add', id});
+  if (ok) setDetent('half');
+  return ok;
  }, [known, dispatch]);
  const focusPick = useCallback((id: string) => {
   if (!dispatch({type: 'focus', id})) return;
@@ -343,13 +352,19 @@ export default function V2() {
  }, [dispatch]);
  const clearPicks = useCallback(() => { dispatch({type: 'clear-all'}); emitAtlas({type: 'select', ids: []}); }, [dispatch]);
 
- const results = useMemo(() => {
-  if (!atlas) return [] as Concept[];
-  const term = query.toLowerCase().trim();
-  if (!term) return [];
-  return atlas.concepts.filter((c) => searchKeys(c.id, c.name, dicts).some((k) => k.includes(term)))
-   .sort((a, b) => t.name(a.id, a.name).length - t.name(b.id, b.name).length || a.name.length - b.name.length).slice(0, 40);
- }, [atlas, query, dicts, t]);
+ /**
+  * ⚠️ THE OLD ONE-LANE MATCHER IS DELETED, NOT LEFT BEHIND (S2).
+  *
+  * It ranked by NAME LENGTH — "the shortest name containing your query wins" — which has no
+  * relationship to relevance and is not stable across scripts, since the Chinese name's length
+  * decides the order in a Chinese interface and the English name's in an English one. The SAME
+  * query returned a different first row depending on the interface language.
+  *
+  * `app/v2/find.ts` replaces it for every v2 surface (the palette is now the only search on the
+  * phone as well as the studio). `searchKeys` itself SURVIVES in `app/i18n/dict.ts` because v1
+  * (`app/page.tsx:86`) still calls it and v1 is untouched this increment — which is also why the
+  * palette got `searchEntries` as a new function rather than a changed signature.
+  */
 
  const applyLang = (next: Lang) => {
   setLang(next);
@@ -705,8 +720,23 @@ export default function V2() {
    onToggleDock={shell.toggleDock} onToggleSide={shell.toggleSide}
    keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
+   findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
   />}
+  {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
+      In the studio it is Ctrl+K's centred modal; below 768 it is `spec.md`'s A4 bottom sheet,
+      opened by the margin's Find button. ONE component, one matcher, one set of denominators —
+      `Overlay` already branches on `sheet`, so the palette does not have to.
+
+      It is rendered OUTSIDE the `!stage` fence deliberately: `?stage=1` strips the chrome, and a
+      reader in presentation mode who presses Ctrl+K has asked for the palette explicitly. Nothing
+      is painted until `findOpen`, so stage stays chrome-free until it is. */}
+  <FindPalette
+   open={shell.findOpen} onClose={() => shell.setFindOpen(false)} sheet={shell.sheet}
+   atlas={atlas} dicts={dicts} onDicts={setDicts} t={t} tr={tr}
+   replace={(ids, focus) => replacePicks(ids, focus)} add={(id) => addToPicks(id)}
+   picks={picks} refused={refused}
+  />
   {/* HOSTED AT EVERY WIDTH. `?` is a keyboard explanation, not a studio control, so the map has to
       open on a narrow window too — and that is what gives `Overlay`'s SHEET presentation a
       reachable invoker at S0 rather than an untested branch waiting for S4. */}
@@ -837,7 +867,18 @@ export default function V2() {
         control would read as broken. */}
     {refused && <p className="v2-refused" role="alert">{refused}</p>}
     <div className="v2-actions">
-     <button type="button" className={panel === 'search' ? 'is-on' : ''} onClick={() => { setPanel((p) => (p === 'search' ? 'none' : 'search')); setDetent('half'); }}>{tr('search.open')}</button>
+     {/* ── THE PHONE'S FIND NOW OPENS THE A4 SHEET (S2) ───────────────────────────────────────
+         It used to toggle `panel === 'search'`, an in-margin list. `spec.md` A4 draws Find as a
+         724 px bottom sheet with a scrim, which the margin cannot host at all: its own high detent
+         is min(48dvh, 420). So the button opens the shared palette — the same component, the same
+         matcher and the same denominators the studio gets, in `Overlay`'s sheet presentation.
+
+         RC5 is satisfied by construction rather than by luck: the header, the rail and both detents
+         are untouched (the sheet is a scrim above them), and the results container inside the
+         palette keeps the `.v2-search` class, so verify-regress's "Find opens a search field"
+         (verify-regress.mjs:1140) still matches the element it was written about. */}
+     <button type="button" aria-haspopup="dialog" aria-expanded={shell.findOpen}
+      onClick={() => shell.setFindOpen(true)}>{tr('search.open')}</button>
      <button type="button" className={panel === 'systems' ? 'is-on' : ''} onClick={() => { setPanel((p) => (p === 'systems' ? 'none' : 'systems')); setDetent('half'); }}>{tr('systems.open')}</button>
      <button type="button" onClick={() => dispatch({type: 'reset-view'})}>{tr('view.reset')}</button>
     </div>
@@ -855,19 +896,11 @@ export default function V2() {
         to follow it. */}
     {focused && <p className="v2-desc">{describe(focused.name, systemId)}</p>}
 
-    {panel === 'search' && <div className="v2-search">
-     <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tr('search.placeholder')} aria-label={tr('search.open')} autoFocus/>
-     <ul>
-      {results.map((c) => <li key={c.id}>
-       <button type="button" className="v2-result" onClick={() => replacePicks([c.id], c.id)}>
-        <span>{t.name(c.id, c.name)}</span>
-        {t.secondary(c.id, c.name) && <i>{t.secondary(c.id, c.name)}</i>}
-       </button>
-       <button type="button" className="v2-plus" aria-label={tr('search.add', {name: t.name(c.id, c.name)})} onClick={() => addToPicks(c.id)}>+</button>
-      </li>)}
-      {query && !results.length && <li className="v2-empty">{tr('search.empty')}</li>}
-     </ul>
-    </div>}
+    {/* THE IN-MARGIN SEARCH LIST IS GONE — it is the A4 sheet now (the Find button above). What
+        replaced it is strictly more: three lanes instead of one, per-lane denominators, the matched
+        Chinese spelling shown in an English interface, and a ranking that is stable. The `search`
+        member of `panel` is retained because `setPanel('none')` on a successful replace is still
+        how the systems panel closes. */}
 
     {/* ⚠️ THIS CONTROL IS THE HUMAN'S SYSTEM SET, SO IT READS AND WRITES THE INTENT — never
         `render.visible`, which a scene's skeletal ghost legitimately overwrites.

@@ -169,6 +169,26 @@ export function inTree(ev: KeyboardEvent): boolean {
 export const modified = (ev: KeyboardEvent): boolean => ev.ctrlKey || ev.metaKey || ev.altKey;
 
 /**
+ * ── THE ONE CHORD THAT IS ALLOWED INSIDE AN EDITOR (L31 v2.1b+c, S2) ───────────────────────────
+ *
+ * `spec.md` scopes the two Find spellings DIFFERENTLY, and the difference is the whole reason this
+ * predicate exists as its own function rather than a clause inside `bindingFor`:
+ *
+ *   Ctrl+K / ⌘K — "Global, outside composition"   → fires even with focus in a text field
+ *   /           — "Global outside editors"        → must NOT fire while typing
+ *
+ * That asymmetry is right. `/` is a character: intercepting it inside the Ask box would make the
+ * slash key untypeable, which is the exact class of defect guard 1 exists to prevent. Ctrl+K is not
+ * a character in any field this app renders, and a reader who is mid-sentence in the filter box and
+ * wants the palette should get it — every editor-bearing app behaves this way.
+ *
+ * It is matched on `event.code`, like the other letter bindings: `KeyK` is K on every layout.
+ * `altKey` is excluded so Ctrl+Alt+K (AltGr on Windows produces exactly that) stays the browser's.
+ */
+export const findChord = (ev: KeyboardEvent): boolean =>
+ (ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.code === 'KeyK';
+
+/**
  * THE BINDINGS S0 ACTUALLY INSTALLS. Two, and both are global rather than field-scoped, because
  * neither moves the camera: Escape closes whatever is on top, and `?` explains the keyboard to
  * someone who has not got one of the other commands to work.
@@ -180,8 +200,16 @@ export const modified = (ev: KeyboardEvent): boolean => ev.ctrlKey || ev.metaKey
  */
 function bindingFor(ev: KeyboardEvent): Command | null {
  if (ev.key === 'Escape') return 'escape';
+ // S2's CHORD, DECLARED ABOVE GUARD 5 — which is what makes it an exception TO guard 5 rather than
+ // a hole in it. The header has always named Ctrl+K as one of the two sanctioned exceptions; this
+ // is the line that cashes the promise.
+ if (findChord(ev)) return 'find';
  if (ev.key === '?' && !modified(ev)) return 'keymap';
  if (modified(ev)) return null;            // guard 5 — Ctrl/Cmd/Alt belong elsewhere
+ // `/` is a CHARACTER binding, matched on `ev.key` for the same reason `?` is: which physical key
+ // produces a slash is genuinely layout-dependent. Guard 1 above has already declined it inside an
+ // editor, which is the scope difference `findChord`'s note describes.
+ if (ev.key === '/') return 'find';
  /**
   * S1's DISCRETE bindings. `spec.md`'s map, and matched on `event.code` for the letter keys for
   * the same reason the held set is: `KeyF` is F on every layout, `ev.key === 'f'` is not.
@@ -222,11 +250,20 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
  const onKeyDown = (ev: KeyboardEvent) => {
   if (composing(ev)) return;                                  // guard 2 — before anything else
   const editor = inEditor(ev);                                // guard 1
-  // ESCAPE IS THE ONE KEY AN EDITOR DOES NOT SWALLOW. Closing the dialog you are typing in is the
-  // single most expected keystroke in any overlay, and a guard that blocked it would make the
-  // Find box a trap. Everything else declines inside an editor.
-  if (editor && ev.key !== 'Escape') return;
-  if (inTree(ev) && ev.key !== 'Escape') return;              // guard 4
+  /**
+   * ESCAPE IS THE ONE KEY AN EDITOR DOES NOT SWALLOW. Closing the dialog you are typing in is the
+   * single most expected keystroke in any overlay, and a guard that blocked it would make the
+   * Find box a trap. Everything else declines inside an editor.
+   *
+   * ⚠️ AND Ctrl+K, AS OF S2 — the SECOND exception, and the narrowest possible one. It is spelled
+   * as `findChord(ev)` rather than as `cmd === 'find'` DELIBERATELY: the `find` command has two
+   * bindings and only ONE of them is allowed here. Widening it to the command would let bare `/`
+   * through as well, and `/` inside the Ask box is a slash the reader is trying to type — guard 1's
+   * founding example. `spec.md` scopes the two spellings differently and so does this line.
+   */
+  const chord = findChord(ev);
+  if (editor && ev.key !== 'Escape' && !chord) return;
+  if (inTree(ev) && ev.key !== 'Escape' && !chord) return;    // guard 4
 
   const cmd = bindingFor(ev);
   /**
@@ -318,8 +355,21 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
    * absent, they felt broken. Escape, `?` and the discrete non-camera commands stay global.
    */
   if (CAMERA_CMDS.has(cmd) && opts.cameraEnabled && !opts.cameraEnabled()) return;
-  // guard 3 — a modal owns the keyboard, but Escape is how it is dismissed.
-  if (opts.modalOpen() && cmd !== 'escape') return;
+  /**
+   * guard 3 — a modal owns the keyboard, but Escape is how it is dismissed.
+   *
+   * ⚠️ `find` IS THE SECOND EXEMPTION (stand-in review S2 r1, M2). With the palette already open, a
+   * second Ctrl+K fell through here and reached the BROWSER — measured `prevented:false` — so the
+   * chord that opens Find silently did something else the moment Find was open. `spec.md:117`
+   * scopes Ctrl+K as "Global, outside composition" with no modal carve-out; `spec.md:140`'s modal
+   * suppression is about CAMERA commands.
+   *
+   * It is exempted here and ADJUDICATED in the handler: `use-shell` consumes it when the palette is
+   * the open overlay (refocusing the input) and DECLINES it when the key map or Settings owns the
+   * screen, because opening a palette on top of another modal is worse than doing nothing. A
+   * declined command leaves the event untouched, which is this file's rule.
+   */
+  if (opts.modalOpen() && cmd !== 'escape' && cmd !== 'find') return;
   if (opts.run(cmd, ev) === false) return;                    // declined: leave the event alone
   ev.preventDefault();
  };
@@ -384,8 +434,21 @@ export interface KeyRow {
 export const KEY_MAP: KeyRow[] = [
  {keys: 'Esc', cmd: 'keys.esc', group: 'now'},
  {keys: '?', cmd: 'keys.help', group: 'now'},
- {keys: 'Ctrl K / ⌘K', cmd: 'keys.find', group: 'global', owner: 'S2'},
- {keys: '/', cmd: 'keys.find', group: 'global', owner: 'S2'},
+ /**
+  * ── S2 BOUND THESE ─────────────────────────────────────────────────────────────────────────────
+  *
+  * Dropping `owner` is the whole edit — a row with no owner is a row that works today (the S1 note
+  * below). Neither is `studioOnly`: Find is global. The palette renders as a centred modal in the
+  * studio and as the A4 bottom sheet below 768, so unlike the camera keys it has a real surface at
+  * every tier, and withholding it on the phone would be the round-2 High repeated on a new command.
+  *
+  * `binds: ['find']` is not decoration. The unit test asserts that nothing marked `studioOnly`
+  * binds a command guard 7 does not withhold, AND that every withheld command is marked — so the
+  * moment somebody adds `find` to `CAMERA_CMDS` these rows must gain the mark or the suite reds.
+  * That correspondence is what stops guard 7 being widened quietly (round 5).
+  */
+ {keys: 'Ctrl K / ⌘K', cmd: 'keys.find', group: 'global', binds: ['find']},
+ {keys: '/', cmd: 'keys.find', group: 'global', binds: ['find']},
  {keys: 'Ctrl , / ⌘,', cmd: 'keys.settings', group: 'global', owner: 'S4'},
  {keys: 'Alt 1…5', cmd: 'keys.panels', group: 'global', owner: 'S5'},
  {keys: '[  ]', cmd: 'keys.sides', group: 'global', owner: 'S6'},

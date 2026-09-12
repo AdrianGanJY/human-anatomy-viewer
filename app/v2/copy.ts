@@ -49,6 +49,30 @@ export const V2: Record<string, Row> = {
  'search.close':   {en: 'Close', 'zh-Hans': '关闭', 'zh-Hant': '關閉'},
  'search.add':     {en: 'Add {name}', 'zh-Hans': '加入{name}', 'zh-Hant': '加入{name}'},
 
+ // ── L31 v2.1b+c, S2 — THE FIND PALETTE ────────────────────────────────────────────────────────
+ // `spec.md` copy keys `search.cross` / `search.results` / `search.footer` / `search.loading` /
+ // `search.retry`. The count-bearing row is `search.results`, whose `{n}` and `{total}` are MEASURED
+ // per lane (find.ts) rather than the fixed 3,432 the S0 placeholder carried.
+ 'search.cross':   {en: 'Searches English, 简体 and 繁體 at once — whatever the interface is set to.', 'zh-Hans': '同时检索英文、简体与繁體 — 与界面语言无关。', 'zh-Hant': '同時檢索英文、簡體與繁體 — 與介面語言無關。'},
+ 'search.results': {en: '{n} of {total}', 'zh-Hans': '{total} 中的 {n}', 'zh-Hant': '{total} 中的 {n}'},
+ 'search.footer':  {en: 'Enter replaces the selection · Shift+Enter adds · Esc closes', 'zh-Hans': 'Enter 替换所选 · Shift+Enter 加入 · Esc 关闭', 'zh-Hant': 'Enter 替換所選 · Shift+Enter 加入 · Esc 關閉'},
+ 'search.capped':  {en: 'Showing the first {n} in each group · narrow the query to see the rest', 'zh-Hans': '每组仅显示前 {n} 条 · 缩小查询范围可查看其余', 'zh-Hant': '每組僅顯示前 {n} 條 · 縮小查詢範圍可檢視其餘'},
+ 'search.loading': {en: 'Loading the Chinese names…', 'zh-Hans': '正在载入中文名称…', 'zh-Hant': '正在載入中文名稱…'},
+ // The PARTIAL state (X2). It says what is missing and what happens next, because "retrying
+ // automatically" is only reassuring if the reader is told when.
+ 'search.partial': {en: 'One Chinese script did not load — reopening Find retries it.', 'zh-Hans': '有一种中文字形未能载入 — 重新打开查找会再试一次。', 'zh-Hant': '有一種中文字形未能載入 — 重新開啟查找會再試一次。'},
+ // The TOTAL-failure case, which used to fall through the partial banner's `loadedLanes() > 0`
+ // gate and leave a Chinese query reading "No structures match." — a claim about the atlas made
+ // when the truth was that no dictionary had loaded (stand-in review S2 r1, M1).
+ 'search.noneLoaded': {en: 'The Chinese names could not be loaded, so Chinese queries find nothing yet.', 'zh-Hans': '中文名称未能载入，因此暂时无法用中文检索。', 'zh-Hant': '中文名稱未能載入，因此暫時無法用中文檢索。'},
+ 'search.retry':   {en: 'Try again', 'zh-Hans': '重试', 'zh-Hant': '重試'},
+ 'search.recent':  {en: 'Recent and selected', 'zh-Hans': '最近与所选', 'zh-Hant': '最近與所選'},
+ 'search.laneSystems':  {en: 'Systems', 'zh-Hans': '系统', 'zh-Hant': '系統'},
+ 'search.laneConcepts': {en: 'Structures', 'zh-Hans': '结构', 'zh-Hant': '結構'},
+ 'search.laneParts':    {en: 'Individual meshes', 'zh-Hans': '独立网格', 'zh-Hant': '獨立網格'},
+ 'search.scopeTo':      {en: 'Narrow to this system', 'zh-Hans': '限定此系统', 'zh-Hant': '限定此系統'},
+ 'search.scopeClear':   {en: 'Search every system again', 'zh-Hans': '恢复检索全部系统', 'zh-Hant': '恢復檢索全部系統'},
+
  'systems.open':   {en: 'Systems', 'zh-Hans': '系统', 'zh-Hant': '系統'},
  'view.reset':     {en: 'Reset view', 'zh-Hans': '重置视角', 'zh-Hant': '重置視角'},
  'view.three-quarter': {en: 'Three-quarter', 'zh-Hans': '四分之三视角', 'zh-Hant': '四分之三視角'},
@@ -279,6 +303,13 @@ export const V2_ONE: Record<string, string> = {
  'status.all': 'Whole body loaded · {n} chunk',
  'panel.structures': '{n} structure',
  'ask.context': 'Included: {n} structure and this scene link',
+ // L31 v2.1b+c, S2 — the audit of the palette's two `{n}` rows, in full (RC13 again):
+ //   `search.results` — "{n} of {total}" → "1 of 3,432" is already correct English. NOT listed, on
+ //                      the same principle `rail.more` is not: a singular with no defect behind it
+ //                      is a change, and `{total}` would need one too the day a lane holds one item.
+ //   `search.capped`  — "the first {n} in each group" → `{n}` is the CAP constant (50). It is never
+ //                      1 by construction, so a singular would be unreachable copy.
+ // No other S2 row interpolates a count: `search.add` takes {name}, the lane names are bare.
 };
 
 /** `{n}`-style placeholders, same contract as `i18n/ui.ts fmt`, plus the English singular above. */

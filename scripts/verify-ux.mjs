@@ -861,10 +861,11 @@ for (const vp of SWEEP) {
     await barePage.waitForTimeout(4000);
 
     // ── the dictionary lane, NEGATIVE half ───────────────────────────────────────────────────
-    // Critic gap 9 / codex-plan-review.md §C. Today the palette is a margin panel rather than a
-    // ⌘K overlay, so "before the palette would open" is "before any Find interaction" — which is
-    // the state this page is in. The assertion is therefore exact now and stays exact when
-    // v2.1b replaces the panel with the palette.
+    // Critic gap 9 / codex-plan-review.md §C. The palette IS the ⌘K overlay as of S2, so "before
+    // the palette opens" is now literal rather than anticipatory: the effect that fetches is keyed
+    // on `open` (find.tsx), and this page has not opened it. The POSITIVE half — both lanes arrive
+    // on the first open — follows immediately below, because a negative alone is satisfied by a
+    // palette that never loads a dictionary at all.
     const bareOrigin = new URL(base).origin;
     // The same population gate, because this pass consumes the same kind of ledger and makes a
     // NEGATIVE claim from it ("no Chinese dictionary was requested"). An absence measured over an
@@ -890,6 +891,87 @@ for (const vp of SWEEP) {
       bareReqs.lang === 'en' && bareReqs.zh.length === 0,
       `lang=${bareReqs.lang}, ${bareReqs.zh.length} zh dictionary requests of ${bareReqs.total} total CDP starts `
       + `[population: ${POPULATION}]; playwright cross-check ${barePw} (unasserted)`, '0');
+
+    /**
+     * ── the dictionary lane, POSITIVE half (S2) ──────────────────────────────────────────────
+     *
+     * ⚠️ THE NEGATIVE ROW ABOVE IS SATISFIED BY A PALETTE THAT NEVER LOADS ANYTHING. "Zero Chinese
+     * dictionaries were requested" is exactly what a broken cross-script search looks like from the
+     * ledger, and it is also what a palette that fails to open looks like. Measured alone it is the
+     * weakest kind of green — an absence with no control arm.
+     *
+     * So the same page, with the same ledger, now OPENS the palette and the requests are counted
+     * again. Both lanes must arrive, on an interface that is still English: that is the whole
+     * cross-script claim expressed as network traffic, and it is the row that makes the absence
+     * above mean "deferred" rather than "absent".
+     */
+    // ⚠️ v2 ONLY. The palette is v2's; pressing Ctrl+K on v1 opens nothing, so an unguarded row
+    // here would report a RED against a page that was never claimed to have the feature — the
+    // mirror image of the vacuous green the negative row above would give on its own.
+    if (variant === 'v2') {
+    await barePage.keyboard.down('Control');
+    await barePage.keyboard.press('KeyK');
+    await barePage.keyboard.up('Control');
+    // Generous: two dictionaries at ~348 KB over a cold local server, plus the render.
+    await barePage.waitForTimeout(3500);
+    const afterOpen = rowsByBarrier(bareLedger, null, bareOrigin);
+    const zhAfter = afterOpen.filter((n) => /\/i18n\/zh-/.test(n));
+    const zhDistinctAfter = new Set(zhAfter.map((n) => n.replace(/^.*\/i18n\//, ''))).size;
+    const paletteOpen = await barePage.evaluate(() => ({
+      open: !!document.querySelector('.v2-modal.is-find'),
+      lang: document.documentElement.lang,
+    }));
+    check(vp.name, 'and Ctrl+K THEN loads both dictionaries — the deferral is a deferral, not an absence',
+      paletteOpen.open && paletteOpen.lang === 'en' && zhDistinctAfter === 2,
+      `palette open=${paletteOpen.open}, lang=${paletteOpen.lang}, `
+      + `${zhDistinctAfter} distinct zh dictionaries after the open (${zhAfter.length} starts), `
+      + `${afterOpen.length - bareReqs.total} new CDP starts in total`,
+      'open, lang=en, 2 distinct dictionaries');
+
+    /**
+     * ── THE CROSS-SCRIPT ROW, IN THE ONLY CONTEXT THAT CAN CARRY IT ─────────────────────────────
+     *
+     * ENGLISH interface (measured above: `lang=en`, and nothing has written `atlas.lang`), Chinese
+     * query. A matcher that consulted only the active language's dictionary returns zero rows here
+     * and looks exactly like a typo.
+     *
+     * THE SECOND HALF IS THE ONE THAT MATTERS: the RENDERED row must contain 胸骨体. "More than
+     * zero results" passes on a palette that found the structure and then showed the reader an
+     * English name with no visible reason to be in the list — which is the gap `t.alt` was added
+     * for in v2.1a, and it is invisible in a screenshot unless you read Chinese.
+     *
+     * Every row is scanned, not the first six: ranking puts the exact match (胸骨 = Sternum) first,
+     * so 胸骨体 is legitimately further down and a head-of-list check would fail on correct output.
+     */
+    await barePage.keyboard.type('胸骨');
+    await barePage.waitForTimeout(800);
+    const enCross = await barePage.evaluate(() => {
+      const rows = [...document.querySelectorAll('.v2-find-list .v2-result')];
+      const input = document.querySelector('.v2-find input');
+      return {
+        lang: document.documentElement.lang,
+        // THE INPUT'S OWN VALUE. Without it this row cannot tell "the query found nothing" from
+        // "the keystrokes never reached the field" — which is exactly the defect the autofocus fix
+        // was for, and the reason it survived a green oracle once already.
+        typed: input?.value ?? null,
+        focused: document.activeElement === input,
+        n: rows.length,
+        body: rows.map((r) => r.textContent.replace(/\s+/g, ' ').trim()).filter((t) => /胸骨体|胸骨體/.test(t)).slice(0, 2),
+        first: rows[0]?.textContent.replace(/\s+/g, ' ').trim() ?? null,
+      };
+    });
+    check(vp.name, 'the palette autofocuses its INPUT, so a reader can type without clicking first',
+      enCross.focused && enCross.typed === '胸骨',
+      `activeElement is the input=${enCross.focused}, input value="${enCross.typed}"`,
+      'focused, and the query landed in it');
+    check(vp.name, 'in an ENGLISH interface, 胸骨 returns matches AND a row shows the 胸骨体 it matched',
+      enCross.lang === 'en' && enCross.n >= 1 && enCross.body.length >= 1,
+      `lang=${enCross.lang}, ${enCross.n} rows, first: ${enCross.first ?? '(none)'}; 胸骨体 row: ${enCross.body[0] ?? 'ABSENT'}`,
+      'lang=en, >= 1 row, and 胸骨体 rendered');
+    await barePage.screenshot({path: join(outDir, `${label}-find-en-${vp.name}.png`), timeout: SHOT_MS});
+    await barePage.keyboard.press('Escape');
+    await barePage.waitForTimeout(300);
+    }
 
     // ── bare framing: the DEFAULT fit, which is the picture Adrian rejected ───────────────────
     const bareFrame = await barePage.evaluate(({id, fieldSel}) => {
@@ -1116,6 +1198,51 @@ for (const vp of SWEEP) {
     check(vp.name, `bare entry reached readiness and logged no console error (${BARE_EN})`,
       bareReady && bareErrors.length === 0,
       `${bareReady ? 'ready' : 'READINESS MARKER NEVER APPEARED'}; ${bareErrors.slice(0, 2).join(' | ') || 'no console errors'}`, 'ready, none');
+    /**
+     * ══ S2 — THE MIRROR OF THE CROSS-SCRIPT ROW ═══════════════════════════════════════════════
+     *
+     * The studio pass asserts a CHINESE query in an ENGLISH interface. This is the other direction,
+     * and it is not redundant: the two are served by different code. The first relies on the
+     * dictionaries being searched at all in EN mode (`makeT` sets `zh = false` there, so `secondary`
+     * returns null BY DESIGN and only `alt` can render the pairing). The second relies on the
+     * ENGLISH name staying in the key set once a dictionary is loaded — a matcher that replaced the
+     * English keys with the Chinese ones would pass the first row and fail this one.
+     *
+     * `?lang=zh-Hans` is the app's own entry point for a language, so this is the real interface,
+     * not `documentElement.lang` poked from outside.
+     */
+    if (variant === 'v2') {
+    await barePage.goto(`${base}${path}?lang=zh-Hans`, {waitUntil: 'domcontentloaded', timeout: 240000});
+    try { await barePage.waitForSelector(READY_SEL[variant], {timeout: 240000}); } catch { /* reported by the row */ }
+    await barePage.waitForTimeout(2500);
+    await barePage.keyboard.down('Control');
+    await barePage.keyboard.press('KeyK');
+    await barePage.keyboard.up('Control');
+    await barePage.waitForTimeout(900);
+    await barePage.keyboard.type('gluteus');
+    await barePage.waitForTimeout(700);
+    const zhSide = await barePage.evaluate(() => {
+      const rows = [...document.querySelectorAll('.v2-find-list .v2-result')];
+      const input = document.querySelector('.v2-find input');
+      return {
+        lang: document.documentElement.lang,
+        open: !!document.querySelector('.v2-modal.is-find'),
+        // Same instrument lesson as the EN row: report what actually reached the field, so a red
+        // here names its own cause instead of being read as "the matcher found nothing".
+        typed: input?.value ?? null,
+        n: rows.length,
+        text: rows.slice(0, 4).map((r) => r.textContent.replace(/\s+/g, ' ').trim()),
+      };
+    });
+    // THE SECOND HALF IS THE REAL CLAIM, again: the row must SHOW the English, or a Chinese-speaking
+    // reader who typed a Latin word sees a list of Chinese names with no visible reason to trust it.
+    const showsEnglish = zhSide.text.some((t) => /gluteus/i.test(t));
+    check(vp.name, 'in a 简体 interface, "gluteus" returns matches AND the row shows the English name',
+      zhSide.open && zhSide.lang === 'zh-Hans' && zhSide.typed === 'gluteus' && zhSide.n >= 1 && showsEnglish,
+      `lang=${zhSide.lang} open=${zhSide.open} typed="${zhSide.typed}" ${zhSide.n} rows; first: ${zhSide.text[0] ?? '(none)'}`,
+      '>= 1 row, and the English visible');
+    await barePage.screenshot({path: join(outDir, `${label}-find-zh-${vp.name}.png`), timeout: SHOT_MS});
+    }
   } catch (e) {
     check(vp.name, 'bare entry run completed', false, String(e).slice(0, 220), 'no throw');
   } finally {
@@ -1298,7 +1425,19 @@ if (variant === 'v2') {
       // of these rows carried "arrives in S1"; if a later edit dropped a binding but left its row,
       // or kept the row's owner marker after wiring it, this is what says so.
       const S1_KEYS = ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H', 'R', 'Shift P / Shift S'];
-      const missingKeys = S1_KEYS.filter((k) => !(modal?.keys ?? []).includes(k));
+      /**
+       * S2's TWO, added to the same arithmetic rather than beside it (the S1 worklog's handover
+       * item 2). Wiring Find drops the forthcoming count 8 -> 6, and the only way to make that a
+       * MEASUREMENT instead of a literal is to subtract the group that bound them: the expression
+       * below now reads "20 rows, minus the 2 live at S0, minus S1's, minus S2's".
+       *
+       * Both spellings are listed because the map advertises both and only one of them is a chord —
+       * a future edit that dropped the bare `/` binding but kept its row would leave a key the map
+       * promises and nothing answers, which is the defect keys.ts exists to prevent.
+       */
+      const S2_KEYS = ['Ctrl K / ⌘K', '/'];
+      const BOUND = [...S1_KEYS, ...S2_KEYS];
+      const missingKeys = BOUND.filter((k) => !(modal?.keys ?? []).includes(k));
       /**
        * ⚠️ AND THE MAP SAYS WHICH KEYS THIS TIER ACTUALLY HAS. Guard 7 withholds the seven
        * studio-only camera rows below 1180; `1 2 3 4` and `R` are controller dispatches that work
@@ -1312,11 +1451,11 @@ if (variant === 'v2') {
         modal?.desktopOnly === (vp.width >= 1180 ? 0 : WITHHELD),
         `${modal?.desktopOnly} rows marked desktop-only at ${vp.width}px`,
         String(vp.width >= 1180 ? 0 : WITHHELD));
-      check(vp.name, `[${STUDIO_V}] the key map names every camera binding S1 wired, and marks none of them forthcoming`,
-        !!modal && missingKeys.length === 0 && modal.pending === (KEY_ROWS - 2 - S1_KEYS.length),
+      check(vp.name, `[${STUDIO_V}] the key map names every binding S1 and S2 wired, and marks none of them forthcoming`,
+        !!modal && missingKeys.length === 0 && modal.pending === (KEY_ROWS - 2 - BOUND.length),
         modal ? `${modal.keys.length} keys${missingKeys.length ? `, MISSING: ${missingKeys.join(' / ')}` : ''}, ${modal.pending} still marked forthcoming`
           : 'no overlay opened',
-        `all ${S1_KEYS.length} present, ${KEY_ROWS - 2 - S1_KEYS.length} forthcoming (the S2/S3/S4/S5/S6 rows)`);
+        `all ${BOUND.length} present, ${KEY_ROWS - 2 - BOUND.length} forthcoming (the S3/S4/S5/S6 rows)`);
       check(vp.name, `[${STUDIO_V}] it presents as a ${vp.width < 768 ? 'SHEET with a 44 px handle' : 'centred modal'}`,
         vp.width < 768 ? (modal?.sheet === true && modal?.handle === 44) : (modal?.sheet === false && modal?.handle === null),
         `sheet=${modal?.sheet} handle=${modal?.handle}`, vp.width < 768 ? 'sheet, handle 44' : 'modal, no handle');
@@ -1330,8 +1469,228 @@ if (variant === 'v2') {
         !!modal && closed, modal ? (closed ? 'opened, then closed' : 'opened and STAYED OPEN') : 'it never opened, so Escape proves nothing',
         'opened, then closed');
 
+      /**
+       * ══ S2 — THE FIND PALETTE ═══════════════════════════════════════════════════════════════
+       *
+       * Six claims, every one of which is invisible in a screenshot. The palette LOOKS right in all
+       * of the states below — the defects are about which rows came back, in what order, whether a
+       * request was made, and where the focus went.
+       *
+       * It runs at EVERY viewport, including 390x844, because the palette is one component with two
+       * presentations and the phone's is the one that replaced a working surface. These are the
+       * APPENDED phone rows RC5(c) permits; none of the pre-existing ones is touched.
+       */
+      const openFind = async () => {
+        // Ctrl+K rather than clicking the button: the chord is the claim, and it is also the only
+        // spelling allowed to fire from inside an editor, which the row below depends on.
+        await page.keyboard.down('Control'); await page.keyboard.press('KeyK'); await page.keyboard.up('Control');
+        await page.waitForTimeout(350);
+      };
+      await openFind();
+      const find1 = await page.evaluate(() => {
+        const m = document.querySelector('.v2-modal.is-find');
+        const input = m?.querySelector('input');
+        return m ? {
+          open: true, sheet: m.classList.contains('is-sheet'),
+          // `.v2-search input` is the selector verify-regress.mjs:1140 has asserted since v2 P0.
+          // The phone's Find used to open an in-margin list; it now opens THIS. Keeping the class
+          // is what lets the existing regression row keep testing the claim it was written about.
+          legacySelector: !!m.querySelector('.v2-search input'),
+          focusedIsInput: document.activeElement === input,
+          w: Math.round(m.getBoundingClientRect().width),
+        } : {open: false};
+      });
+      check(vp.name, `[${STUDIO_V}] Ctrl+K opens the palette, autofocuses its input, and keeps the .v2-search contract`,
+        find1.open && find1.focusedIsInput && find1.legacySelector,
+        `open=${find1.open} focusedInput=${find1.focusedIsInput} .v2-search input=${find1.legacySelector} width=${find1.w}`,
+        'open, input focused, legacy selector intact');
+      check(vp.name, `[${STUDIO_V}] it presents as a ${vp.width < 768 ? 'SHEET (spec A4)' : 'centred modal (spec D3, 640 wide)'}`,
+        vp.width < 768 ? find1.sheet === true : (find1.sheet === false && find1.w === 640),
+        `sheet=${find1.sheet} width=${find1.w}`, vp.width < 768 ? 'sheet' : 'modal, 640');
+
+      /**
+       * ⚠️ THIS PASS IS **zh-Hans**, NOT ENGLISH, AND SAYING OTHERWISE WAS AN INSTRUMENT DEFECT.
+       *
+       * The first version of this row was titled "in an ENGLISH interface" and asserted the
+       * cross-script claim here. It is the wrong context to assert it in: the studio pass drives the
+       * §9 SCENE FIXTURE, which declares `lang: 'zh-Hans'` (verify-ux.mjs:88), and applying a scene
+       * writes `localStorage['atlas.lang']` (app/v2/page.tsx:255). The measured lane headings came
+       * back as 结构 / 独立网格 — Chinese — under a row claiming to prove English behaviour.
+       *
+       * Nothing about the product was wrong there; the LABEL was, and a row whose name misdescribes
+       * its own context is the kind of green that is worth less than no row at all. The EN half of
+       * the cross-script claim now lives in the bare pass, which measures `lang=en` before asserting
+       * it, and the zh half in the `?lang=zh-Hans` sub-pass beside it. What stays here is the claim
+       * this context CAN carry: the denominators, which are language-independent.
+       */
+      await page.keyboard.type('胸骨');
+      await page.waitForTimeout(500);
+      const cross = await page.evaluate(() => {
+        /**
+         * ⚠️ THE HEADING'S GEOMETRY, NOT ONLY ITS TEXT.
+         *
+         * The first version of this row read `h3.textContent` and nothing else. It passed at every
+         * viewport while each lane heading was rendering as a flex SIBLING beside its own result
+         * list — squeezed into a ~40 px left column and vertically centred, so on the phone it read
+         * as a stray "of 32" in the gutter. The text was correct the whole time; the LAYOUT was not,
+         * and a text assertion is structurally incapable of seeing that. Found by looking at the
+         * screenshot, which is why they are read rather than filed.
+         *
+         * So the heading must now be ABOVE its first row and must span the list, which is the thing
+         * that was actually false.
+         */
+        const groups = [...document.querySelectorAll('.v2-find-group')];
+        const geom = groups.map((g) => {
+          const h = g.querySelector('h3'), first = g.querySelector('.v2-result');
+          if (!h || !first) return null;
+          const hr = h.getBoundingClientRect(), fr = first.getBoundingClientRect(), gr = g.getBoundingClientRect();
+          return {
+            above: Math.round(hr.bottom) <= Math.round(fr.top) + 1,
+            spans: gr.width > 0 && hr.width / gr.width >= 0.5,
+            hw: Math.round(hr.width), gw: Math.round(gr.width),
+          };
+        }).filter(Boolean);
+        return {
+          n: document.querySelectorAll('.v2-find-list .v2-result').length,
+          lang: document.documentElement.lang,
+          // The per-lane denominators, as rendered. Three populations, never one.
+          lanes: [...document.querySelectorAll('.v2-find-group > h3')].map((h) => h.textContent.replace(/\s+/g, ' ').trim()),
+          geom,
+        };
+      });
+      check(vp.name, `[${STUDIO_V}] each lane heading sits ABOVE its rows and spans the list, not beside them`,
+        cross.geom.length >= 1 && cross.geom.every((g) => g.above && g.spans),
+        cross.geom.length
+          ? cross.geom.map((g) => `above=${g.above} width ${g.hw}/${g.gw}`).join(' | ')
+          : '(no lane groups rendered)',
+        'every heading above its first row, >= 50% of the group width');
+
+      /**
+       * ⚠️ THE ARROW KEYS WALK THE ORDER THE EYE READS (stand-in review S2 r1, H3).
+       *
+       * `rows = res.all` drives the keyboard; the list is drawn grouped by lane. When `all` was
+       * sorted rank-first those were two different orders: one ArrowDown moved the highlight 29
+       * screen rows, and after 77 presses it sat above where it had been at 47 — and `Enter` commits
+       * `rows[at]`, so the committing row was not reliably the highlighted one. 75 of 169 sampled
+       * queries disagreed.
+       *
+       * The row measures the ONE thing that was false: pressing ArrowDown n times must leave the
+       * highlight on the (n+1)th row IN DOM ORDER. Two distinct lanes are required, or the check
+       * cannot fail — a single-lane list agrees with itself under any sort.
+       */
+      const navOk = await page.evaluate(async () => {
+        const list = document.querySelector('.v2-find-list');
+        if (!list) return {error: 'no list'};
+        const domIndex = () => [...list.querySelectorAll('.v2-result')]
+          .findIndex((el) => el.classList.contains('is-at'));
+        const lanes = new Set([...list.querySelectorAll('[data-lane]')].map((el) => el.dataset.lane));
+        const input = document.querySelector('.v2-find input');
+        const steps = [];
+        for (let i = 0; i < 12; i++) {
+          input.dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true, cancelable: true}));
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          steps.push(domIndex());
+        }
+        return {lanes: lanes.size, steps, rows: list.querySelectorAll('.v2-result').length};
+      });
+      const walk = navOk.steps ?? [];
+      const monotonic = walk.length > 0 && walk.every((v, i) => v === Math.min(i + 1, (navOk.rows ?? 1) - 1));
+      check(vp.name, `[${STUDIO_V}] ArrowDown walks the rows in the order they are DRAWN, one at a time`,
+        navOk.lanes >= 2 && monotonic,
+        navOk.error ?? `${navOk.lanes} lanes, ${navOk.rows} rows, DOM positions after each ArrowDown: ${walk.join(',')}`,
+        '>= 2 lanes (or the check cannot fail), and positions 1,2,3,…');
+      check(vp.name, `[${STUDIO_V}] a Chinese query returns matches in the studio (interface: ${cross.lang})`,
+        cross.n >= 1, `${cross.n} rows at lang=${cross.lang}`, '>= 1 row');
+      /**
+       * THE DENOMINATORS, AS RENDERED. `3,432` and `2,234` are not hardcoded here — the assertion is
+       * that each lane heading carries its OWN "n of total" pair, in whichever language is up. What
+       * it forbids is the one number `spec.md` names: a single merged total across three unrelated
+       * populations.
+       */
+      check(vp.name, `[${STUDIO_V}] each lane reports its OWN denominator, never one merged total`,
+        cross.lanes.length >= 1
+          && cross.lanes.every((l) => /\d[\d,]*\s*(of|中的)\s*[\d,]+/.test(l))
+          // ⚠️ THE DENOMINATOR IS CAPTURED, NOT PATTERN-GUESSED (stand-in review S2 r1, L5). The
+          // first version keyed uniqueness on `/[\d,]{4,}/`, which returns '' for any lane under
+          // 1,000 — and the systems lane's population is 15. Two small lanes would both have keyed
+          // on '' and RED a perfectly correct palette. Both orders are matched because the zh copy
+          // puts the total first ("{total} 中的 {n}").
+          && new Set(cross.lanes.map((l) => {
+            const en = l.match(/of\s*([\d,]+)/); if (en) return en[1];
+            const zh = l.match(/([\d,]+)\s*中的/); return zh ? zh[1] : null;
+          })).size === cross.lanes.length,
+        cross.lanes.join(' | ') || '(no lane headings)',
+        'every lane heading carries "n of total", and no two lanes share a denominator');
+
+      /**
+       * THE GUARD ROW, WITH ITS CONTROL ARM. Typing "wasd" into the palette must not pan the camera
+       * — but "the camera did not move" passes trivially on a page where the renderer never came up,
+       * so the pose is read before and after AND the same keys are proved live afterwards by the S1
+       * rows in this same suite. Guard 1 (editors) is what does the work; this is the reachable case
+       * that proves it is installed on the palette too.
+       */
+      const poseBefore = await page.evaluate(() => window.__atlasNav?.pose() ?? null);
+      await page.keyboard.type('wasd');
+      await page.waitForTimeout(450);
+      const poseAfter = await page.evaluate(() => window.__atlasNav?.pose() ?? null);
+      const moved = poseBefore && poseAfter &&
+        ['x', 'y', 'z', 'tx', 'ty', 'tz'].some((k) => Math.abs(poseBefore[k] - poseAfter[k]) > 1e-4);
+      check(vp.name, `[${STUDIO_V}] typing W A S D into the palette does NOT move the camera`,
+        !!poseBefore && !moved,
+        poseBefore ? (moved ? `pose MOVED: ${JSON.stringify(poseAfter)}` : 'pose unchanged to 1e-4') : 'no renderer, so nothing was proved',
+        'a renderer exists, and the pose is unchanged');
+
+      /**
+       * FOCUS RETURNS TO THE INVOKER. `spec.md`: "Escape and close return focus to invoker." A
+       * palette that drops focus to `<body>` strands a keyboard reader at the top of the document,
+       * which is the single most common overlay defect and is completely invisible to a screenshot.
+       *
+       * The invoker here is the BODY-level focus the chord was pressed from, so the assertion is the
+       * weaker true one: focus is somewhere real and is no longer inside the (now absent) palette.
+       */
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(350);
+      const afterClose = await page.evaluate(() => ({
+        gone: !document.querySelector('.v2-modal.is-find'),
+        active: document.activeElement?.tagName ?? null,
+        inPalette: !!document.activeElement?.closest?.('.v2-find'),
+      }));
+      check(vp.name, `[${STUDIO_V}] Escape closes the palette and focus leaves it`,
+        afterClose.gone && !afterClose.inPalette,
+        `closed=${afterClose.gone} activeElement=${afterClose.active} stillInside=${afterClose.inPalette}`,
+        'closed, focus outside');
+
+      /**
+       * ⚠️ THE SURFACE THE PALETTE REPLACED IS GONE, AND NOTHING ELSE ASSERTED IT (stand-in review
+       * S2 r1, M3). The palette reuses `.v2-search` on its own container so the long-standing
+       * regression row keeps matching — which is honest, but it also means a regression that
+       * restored the phone's in-margin list would satisfy every row in this suite, including that
+       * one. The distinguishing fact is WHERE the element lives: inside `.v2-margin` is the old
+       * surface, inside `.v2-modal` is the new one. With the palette closed, neither should exist.
+       */
+      const leftovers = await page.evaluate(() => ({
+        inMargin: document.querySelectorAll('.v2-margin .v2-search').length,
+        anywhere: document.querySelectorAll('.v2-search').length,
+      }));
+      check(vp.name, `[${STUDIO_V}] the old in-margin search list is GONE — .v2-search exists only inside the palette`,
+        leftovers.inMargin === 0 && leftovers.anywhere === 0,
+        `.v2-margin .v2-search=${leftovers.inMargin}, .v2-search anywhere (palette closed)=${leftovers.anywhere}`,
+        '0 and 0');
+
       if (vp.tier.startsWith('studio')) {
         await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`), timeout: SHOT_MS});
+        // The palette, open and populated, as its own shot — the thing Adrian reacts to.
+        await openFind();
+        await page.keyboard.type('胸骨');
+        await page.waitForTimeout(600);
+        await page.screenshot({path: join(outDir, `${label}-find-${vp.name}.png`), timeout: SHOT_MS});
+        await page.keyboard.press('Escape');
+      } else if (vp.width < 768) {
+        await openFind();
+        await page.keyboard.type('gluteus');
+        await page.waitForTimeout(600);
+        await page.screenshot({path: join(outDir, `${label}-find-sheet-${vp.name}.png`), timeout: SHOT_MS});
+        await page.keyboard.press('Escape');
       }
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the studio pass ran`, false, String(e).slice(0, 200), 'no throw');

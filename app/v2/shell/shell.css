@@ -320,3 +320,78 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 @media (prefers-reduced-motion:reduce){
  .v2-chip.is-loading s{animation:none}
 }
+
+/* ══ THE FIND PALETTE (L31 v2.1b+c, S2) ═════════════════════════════════════════════════════════
+   `spec.md` D3 / T4L / T4P / A4: modal 640 wide, max-height 720, palette row 64. The modal box
+   itself already carries those numbers (.v2-modal above), so this section is only the palette's own
+   interior — and it is unscoped, like .v2-scrim, because the palette opens at EVERY tier: a centred
+   modal in the studio, the A4 sheet below 768.
+
+   NO HEX LITERALS (G1). Every colour below is a token declared in the block at the top of this
+   file or in v2.css. The one apparent exception is `color-mix`, which composes two tokens. */
+.v2-find{display:flex;flex-direction:column;min-height:0}
+/* The input sits ABOVE the scroller and never scrolls away: on the phone it must stay above the
+   keyboard, which is what the Overlay's --v2-vv sizing is for. */
+.v2-find-box{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:12px;flex-shrink:0}
+.v2-find-box input{flex:1;min-width:160px}
+/* The scope chip. It is a BUTTON, not a tag: removing the scope is the thing a reader most wants
+   next, and Backspace on an empty query does the same (find.tsx onKeyDown). */
+.v2-find-scope{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:999px;
+ background:var(--v2-accent-soft);color:var(--v2-accent);border:1px solid var(--v2-accent);font-size:var(--v2-type-xs)}
+.v2-find-scope:hover{background:var(--v2-accent);color:var(--v2-surface)}
+.v2-find-cross{margin:8px 0 0;font-size:var(--v2-type-xs);color:var(--v2-ink-3);line-height:1.5}
+.v2-find-note{margin:10px 0 0;padding:8px 10px;border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);
+ color:var(--v2-ink-2);font-size:var(--v2-type-xs)}
+.v2-find-note.is-warn{background:var(--v2-warn-soft);color:var(--v2-warn)}
+/* The list is the ONLY scroller in the palette, so the footer's contract ("Enter replaces…") and
+   the input stay on screen at every list length. overscroll-behavior stops a flick that reaches the
+   end from scrolling the page underneath — on the phone, that page is the field. */
+.v2-find-list{list-style:none;margin:10px 0 0;padding:0;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+/* ⚠️ THE GROUP IS AN <li>, AND v2.css ALREADY HAS A RULE FOR ONE.
+   `.v2-search li{display:flex;align-items:center;gap:6px;border-bottom:...}` (v2.css:163) styles the
+   phone's old RESULT rows — and the palette reuses `.v2-search` on its container so the long-standing
+   `.v2-search input` regression selector keeps matching. The cost of that reuse is this: the rule
+   reached the GROUP wrapper too, so each lane heading became a flex SIBLING of its own result list,
+   squeezed into a narrow left column and vertically centred against it ("STRUCTURES 11 of 3432"
+   floating beside the rows instead of above them, and on the 390 phone wrapped down to a stray "of
+   32" in the gutter).
+   MEASURED BY LOOKING — the oracle went green throughout, because it asserts the heading's TEXT and
+   the text was always correct. A layout defect is invisible to a text assertion, which is why the
+   screenshots are read rather than merely filed.
+   The result ROWS still want the inherited flex; only the wrapper is reset. */
+.v2-find .v2-find-list>li{display:block;border-bottom:none;gap:0}
+.v2-find-group>ul{list-style:none;margin:0;padding:0}
+/* THE LANE HEADING CARRIES THE DENOMINATOR. It is sticky because a reader scrolling 50 structures
+   must not lose which population the count belongs to — the whole point of three lanes. */
+.v2-find-group>h3{position:sticky;top:0;z-index:1;display:flex;align-items:baseline;gap:8px;
+ margin:12px 0 2px;padding:6px 0;background:var(--v2-surface);
+ font-size:var(--v2-type-xs);font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--v2-ink-3)}
+.v2-find-group>h3 em{font-style:normal;font-weight:400;letter-spacing:0;text-transform:none;
+ color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+/* 64 px rows per the artboards, against the 44 px the shared .v2-result already guarantees. */
+.v2-find .v2-result{min-height:64px;flex-direction:row;align-items:center;gap:10px;padding:6px 8px;border-radius:var(--v2-radius-sm)}
+.v2-find .v2-result:hover,.v2-find .v2-result.is-at{background:var(--v2-accent-soft)}
+/* THE ACTIVE ROW IS WHAT ENTER COMMITS, so it is marked with more than a tint: a tint alone fails
+   in high contrast and is invisible to anyone who cannot distinguish it from hover. */
+.v2-find .v2-result.is-at{box-shadow:inset 2px 0 0 var(--v2-accent)}
+.v2-find-name{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.v2-find-name i{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);display:flex;align-items:center;gap:6px}
+/* 简 / 繁 — which script the pair is written in. Without it, two Chinese spellings of one structure
+   are indistinguishable in an English interface. */
+.v2-find-script{font-style:normal;font-size:10px;padding:0 4px;border-radius:4px;
+ background:var(--v2-surface-2);color:var(--v2-ink-3);border:1px solid var(--v2-line-2)}
+.v2-find-parent{flex-shrink:0;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+ font-size:var(--v2-type-xs);color:var(--v2-ink-3)}
+.v2-find .v2-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.v2-find-foot{flex-shrink:0;margin:10px 0 0;padding-top:10px;border-top:1px solid var(--v2-line-2);
+ font-size:var(--v2-type-xs);color:var(--v2-ink-3)}
+/* A COARSE POINTER GETS THE 48 px CAPS the rest of the studio uses. */
+@media (pointer:coarse){
+ .v2-find .v2-plus{min-width:48px;min-height:48px}
+ .v2-find-scope{height:36px}
+}
+/* The retry affordance beside the partial/total dictionary-failure banner (stand-in review M1/L3). */
+.v2-find-retry{margin-left:8px;padding:0 8px;height:24px;border-radius:var(--v2-radius-sm);
+ border:1px solid var(--v2-warn);color:var(--v2-warn);font-size:var(--v2-type-xs)}
+.v2-find-retry:hover{background:var(--v2-warn);color:var(--v2-surface)}
+@media (pointer:coarse){.v2-find-retry{height:36px;padding:0 12px}}
