@@ -221,7 +221,15 @@ export interface V2State {
 }
 
 export type Command =
- | {type: 'apply-scene'; scene: Scene; blob?: string; redrive?: boolean}
+ /**
+ * ⚠️ `visible` RIDES WITH THE SCENE — codex round 7, Medium 1. The warm hash branch used to dispatch
+ * `set-visible` and THEN `apply-scene`, so a link whose scene was REFUSED had already committed the
+ * system change: codex executed a 25-structure blob that decodes fine and is then refused, and
+ * measured `visible` moved from `['skeletal']` to `[]` under a message saying the link was not
+ * applied. Two dispatches cannot be atomic; one can, and this reducer already returns early on a
+ * refusal without touching state.
+ */
+| {type: 'apply-scene'; scene: Scene; blob?: string; redrive?: boolean; visible?: SystemId[]}
  | {type: 'apply-legacy'; url: LegacyUrlFields & {select?: string[]}}
  | {type: 'clear-scene'; url: LegacyUrlFields & {select?: string[]}}
  | {type: 'replace'; ids: readonly string[]; focus?: string | null}
@@ -239,7 +247,7 @@ export type Command =
  * `['skeletal','digestive']`, both originals gone). `intent` absent keeps the old behaviour — one
  * set for both — which is what every non-tree caller still means.
  */
-| {type: 'set-visible'; visible: SystemId[]; intent?: SystemId[]}
+| {type: 'set-visible'; visible: SystemId[]; intent?: SystemId[]; explicit?: boolean}
  | {type: 'set-isolate'; on: boolean}
  /**
   * ── S3. THE TREE'S TICK — ONE ATOMIC TRANSACTION FOR ONE ROW AND FOR A WHOLE SYSTEM ───────────
@@ -440,7 +448,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     // and still ghosts the skeleton.
     visible: scene.rest.include === 'skeletal' && !state.intentExplicit
       ? ['skeletal']
-      : (state.visibleIntent ?? state.render.visible),
+      : (cmd.visible ?? state.visibleIntent ?? state.render.visible),
    });
    // THE ARRIVAL BLOB IS KEPT ONLY WHEN IT IS ALREADY CANONICAL, and the earlier wording here
    // overstated that. codex passed a valid blob using the supported `structures` spelling instead of
@@ -452,7 +460,15 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // legacy spelling is normalised.
    const blob = cmd.blob && cmd.blob === arrivalBlob ? cmd.blob : arrivalBlob;
    return {
-    state: {...state, scene, blob, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene), render},
+    state: {
+     ...state, scene, blob, picks: sceneSelectIds(scene), focusId: sceneFocusId(scene), render,
+     // ⚠️ THE URL'S OWN SET, COMMITTED IN THE SAME TRANSACTION (round 7, Medium 1). It is the INTENT
+     // only — it does NOT mark the intent explicit, because the serialiser writes `system=` from the
+     // render value and a ghost would therefore manufacture a statement (round 6). Carrying the set
+     // is what makes one link mean the same thing cold and warm; carrying authority is what it must
+     // never do.
+     visibleIntent: cmd.visible ?? state.visibleIntent,
+    },
     epoch: true,
    };
   }
@@ -715,10 +731,22 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // mode where a reader most wants to add context back.
    // ⚠️ THE INTENT IS PATCHED, NOT REPLACED, when the caller distinguishes the two (Medium 6), and
    // the click is now RECORDED as a statement so a later scene arrival cannot undo it (the High).
+   /**
+    * ⚠️ `explicit` DEFAULTS TO TRUE BECAUSE EVERY OTHER CALLER IS A CLICK — codex round 7, the High.
+    *
+    * Round 6 withdrew URL-derived authority; round 7 found I had put it straight back, because the
+    * warm branch's fix for Medium 1 forwarded `u.visible` THROUGH this command, and this command
+    * sets the flag. codex measured it: a ghost's automatically written `system=skeletal`, replayed
+    * over a hash navigation, produced `explicit:true, intent:['skeletal']` with zero clicks.
+    *
+    * The arrival path no longer uses this command at all (the set rides with `apply-scene`), but the
+    * flag is now an explicit parameter rather than an implication of the command, so the next caller
+    * has to say which it is. That is the difference between a fix and a fix that stays fixed.
+    */
    return {state: {
     ...state,
     visibleIntent: cmd.intent ?? cmd.visible,
-    intentExplicit: true,
+    ...(cmd.explicit === false ? {} : {intentExplicit: true}),
     render: {...state.render, isolate: false, visible: cmd.visible},
    }};
   }

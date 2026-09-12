@@ -3395,10 +3395,16 @@ if (variant === 'v2') {
        * choice, and for an empty set that spelling is `system=none` (app/url-state.ts serialises the
        * empty set explicitly precisely so "none" is distinguishable from "unsaid").
        */
-      check(vp.name, `[${S3_V}] and the app writes a system= key expressing that choice`,
-        /[?&]system=/.test(wrote),
-        `url=${String(wrote).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(-100)}`,
-        'a system= key is present — without it the reload has nothing to honour');
+      /**
+       * ⚠️ IT MUST BE THE *POST-CLICK* SPELLING — codex round 7. "Any `system=` key" passes against
+       * the GHOST'S OWN stale key (`system=skeletal`, written before the click), so a serializer that
+       * stopped writing after the Hide click would still pass. The click empties the set, and the
+       * empty set has one spelling: `system=none` (app/url-state.ts:172). That is what must appear.
+       */
+      check(vp.name, `[${S3_V}] and the app SERIALISES the click, not the ghost's stale key`,
+        /[?&]system=none(&|$)/.test(wrote),
+        `url=${String(wrote).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(-110)}`,
+        'system=none — the post-click spelling; system=skeletal would be the pre-click value');
       await page.goto(wrote, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2200);   // PAST the arrival, not racing it
@@ -3785,7 +3791,22 @@ if (variant === 'v2') {
        */
       const h1 = await page.evaluate(async () => {
         const st = window.atlas.state();
-        const mode = window.atlas.plate?.()?.scene?.mode ?? 'explore';
+        /**
+         * ⚠️ `plate()` RETURNS `{blob, ids, url}` — THERE IS NO `scene`, so `?.scene?.mode ?? 'explore'`
+         * always read 'explore' and this row's Explore PREMISE was a tautology (codex round 7). It
+         * could therefore approve the wrong eye mode while claiming to have established the premise.
+         * The mode is decoded from the blob the page is actually holding, and `modeFrom` records
+         * where it came from so the row cannot silently go hollow again.
+         */
+        const blob = window.atlas.plate?.()?.blob ?? '';
+        let mode = 'unknown';
+        try {
+          const raw = blob ? JSON.parse(atob(blob.replace(/-/g, '+').replace(/_/g, '/')
+            + '='.repeat(blob.length % 4 ? 4 - (blob.length % 4) : 0))) : null;
+          // `mode` is dropped from the blob when it equals the codec default ('render'), so an
+          // ABSENT key means render — reading it as 'explore' would invert the premise.
+          if (raw) mode = typeof raw.mode === 'string' ? raw.mode : 'render';
+        } catch { mode = 'unknown'; }
         const name = st.nameEn || st.name;
         if (!name) return {error: 'the page reports no focused structure', mode};
         const box = document.querySelector('.v2-side-filter input');
@@ -3798,11 +3819,13 @@ if (variant === 'v2') {
         if (!row) return {error: `no ticked structure row after filtering to "${name}"`, mode, ids: st.ids.length};
         const eye = row.querySelector('.v2-eye');
         const kind = [...eye.classList].find((c) => c.startsWith('is-') && c !== 'is-off');
-        return {mode, kind, title: eye.getAttribute('title') ?? '', ids: st.ids.length, via: name};
+        return {mode, kind, title: eye.getAttribute('title') ?? '', ids: st.ids.length, via: name,
+          modeFrom: blob ? 'the blob the page is holding' : 'NO BLOB — the premise is unestablished'};
       });
       check(vp.name, `[${S3_V}] in an EXPLORE scene a MEMBER row gets the SESSION eye (the codec draws members solid there)`,
-        !h1.error && h1.mode !== 'render' && h1.kind === 'is-session',
-        h1.error || `scene mode=${h1.mode}, eye kind=${h1.kind}`, 'is-session in explore mode');
+        !h1.error && h1.mode === 'explore' && h1.kind === 'is-session',
+        h1.error || `scene mode=${h1.mode} (read from ${h1.modeFrom}), eye kind=${h1.kind}`,
+        'mode really decodes to explore, AND the eye is is-session');
       check(vp.name, `[${S3_V}] and its tooltip does NOT claim the link reproduces it`,
         !h1.error && !/saved in this view|保存在本视图|保存在本視圖/.test(h1.title) && h1.title.length > 0,
         h1.error || `title="${String(h1.title).slice(0, 64)}"`, 'no "saved in this view" claim');

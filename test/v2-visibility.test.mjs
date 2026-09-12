@@ -440,3 +440,29 @@ test('round 5, the Low — sceneDeclaresLang agrees with decodeScene on every ga
   // And a real declaring blob still reads true, or the fix would be a silent disable.
   assert.equal(sceneDeclaresLang(encodeScene(normalizeScene({structures: [{id: 'FMA7485'}], lang: 'zh-Hant'}))), true);
 });
+
+test('round 7 — a warm arrival carries the SET without carrying AUTHORITY, in one transaction', () => {
+  const ghost = GHOST();
+  const st0 = initialState({}, SEED()).state;
+  // The URL's `system=none` travels WITH the scene. It sets the intent and does NOT make it explicit,
+  // because the serialiser writes that key from the render value and a ghost would forge a statement.
+  const warm = reduce(st0, {type: 'apply-scene', scene: ghost, visible: []}).state;
+  assert.deepEqual(warm.visibleIntent, [], 'the set travelled');
+  assert.equal(warm.intentExplicit ?? false, false, 'the authority did NOT (codex round 7, the High)');
+  // And a REFUSED scene changes nothing at all — the defect was two dispatches, of which the first
+  // committed. codex: visible moved ['skeletal'] -> [] under "the link could not be applied".
+  const tooMany = normalizeScene({mode: 'render',
+    structures: Array.from({length: 25}, (_, i) => ({id: `FMA${5000 + i}`, role: 'primary'}))});
+  const before = initialState({}, SEED()).state;
+  const out = reduce(before, {type: 'apply-scene', scene: tooMany, visible: []});
+  assert.ok(out.rejected, 'the precondition: 25 structures must be refused');
+  assert.equal(out.state, before, 'and the refusal returns the SAME state object — the set did not move');
+  assert.deepEqual(out.state.visibleIntent, before.visibleIntent);
+  // A CLICK, by contrast, is authority — that is the whole remaining scope of the flag.
+  const clicked = reduce(st0, {type: 'set-visible', visible: ['muscular']}).state;
+  assert.equal(clicked.intentExplicit, true);
+  // ...and a caller can say otherwise explicitly, which is what makes the fix stay fixed.
+  const quiet = reduce(st0, {type: 'set-visible', visible: ['muscular'], explicit: false}).state;
+  assert.equal(quiet.intentExplicit ?? false, false);
+  assert.deepEqual(quiet.render.visible, ['muscular'], 'while still doing the visible half');
+});

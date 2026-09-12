@@ -519,7 +519,7 @@ export default function V2() {
   * `'en'`, so a scene that declared English is indistinguishable from one that said nothing — and in
   * that tie the reader's explicit `?lang=` wins, which is the side that cannot surprise anybody.
   */
- const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null) => {
+ const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null, urlVisible?: SystemId[]) => {
   /**
    * ⚠️ AND WHEN THE SCENE LOSES, THE LINK MUST STILL WIN — codex round 5, Medium 3, and it is a
    * REGRESSION THIS FIX INTRODUCED. The first version merely DECLINED to apply the scene's language,
@@ -532,7 +532,7 @@ export default function V2() {
   const declared = sceneDeclaresLang(blob);
   if (urlLang && !declared) applyLang(urlLang);
   else if (sc.lang) applyLang(sc.lang);
-  if (!dispatch({type: 'apply-scene', scene: sc, blob})) return;
+  if (!dispatch({type: 'apply-scene', scene: sc, blob, visible: urlVisible})) return;
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [dispatch]);
@@ -561,7 +561,7 @@ export default function V2() {
  useEffect(() => {
   if (!atlas || sceneApplied.current) return;
   sceneApplied.current = true;
-  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene), url.lang);
+  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene), url.lang, url.visible);
   // A COLD LEGACY LINK. Without this the picks were the only thing a `?select=…&view=…&isolate=…`
   // link achieved on /v2/ — see app/v2/legacy-url.ts for the measurement.
   else dispatch({type: 'apply-legacy', url: {...url, select: url.select?.filter(known)}});
@@ -581,21 +581,19 @@ export default function V2() {
    // first barrier the pending barrier belonged to the scene being superseded.
    setEpoch((n) => n + 1);
    /**
-    * ⚠️ THE WARM BRANCH FORWARDS `system=` AS WELL AS `lang=` — codex round 6, Medium 1. It carried
-    * the language and dropped the systems, so ONE link meant two different things depending on
-    * whether the tab was cold or warm: codex measured `#scene=<ghost>&system=none` giving
-    * `visible=['skeletal'], intentExplicit=false` warm and `visible=[], intentExplicit=true` cold.
-    * ⚠️ ROUND 6 NARROWED WHAT THIS ACHIEVES, and it is still required. `system=` no longer marks the
-    * intent EXPLICIT (see `controller.ts intentExplicit` — the app's own serialiser writes that key
-    * from the render value, so treating it as a statement let a ghost manufacture one). What it
-    * still must do is carry the SET, so one link means the same thing cold and warm — which was
-    * codex round 6's Medium 1 and is a separate defect from the statement question.
+    * ⚠️ THE WARM BRANCH CARRIES `system=` AND `lang=` THROUGH ONE TRANSACTION — codex rounds 6 and 7,
+    * which took three attempts between them and are worth recording as a set:
+    *   · r6 M1: it carried the language and DROPPED the systems, so one link meant two different
+    *     things cold and warm.
+    *   · r7 High: forwarding the set through `set-visible` put URL-derived AUTHORITY straight back,
+    *     because that command marks the intent explicit — a ghost's own serialised `system=skeletal`
+    *     replayed as a human statement with zero clicks.
+    *   · r7 M1: two dispatches cannot be atomic, so a REFUSED scene left the system change committed
+    *     under a message saying the link was not applied.
+    * One `apply-scene` carrying `visible` answers all three: the set travels, no authority travels,
+    * and a refusal returns early without touching state.
     */
-   if (u.scene) {
-    if (u.visible) dispatch({type: 'set-visible', visible: u.visible});
-    applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), u.lang);
-    return;
-   }
+   if (u.scene) { applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), u.lang, u.visible); return; }
    if (u.clearScene) { clearSceneState(u); return; }
    // Neither a scene nor an explicit clear: a legacy re-drive. `apply-legacy` carries BOTH the
    // picks and the camera/visibility keys, so it is one transaction rather than two.
