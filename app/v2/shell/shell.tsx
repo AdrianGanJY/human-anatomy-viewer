@@ -41,7 +41,8 @@ import {atlasIndex} from '../find.ts';
 import Tree, {type TreeProps} from './tree.tsx';
 import {LANGS, LANG_LABELS, type Lang} from '../../i18n/ui';
 import type {Scene} from '../../scene-model';
-import type {Command} from '../controller';
+import type {Command, Reason} from '../controller';
+import RefusalText from '../refusal.tsx';
 import {KEY_MAP} from './keys.ts';
 /** Injected by `vite.config.ts`'s `define`. Declared rather than imported because that is what a
  *  compile-time constant is; the fallbacks keep a bare `tsc`/test run honest. */
@@ -49,6 +50,16 @@ declare const __ATLAS_BUILD__: string | undefined;
 declare const __ATLAS_COMMIT__: string | undefined;
 const ATLAS_BUILD = typeof __ATLAS_BUILD__ === 'string' ? __ATLAS_BUILD__ : 'dev';
 const ATLAS_COMMIT = typeof __ATLAS_COMMIT__ === 'string' ? __ATLAS_COMMIT__ : 'dev';
+declare const __ATLAS_PINYIN__: string | undefined;
+declare const __ATLAS_PINYIN_N__: number | undefined;
+/** `pinyin-pro@3.29.4` and the number of readings — both read at build time from the shipped map's
+ *  own stamp (vite.config.ts `readPinyinLib`), never typed into copy. */
+const ATLAS_PINYIN = typeof __ATLAS_PINYIN__ === 'string' ? __ATLAS_PINYIN__ : 'pinyin-pro';
+const ATLAS_PINYIN_N = typeof __ATLAS_PINYIN_N__ === 'number' ? __ATLAS_PINYIN_N__ : 0;
+declare const __ATLAS_DEPS__: string | undefined;
+/** `react 19.2.6 (MIT) · three 0.159.0 (MIT) · …` — the RESOLVED tree, read from each package's own
+ *  manifest at build time. See `about.notices` for what this does and does not include. */
+const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
 import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
 import {DOCK_KEYS, type DockKey} from './store.ts';
@@ -104,7 +115,12 @@ export interface ShellProps {
  phase: 'boot' | 'scene' | 'atlas';
  bytes: {done: number; total: number};
  background: 'light' | 'dark';
- refused: string;
+ /** S4: a keyed `Reason`, resolved at DRAW time by `RefusalText` so it follows the language. */
+ refused: Reason | null;
+ /** S4: the reading for one row, or null. Off, not-yet-loaded and not-Chinese all give null —
+  *  see `use-shell.ts` `py`. Threaded as a FUNCTION so no surface holds the 214 KB map. */
+ py(id: string, shown: string): string | null;
+ pinyin: boolean; onPinyin(on: boolean): void;
  /** From the collapse ladder. The shell RENDERS them; page.tsx OWNS them. */
  docks: DockKey[];
  sideStub: boolean;
@@ -461,6 +477,7 @@ export default function Shell(p: ShellProps) {
    t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
    visible={p.state.visible} visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
    hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha} eyeState={p.eyeState}
+   py={p.py} pinyin={p.pinyin}
    focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
    query={p.treeQuery} coarse={p.coarse}
   />}
@@ -500,7 +517,10 @@ export default function Shell(p: ShellProps) {
        discipline as the phone's `setDetent('half')`. */}
    {p.refused && <div className="v2-refusal" role="alert">
     <b>{tr('refusal.title')}</b>
-    <p>{p.refused}</p>
+    {/* ⚠️ S4. This used to be `{p.refused}` — the controller's raw English — and it is the exact
+        line the live 简体 smoke caught: a translated title, an English reason and a translated
+        footer in one card. `RefusalText` resolves the key here, at draw time, in `lang`. */}
+    <p><RefusalText lang={lang} r={p.refused}/></p>
     <p className="v2-refusal-unchanged">{tr('refusal.unchanged', {n: p.picks.length})}</p>
     <button type="button" className="v2-tbtn" onClick={() => p.focused && p.focusPick(p.focused.id)}>{tr('refusal.review')}</button>
    </div>}
@@ -516,6 +536,11 @@ export default function Shell(p: ShellProps) {
        <div className="v2-card-top">
         <div>
          <b title={t.name(b.id, b.name)}>{t.name(b.id, b.name)}</b>
+         {/* S4 — THE READING GOES UNDER THE CHINESE NAME, ABOVE THE ENGLISH. `py` is handed the
+             string actually being drawn, so in an English interface (where `t.name` returns the
+             English) it returns null and nothing is rendered — no Latin line acquires a
+             romanisation. The 18 px line was RESERVED in S0's preview row for exactly this. */}
+         {p.py(b.id, t.name(b.id, b.name)) && <span className="v2-py">{p.py(b.id, t.name(b.id, b.name))}</span>}
          {t.secondary(b.id, b.name) && <i>{t.secondary(b.id, b.name)}</i>}
         </div>
         <button type="button" className="v2-card-act v2-card-focus" aria-label={`${tr('panel.focus')} ${t.name(b.id, b.name)}`}
@@ -584,6 +609,7 @@ export default function Shell(p: ShellProps) {
    : <>
     <div className="v2-card">
      <b>{t.name(p.focused.id, p.focused.name)}</b>
+     {p.py(p.focused.id, t.name(p.focused.id, p.focused.name)) && <span className="v2-py">{p.py(p.focused.id, t.name(p.focused.id, p.focused.name))}</span>}
      {t.secondary(p.focused.id, p.focused.name) && <i>{t.secondary(p.focused.id, p.focused.name)}</i>}
     </div>
     {p.systemId && <span className="v2-badge">{t.system(p.systemId, SYSTEMS.find((s) => s.id === p.systemId)?.name ?? p.systemId)}</span>}
@@ -696,6 +722,12 @@ export function StudioOverlays(p: {
  /** Guard 7's tier. The key map is reachable at every width (`?` is not a studio command), so it
   *  has to say that the CAMERA rows are not — see the note beside `keys.cameraOff`. */
  studio: boolean;
+ /** ── S4 ─────────────────────────────────────────────────────────────────────────────────────
+  *  Settings is hosted at EVERY width (the phone's A6/A7 sheet is this same overlay in its sheet
+  *  presentation), so the pinyin control lives here rather than in the studio's own tree — one
+  *  control, one writer, both tiers. */
+ pinyin: boolean; onPinyin(on: boolean): void;
+ py(id: string, shown: string): string | null;
 }) {
  const {tr, lang} = p;
  const [tab, setTab] = useState<'general' | 'language' | 'about'>('general');
@@ -703,8 +735,13 @@ export function StudioOverlays(p: {
  const settings = <Overlay open={p.settingsOpen} onClose={() => p.onSettings(false)} sheet={p.sheet}
   title={tr('settings.title')} labelClose={tr('settings.close')}>
   <div className="v2-mtabs" role="tablist" aria-label={tr('settings.title')}>
+   {/* ⚠️ S4 — `data-autofocus` ON THE SELECTED TAB, which is what `spec.md` asks for and what S2's
+       overlay rule was built to serve. `Overlay` used to focus the first focusable in DOM order,
+       which is the panel header's `×` in every overlay — the defect that cost Find its typing
+       (overlay.tsx). Settings now declares its target the same way Find declares its input. */}
    {(['general', 'language', 'about'] as const).map((k) => <button type="button" key={k} role="tab"
     aria-selected={tab === k} className={`v2-mtab ${tab === k ? 'is-on' : ''}`}
+    {...(tab === k ? {'data-autofocus': '1'} : {})}
     onClick={() => setTab(k)}>{tr(`settings.${k}`)}</button>)}
   </div>
   {tab === 'general' && <div>
@@ -742,17 +779,29 @@ export function StudioOverlays(p: {
      </div>
     </div>
    </div>
+   {/* ⚠️ S4 — LIVE. It was `settings.pending` + `aria-disabled` behind the inert convention; the
+       control now writes `localStorage['atlas.pinyin']` through the one owner (`use-shell.ts`
+       `setPinyin`), and the map is fetched only on the transition to ON. */}
    <div className="v2-srow">
     <div><b>{tr('settings.pinyin')}</b><p>{tr('settings.pinyinNote')}</p></div>
     <div className="v2-srow-act">
-     <span className="v2-static v2-inert" tabIndex={0} aria-disabled="true" title="S4">{tr('settings.pending')}</span>
+     <button type="button" role="switch" aria-checked={p.pinyin}
+      className={`v2-switch ${p.pinyin ? 'is-on' : ''}`}
+      aria-label={tr('settings.pinyin')}
+      onClick={() => p.onPinyin(!p.pinyin)}><i/></button>
     </div>
    </div>
    <div className="v2-srow">
     <div><b>{tr('settings.preview')}</b>
-     {/* The 18 px pinyin line is RESERVED from S0, so turning the toggle on in S4 does not move
-         every Chinese row down by a line the first time it loads. */}
-     <p style={{lineHeight: '18px', minHeight: 18}}>胸骨体<br/><span style={{color: 'var(--v2-ink-3)'}}>Body of sternum</span></p>
+     {/* The 18 px pinyin line was RESERVED from S0, so turning the toggle on does not move every
+         Chinese row down by a line the first time the map lands. The preview now SHOWS the reading
+         when the setting is on — and it is the real one, read through `py` off the loaded map for
+         胸骨体 (FMA7487), not a hardcoded string that could disagree with what the rows draw. */}
+     <p style={{lineHeight: '18px', minHeight: 18}}>
+      胸骨体
+      {p.py('FMA7487', '胸骨体') && <><br/><span className="v2-py">{p.py('FMA7487', '胸骨体')}</span></>}
+      <br/><span style={{color: 'var(--v2-ink-3)'}}>Body of sternum</span>
+     </p>
     </div>
    </div>
   </div>}
@@ -771,19 +820,28 @@ export function StudioOverlays(p: {
    <p>{tr('about.paper')}</p>
    <p>
     <a href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/lic.html" target="_blank" rel="noreferrer noopener">BodyParts3D · licence</a>
+    {/* S4: the DATASET link was in `public/ATTRIBUTION.md` and not here — an attribution panel that
+        names the licence but not where the data came from is incomplete in the way that matters. */}
+    <a href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/download.html" target="_blank" rel="noreferrer noopener">{tr('about.dataset')}</a>
     <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer noopener">CC BY 4.0</a>
     <a href="https://doi.org/10.1093/nar/gkn613" target="_blank" rel="noreferrer noopener">10.1093/nar/gkn613</a>
    </p>
    <h3>{tr('about.language')}</h3>
    <p>{tr('about.translation')}</p>
-   <p>{tr('about.pinyin')}</p>
+   <p>{tr('about.pinyin', {lib: ATLAS_PINYIN, n: ATLAS_PINYIN_N.toLocaleString()})}</p>
    <h3>{tr('about.fonts')}</h3>
    <p>{tr('about.fontList')}</p>
    <h3>{tr('about.runtime')}</h3>
-   <p>{tr('about.runtimeList')}</p>
+   <p>{tr('about.runtimeList', {deps: ATLAS_DEPS})}</p>
    <p>{tr('about.notices')}</p>
    <h3>{tr('about.historical')}</h3>
    <p>{tr('about.history')}</p>
+   {/* S4: the historical set is credited in prose but its DOI was only in ATTRIBUTION.md. A CC BY
+       attribution is for the reader to be able to FOLLOW, so the identifier travels with it. */}
+   <p>
+    <a href="https://doi.org/10.48539/HBM352.BTSQ.586" target="_blank" rel="noreferrer noopener">{tr('about.historyDoi')}</a>
+    <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer noopener">CC BY 4.0</a>
+   </p>
    <hr/>
    {/* DERIVED AT BUILD TIME (vite.config.ts `define`), never typed here. The literals that used to
        sit in this line said `l31v21a` / `07e76ee` two increments after both had moved — on the one

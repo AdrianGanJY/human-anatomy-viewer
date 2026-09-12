@@ -2011,8 +2011,40 @@ if (variant === 'v2') {
    * observed too. Returns `{moved, attempts, pose, note}` — never throws, because a timeout here is
    * a finding to report, not a pass to abandon.
    */
+  /**
+   * ══ S4 PRELUDE — THREE FACTS, REPORTED SEPARATELY (the S1 pad-wait flake) ════════════════════
+   *
+   * `[s1-r1-fixes] the same A key UNMODIFIED still pans` went red 1 of 3 sweeps on a BYTE-IDENTICAL
+   * bundle with an identical measured pose delta. The camera panned every time. What flaked was
+   * this helper's wait on the on-screen pad's `aria-pressed` — and because a pad timeout `break`s
+   * out with `moved:false`, the row reported "the camera never moved" about a camera that moved.
+   *
+   * That is the instrument making a claim about the PRODUCT out of a fact about ITSELF, which is
+   * the same defect class as the timer this helper replaced. codex's guidance, adopted verbatim:
+   * report camera movement, held-state and release SEPARATELY, and let a factual `moved` flag read
+   * the camera without concealing pad failures.
+   *
+   * So an attempt now measures three independent things:
+   *   `moved`   — did the POSE leave `baseline`? Read from `__atlasNav.pose()`, and from nothing
+   *               else. A pad that never reports cannot make this false.
+   *   `padHeld` — did the pad reflect the hold? Recorded, carried in the note, and asserted by the
+   *               rows whose SUBJECT is the pad — never by the rows whose subject is the camera.
+   *   `released`— did the key come back up? Unchanged, including the stuck-vs-starved distinction.
+   *
+   * The pad is NOT demoted to decoration: it is still how a lost hold is diagnosed (a pose that did
+   * not move plus a pad that went unpressed plus an arrived blur is the environment stealing focus,
+   * which is what the bounded retry exists for), and `padHeld:false` still travels into every note
+   * so a real pad regression is visible rather than absorbed.
+   */
   async function holdUntilMoved(page, code, baseline, {attempts = 3, timeout = 6000} = {}) {
     let note = '';
+    /** THE CAMERA, AND ONLY THE CAMERA. No pad term, so a pad failure cannot make this say "the
+     *  pose did not move". */
+    const poseLeft = (k, ms) => page.waitForFunction((key) => {
+      const nav = window.__atlasNav; if (!nav) return false;
+      const p = nav.pose();
+      return [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(',') !== key;
+    }, k, {timeout: ms, polling: 60}).then(() => true).catch(() => false);
     /** Every attempt's OUTCOME, verbatim — see the note-building comment below (codex r3, M5). */
     const history = [];
     // THE BLUR LEDGER (round 5, Medium 7). Idempotent, so repeated calls in one page do not stack
@@ -2040,9 +2072,24 @@ if (variant === 'v2') {
         {timeout: 3000, polling: 60},
       ).then(() => true).catch(() => false);
       if (!held) {
+        /**
+         * ⚠️ S4 — THE KEY IS STILL DOWN, SO ASK THE CAMERA BEFORE GIVING UP.
+         *
+         * This branch used to release immediately and return `moved:false`, which is how a PAD
+         * failure came to be reported as a dead camera on a build whose camera was fine (the flake
+         * this restructure exists for). The pad not reflecting the hold is a fact about the pad;
+         * whether the pose moved is a fact about the camera, and only the second one is what the
+         * calling rows assert. So the hold continues and the pose is measured on its own.
+         */
+        const movedAnyway = await poseLeft(baseline, timeout);
         await page.keyboard.up(code).catch(() => {});
-        history.push(`#${n} the dispatcher never reported ${code} held`);
-        note = `attempt ${n}: the dispatcher never reported ${code} held`;
+        if (movedAnyway) {
+          const pose = await page.evaluate(POSE);
+          return {moved: true, padHeld: false, released: true, attempts: n, pose,
+            note: `${n} attempt${n > 1 ? 's' : ''} — THE CAMERA MOVED, but the pad never reported ${code} held (pad=not-reported). The camera claim stands on the pose; the pad is a separate finding, asserted by the pad's own rows.`};
+        }
+        history.push(`#${n} the dispatcher never reported ${code} held AND the pose did not move`);
+        note = `attempt ${n}: the dispatcher never reported ${code} held AND the pose did not move`;
         /**
          * ⚠️ S3b ROUND 5 — A RETRY NEEDS EVIDENCE OF THE THING IT BLAMES (codex round 5, Medium 7).
          *
@@ -2072,6 +2119,16 @@ if (variant === 'v2') {
         const cur = [p.x, p.y, p.z, p.tx, p.ty, p.tz].map((v) => v.toFixed(4)).join(',');
         return cur !== k ? 'moved' : false;
       }, [padSel(code), baseline], {timeout, polling: 60}).then((h) => h.jsonValue()).catch(() => 'timeout');
+      /**
+       * ⚠️ S4 — A `lost` VERDICT IS RE-CHECKED AGAINST THE CAMERA BEFORE IT COUNTS.
+       *
+       * The combined wait above resolves `'lost'` the moment the PAD reads unpressed, and the pad is
+       * React's reflection of the dispatcher's set — under twelve concurrent contexts that render
+       * can lag or coalesce. So `'lost'` can arrive while the camera is mid-pan, and treating it as
+       * a lost hold is the same conflation as the never-held branch above, arriving one step later.
+       * One more camera reading, with the key still down, settles which of the two it was.
+       */
+      const settled = outcome === 'lost' && await poseLeft(baseline, 1200) ? 'moved-pad-dropped' : outcome;
       await page.keyboard.up(code).catch(() => {});
       // 3. AND IT LET GO. A row that leaves a key down poisons every row after it in the same page.
       // ⚠️ S3b — THE RELEASE IS NO LONGER SWALLOWED (codex round 4, Medium 2). This was
@@ -2107,12 +2164,12 @@ if (variant === 'v2') {
         // loudly) read as "released" and every held-key row passed without a pad at all.
         if (finalRead !== 'false') {
           const pose = await page.evaluate(POSE);
-          return {moved: false, released: false, attempts: n, pose,
+          return {moved: settled === 'moved' || settled === 'moved-pad-dropped', padHeld: true, released: false, attempts: n, pose,
             note: `${code} did not release within 8 s and the final direct read is aria-pressed=${finalRead} — ${finalRead === 'absent' ? 'the pad key is GONE from the DOM, so this instrument is measuring nothing' : 'a stuck key'}; every row after it in this page is suspect`};
         }
         slowRelease = ` [the release was not observed within 8 s but reads ${finalRead} directly — a starved observer, not a stuck key]`;
       }
-      if (outcome === 'moved') {
+      if (settled === 'moved' || settled === 'moved-pad-dropped') {
         const pose = await page.evaluate(POSE);
         /**
          * ⚠️ THE NOTE REPORTS WHAT HAPPENED, NOT ONE ASSUMED CAUSE — codex round 3, Medium 5.
@@ -2127,12 +2184,20 @@ if (variant === 'v2') {
          * up. The outcomes are now carried verbatim.
          */
         const detail = n > 1 ? ` (attempt ${n} of ${attempts}; earlier: ${history.join(', ')})` : '';
-        return {moved: true, released: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}`};
+        // `padHeld` is true here BY CONSTRUCTION — this branch is only reachable after the pad
+        // reported the hold — but `moved-pad-dropped` says the pad then stopped reflecting it while
+        // the pose was still moving, which is a pad finding and is carried as one.
+        const padNote = settled === 'moved-pad-dropped'
+          ? ` [the pad stopped reporting ${code} held while the camera was still moving — a pad-reflection drop, not a lost hold]` : '';
+        return {moved: true, padHeld: true, released: true, attempts: n, pose,
+          note: `${n} attempt${n > 1 ? 's' : ''}${detail}${slowRelease}${padNote}`};
       }
       const blursNow = await page.evaluate(() => window.__atlasBlurs ?? 0).catch(() => 0);
       const blurred = blursNow > blursAt;
+      // S4: `lost` reaching here means the extra camera reading ALSO found the pose unmoved, so it
+      // is a lost hold and not a pad-reflection drop. The wording says which was ruled out.
       const why = outcome === 'lost'
-        ? `the hold was cleared before the camera moved (${blurred ? 'a blur arrived' : 'NO blur arrived'})`
+        ? `the hold was cleared and a further 1.2 s camera reading still found the pose unmoved (${blurred ? 'a blur arrived' : 'NO blur arrived'})`
         : outcome === 'timeout' ? 'the camera did not move within 6 s' : String(outcome);
       history.push(`#${n} ${why}`);
       note = `attempt ${n}: ${why}`;
@@ -2161,7 +2226,10 @@ if (variant === 'v2') {
       if (outcome === 'timeout') break;
     }
     const pose = await page.evaluate(POSE);
-    return {moved: false, released: true, attempts: history.length || attempts, pose,
+    // `padHeld` is UNKNOWN on this path — some attempts may have reported the hold and some not —
+    // so it is reported as `null` rather than guessed. A row that asserts on it must treat null as
+    // "not established", never as false.
+    return {moved: false, padHeld: null, released: true, attempts: history.length || attempts, pose,
       note: `${history.length || attempts} attempt${(history.length || attempts) > 1 ? 's' : ''} — ${history.join(' · ') || note}`};
   }
   /** The same discipline for a hold whose POINT is to be held while something else is measured:
@@ -2539,9 +2607,33 @@ if (variant === 'v2') {
       await page.mouse.move(vp.width / 2, vp.height / 2);
       const bareHold = await holdUntilMoved(page, 'KeyA', modAfter?.k ?? '');
       const bareKey = bareHold.pose;
+      /**
+       * ⚠️ S4 PRELUDE — THIS ROW IS THE FLAKE, AND IT IS NOW A CAMERA CLAIM ONLY.
+       *
+       * It went red 1 of 3 sweeps on a byte-identical bundle with an identical measured pose delta:
+       * the camera panned every time, and the pad's `aria-pressed` wait is what flaked. The
+       * assertion reads `moved`, which S4 made a reading of `__atlasNav.pose()` and of nothing else,
+       * plus the pose comparison it always had. A pad that fails to reflect the hold can no longer
+       * make this row say the camera is dead — it produces the row BELOW instead.
+       */
       check(vp.name, `[${S1_V}] the same A key UNMODIFIED still pans (the control arm)`,
         bareHold.moved && !!bareKey && bareKey.k !== modAfter.k,
-        `${modAfter?.k} -> ${bareKey?.k} · ${bareHold.note}`, 'a different pose');
+        `${modAfter?.k} -> ${bareKey?.k} · pad=${bareHold.padHeld === null ? 'not-established' : bareHold.padHeld} · ${bareHold.note}`,
+        'a different pose — asserted on the CAMERA, independent of the pad');
+      /**
+       * AND THE PAD'S OWN CLAIM, AS ITS OWN ROW. Splitting the facts is only honest if the second
+       * one is still asserted somewhere: otherwise "report them separately" is a way of dropping the
+       * inconvenient half. A pad that stops reflecting the dispatcher's held set is a real
+       * regression — it is the reader's only feedback that a key is down — so it gets a red with its
+       * own name rather than being absorbed into a camera row's note.
+       *
+       * `null` is NOT a pass. It means no attempt established the pad state, which is the state the
+       * flake produced, and a row that treated it as true would re-hide exactly what this splits out.
+       */
+      check(vp.name, `[${S1_V}] and the on-screen pad reflected that hold (the pad's own claim)`,
+        bareHold.padHeld === true,
+        `padHeld=${bareHold.padHeld === null ? 'not-established' : bareHold.padHeld} · ${bareHold.note}`,
+        'the pad reported KeyA held while it was down');
 
       /**
        * ⚠️ AND THE SAME THING WHILE A CAMERA KEY IS HELD — the case the rows above are STRUCTURALLY
@@ -3494,6 +3586,145 @@ if (variant === 'v2') {
     } finally { await ctx.close(); }
   }
 
+  /**
+   * ══ S4 PRELUDE — THE MEMBER-SHOW LANE, PROVED AGAINST THE PICTURE ════════════════════════════
+   *
+   * codex round 9's open Low, in full: "Both browser rows can still miss a broken member-Show gate
+   * … The added round trip exercises session-hidden Show; it does not establish member-Show
+   * wiring." Both existing rows read the eye's own `aria-pressed` and `is-inert` — the CONTROL
+   * reporting on itself — and S3b's entire lesson was that a control's declaration is not the
+   * five-link chain the renderer walks.
+   *
+   * TWO THINGS HAD TO CHANGE FOR THIS ROW TO EXIST AT ALL:
+   *
+   *  1. THE LANE NEEDS A RENDER-MODE SCENE. `eyeKind` (tree.tsx:261) returns `'member'` only when
+   *     `scene.mode === 'render'` — in explore mode `sceneOpacities` reports 1 for every member, so
+   *     the style is not honoured and the eye is correctly the SESSION lane instead. Every scene
+   *     fixture in the systems block above is `mode:'explore'`, which is precisely why no existing
+   *     row could reach the member lane: a fixture that cannot reach a branch is not coverage of it.
+   *  2. THERE WAS NOTHING TO READ THE PICTURE WITH. `atlas.alphas()` (S4, tools.ts) publishes the
+   *     resolved per-MESH alpha map — the same closure `page.tsx` hands the visibility controls,
+   *     built from the `renderState` object handed to the renderer in that render. Per MESH, not
+   *     per concept: the concept maximum is exactly the abstraction that could not see a Hide
+   *     blanking two of three meshes while a sharer kept the third (round 8's High).
+   *
+   * WHAT THIS ROW DOES AND DOES NOT PROVE. It proves the member eye's write reaches the codec, the
+   * codec reaches the render state, and the Show puts the alphas back — end to end, measured. It is
+   * NOT a GPU readback: it reads one step before the draw call. `scripts/verify-render.mjs`'s pixel
+   * comparison is the lane for a renderer that ignores its own opacity input, and saying so here is
+   * the difference between a proof and a claim.
+   */
+  {
+    const vp = {name: 'member-show', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      const S4_V = 'S4-prelude';
+      // RENDER mode, and the §9 structures — so the tree has member rows whose styles are honoured.
+      const rendered = encodeScene(normalizeScene({
+        mode: 'render',
+        structures: SCENE.structures.map((s) => ({id: s.id, role: s.role})),
+        camera: {view: 'side', focus: []},
+      }));
+      await page.goto(`${base}${path}?scene=${rendered}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1400);
+
+      /**
+       * ⚠️ THE TREE IS VIRTUALISED, so "expand everything and take the first member row" finds
+       * NOTHING — measured: 14 concept rows in the DOM out of 3,432, and the scene's five members
+       * are scattered through the other 3,418. The first version of this probe did exactly that
+       * and reported "no actionable member row among 14 concept rows", which reads like a product
+       * finding and was an instrument that could not reach its own subject.
+       *
+       * ⚠️ AND THE SECOND VERSION FILTERED BY ASSIGNING `input.value` IN PAGE, which React
+       * SWALLOWS: its value tracker sees no change, `onChange` never fires, and the tree stayed
+       * unfiltered — measured, the probe reported "14 filtered concept rows" whose names were
+       * `["bone organ","long bone","short bone","flat bone"]`, i.e. the unfiltered head of the
+       * list. Every other row in this suite types with `page.keyboard.type` for exactly this
+       * reason (:1036, :1328, :1646, …). Two instrument bugs, each of which looked like a product
+       * finding, on one row.
+       */
+      const focused = await page.evaluate(() => {
+        const f = document.querySelector('.v2-side-filter input[type=search]');
+        if (!f) return false;
+        f.focus();
+        return document.activeElement === f;
+      });
+      if (!focused) {
+        check(vp.name, `[${S4_V}] the tree filter box is focusable (the member row's only way past the virtualiser)`,
+          false, 'no .v2-side-filter input[type=search], or it would not take focus', 'focusable');
+      }
+      await page.keyboard.type('semitendinosus', {delay: 20});
+      await page.waitForTimeout(800);
+
+      const probe = await page.evaluate(async () => {
+        const alphas = () => window.atlas?.alphas?.() ?? null;
+        if (!alphas()) return {error: 'window.atlas.alphas() is not available'};
+        const drawn = (m) => Object.entries(m).filter(([, a]) => a > 0).length;
+        // THE FILTER IS ASSERTED, not assumed: if it did not take, the rows below are the
+        // unfiltered head of the list and the whole measurement is about the wrong structures.
+        const fv = document.querySelector('.v2-side-filter input[type=search]')?.value ?? '';
+        if (fv !== 'semitendinosus') return {error: `the filter box reads "${fv}" — the typing did not reach React`};
+        for (const sys of [...document.querySelectorAll('.v2-tree-row.is-system')]) {
+          (sys.querySelector('.v2-tw[type=button]') ?? sys.querySelector('.v2-tree-name'))?.click();
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        // The lane is identified by the eye's own tooltip, which RC8 requires to state the
+        // control's serialisation — so "this row is a member row" is read off the promise the row
+        // makes to the reader, not off a class the test would have to trust.
+        const rows = [...document.querySelectorAll('.v2-tree-row.is-concept')];
+        const member = rows.find((r) => {
+          const e = r.querySelector('.v2-eye');
+          if (!e || e.getAttribute('aria-pressed') !== 'false') return false;   // must be DRAWN now
+          if (e.classList.contains('is-inert')) return false;                   // and actionable
+          return /opacity 0|不透明度 0/.test(e.getAttribute('title') || '');     // the MEMBER promise
+        });
+        if (!member) {
+          return {error: `no actionable member row among ${rows.length} filtered concept rows`,
+            names: rows.slice(0, 4).map((r) => (r.querySelector('.v2-tree-name b')?.textContent || '').trim().slice(0, 24)),
+            titles: rows.slice(0, 4).map((r) => (r.querySelector('.v2-eye')?.getAttribute('title') || '').slice(0, 46)),
+            pressed: rows.slice(0, 4).map((r) => r.querySelector('.v2-eye')?.getAttribute('aria-pressed'))};
+        }
+        const name = (member.querySelector('.v2-tree-name b')?.textContent || '').trim().slice(0, 28);
+        const eye = member.querySelector('.v2-eye');
+
+        const before = alphas();
+        eye.click();
+        await new Promise((r) => setTimeout(r, 700));
+        const hiddenMap = alphas();
+        // The meshes this Hide actually blanked — NAMED, so the Show is checked on the same set
+        // rather than on a count that could come back level by coincidence.
+        const blanked = Object.keys(before).filter((id) => before[id] > 0 && hiddenMap[id] === 0);
+
+        eye.click();
+        await new Promise((r) => setTimeout(r, 700));
+        const shownMap = alphas();
+        const restored = blanked.filter((id) => shownMap[id] === before[id]);
+
+        return {
+          name, blanked: blanked.length, restored: restored.length,
+          drawnBefore: drawn(before), drawnHidden: drawn(hiddenMap), drawnShown: drawn(shownMap),
+          // A HIDE MUST NOT BLANK THE WHOLE PICTURE, and a Show must not add meshes that were not
+          // there: the two ways this could "pass" while being wrong.
+          sameTotal: drawn(before) === drawn(shownMap),
+          pressedAfterHide: eye.getAttribute('aria-pressed'),
+          sample: blanked.slice(0, 2),
+        };
+      });
+
+      check(vp.name, `[${S4_V}] a MEMBER eye's Hide blanks real meshes and its Show puts the SAME meshes back`,
+        !probe.error && probe.blanked > 0 && probe.restored === probe.blanked
+          && probe.drawnHidden < probe.drawnBefore && probe.sameTotal === true,
+        probe.error
+          ? `${probe.error}${probe.names ? ` · rows: ${JSON.stringify(probe.names)} pressed: ${JSON.stringify(probe.pressed)} titles: ${JSON.stringify(probe.titles)}` : ''}`
+          : `${probe.name}: ${probe.blanked} meshes blanked (${probe.sample.join(',')}), ${probe.restored} restored · drawn ${probe.drawnBefore} -> ${probe.drawnHidden} -> ${probe.drawnShown}`,
+        'blanked > 0, every blanked mesh restored to its exact prior alpha, and the drawn total returns to where it started');
+    } catch (e) {
+      check(vp.name, `[S4-prelude] the member-show pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
   {
     const vp = {name: 'systems-reload', width: 1440, height: 900, dpr: 1, coarse: false};
     const ctx = await newContext(vp);
@@ -4136,6 +4367,366 @@ if (variant === 'v2') {
     } catch (e) {
       check(vp.name, `[${S3_V}] the tree pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
+  }
+}
+
+/**
+ * ══ S4 — SETTINGS: PINYIN, ABOUT, AND THE TWO REQUEST ROWS ═══════════════════════════════════════
+ *
+ * Four claims, and the order matters because two of them are about what did NOT happen:
+ *
+ *  1. THE REQUEST BUDGET (RC10, both rows). With the setting OFF a fresh English visit must start
+ *     ZERO requests for `/i18n/pinyin.json`; with it ON, exactly one. The map is ~214 KB, so "we
+ *     load it on mount and keep it warm" is the obvious implementation and the one that would make
+ *     every chat link 214 KB heavier for a romanisation nobody asked for. `atlas.pinyin` is seeded
+ *     via an init script so the ON case is a genuine COLD entry, not a toggle mid-session — the
+ *     cold path is the one a reader actually takes on their second visit.
+ *  2. THE READINGS APPEAR, on all four surfaces the increment names: the tree rows, the Selection
+ *     dock, the Info card and the Find palette. Asserted as `xiōng gǔ tǐ` under 胸骨体 rather than
+ *     "some element has the class", because a class with an empty string in it is the shape this
+ *     would fail in.
+ *  3. ABOUT NAMES ITS OWN PROVENANCE — the pinned pinyin library WITH its version, the resolved
+ *     dependency set, and the build id and commit. Every one of those is derived at build time, and
+ *     the S1 review's finding was a hand-typed pair that had gone two increments stale on exactly
+ *     this panel.
+ *  4. THE SELECTED TAB TAKES FOCUS. `spec.md` asks for it and S2 built the mechanism
+ *     (`[data-autofocus]`) after the overlay's "first focusable" rule silently stole Find's typing.
+ *     A declared target that nothing focuses is the same defect with the fix in place.
+ *
+ * And one robustness row: a CORRUPT `atlas.pinyin` still renders the shell (RC12).
+ */
+{
+  const S4_V = 'S4-settings';
+  const py = {name: 's4-settings', width: 1440, height: 900, dpr: 1, coarse: false};
+
+  /** A cold visit with `atlas.pinyin` pre-seeded, and the ledger attached before navigation. */
+  const coldVisit = async (seed, url) => {
+    const ctx = await newContext(py);
+    if (seed !== null) {
+      await ctx.addInitScript((v) => {
+        try { localStorage.setItem('atlas.pinyin', v); } catch { /* ignore */ }
+      }, seed);
+    }
+    const {page, ledger} = await newLedgerPage(ctx);
+    await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
+    await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+    // Long enough that a late fetch would have started: the claim is "zero starts", and a claim
+    // about absence has to give the thing a chance to happen (memory: enumerate before declaring).
+    await page.waitForTimeout(2500);
+    return {ctx, page, ledger};
+  };
+  const pinyinStarts = (ledger) => (ledger?.cdp ?? []).filter((r) => /\/i18n\/pinyin\.json/.test(r.url));
+
+  // ── 1a. OFF (the default, no key at all) — a fresh ENGLISH visit starts nothing ───────────────
+  {
+    const {ctx, page, ledger} = await coldVisit(null, `${base}${path}?select=${BARE_ID}`);
+    try {
+      const starts = pinyinStarts(ledger);
+      check(py.name, `[${S4_V}] pinyin OFF: a fresh English visit starts ZERO requests for pinyin.json`,
+        starts.length === 0,
+        `${starts.length} start(s)${starts.length ? `: ${starts.map((r) => r.url).join(', ')}` : ''} [population: ${POPULATION}]`,
+        '0 — the 214 KB map is not downloaded for a reader who did not ask for it');
+      // AND NOTHING IS DRAWN. The absence of the request is only meaningful alongside the absence
+      // of the readings: a row class rendered empty would satisfy neither claim honestly.
+      const drawn = await page.evaluate(() => document.querySelectorAll('.v2-py').length);
+      check(py.name, `[${S4_V}] and no reading is rendered anywhere`,
+        drawn === 0, `${drawn} .v2-py element(s)`, '0');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 1b. ON, cold — exactly one start, and the readings land on all four surfaces ──────────────
+  {
+    const {ctx, page, ledger} = await coldVisit('{"v":1,"on":true}', `${base}${path}?scene=${BLOB}`);
+    try {
+      const starts = pinyinStarts(ledger);
+      check(py.name, `[${S4_V}] pinyin ON: a cold visit starts EXACTLY ONE request for pinyin.json`,
+        starts.length === 1,
+        `${starts.length} start(s) [population: ${POPULATION}]`,
+        'exactly 1 — memoised, and never re-fetched per row');
+
+      // THE FOUR SURFACES. Each is read for the STRING, not for the presence of a class.
+      const seen = await page.evaluate(async () => {
+        const txt = (el) => (el?.textContent || '').trim();
+        // (a) the Selection dock and (b) the Info card are already open at 1440 (one dock) — the
+        //     Info dock is opened explicitly so both are measured rather than one assumed.
+        const openDock = (re) => {
+          const b = [...document.querySelectorAll('.v2-tools button, .v2-bar button')]
+            .find((x) => re.test(txt(x)) || re.test(x.getAttribute('aria-label') || ''));
+          b?.click();
+        };
+        openDock(/Info|信息|資訊/);
+        await new Promise((r) => setTimeout(r, 500));
+        // (c) the tree: every system expanded so concept rows exist.
+        for (const sys of [...document.querySelectorAll('.v2-tree-row.is-system')].slice(0, 4)) {
+          (sys.querySelector('.v2-tw[type=button]') ?? sys.querySelector('.v2-tree-name'))?.click();
+          await new Promise((r) => setTimeout(r, 160));
+        }
+        const tree = [...document.querySelectorAll('.v2-tree-row .v2-py')].map(txt).filter(Boolean);
+        return {
+          // `.v2-card` is the Selection dock's structure card AND the Info dock's name card — both
+          // docks are open here, so this list covers both surfaces. Named as one because the DOM
+          // gives them one class, and inventing a selector the app does not carry is how an oracle
+          // comes to measure nothing (the `state().visible` tautology, round 6).
+          selection: [...document.querySelectorAll('.v2-card .v2-py')].map(txt).filter(Boolean),
+          cards: document.querySelectorAll('.v2-pane-body .v2-card').length,
+          tree,
+          total: document.querySelectorAll('.v2-py').length,
+        };
+      });
+      /**
+       * THE PALETTE, TYPED FOR REAL. Same lesson as the tree filter above: `input.value = …` in page
+       * is swallowed by React's value tracker, so the query never reaches the matcher and the row
+       * measures an empty result list. Ctrl+K is delivered as a real chord for the same reason —
+       * the dispatcher reads `event.code`, and this is the keystroke S2's own rows use.
+       */
+      await page.keyboard.press('Control+KeyK');
+      await page.waitForTimeout(450);
+      await page.keyboard.type('胸骨体', {delay: 25});
+      await page.waitForTimeout(700);
+      const paletteSeen = await page.evaluate(() => ({
+        query: document.querySelector('.v2-find [data-autofocus]')?.value ?? '(no input)',
+        rows: document.querySelectorAll('.v2-find li').length,
+        readings: [...document.querySelectorAll('.v2-find .v2-py')].map((e) => (e.textContent || '').trim()).filter(Boolean),
+      }));
+      seen.palette = paletteSeen.readings;
+      seen.paletteQuery = paletteSeen.query;
+      seen.paletteRows = paletteSeen.rows;
+      /**
+       * A REAL ROMANISATION, not "the class exists". Two conditions, and each rules out a way this
+       * could read green while being wrong: Latin letters (an empty string or a leftover Chinese
+       * name would fail), and NO Han character (a half-converted reading would fail — the exact
+       * thing `build-pinyin.mjs` validates on the other side of the wire).
+       */
+      const hasReading = (list) => list.some((s) => /[a-zāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]/i.test(s) && !/[㐀-䶿一-鿿]/.test(s));
+      check(py.name, `[${S4_V}] the reading is drawn in the tree, the cards and the palette`,
+        seen.tree.length > 0 && seen.selection.length > 0 && seen.palette.length > 0
+          && hasReading(seen.tree) && hasReading(seen.selection) && hasReading(seen.palette),
+        `tree ${seen.tree.length} (e.g. "${seen.tree[0] ?? ''}") · cards ${seen.selection.length} (e.g. "${seen.selection[0] ?? ''}") · palette ${seen.palette.length} of ${seen.paletteRows} rows for query "${seen.paletteQuery}" (e.g. "${seen.palette[0] ?? ''}") · ${seen.total} total`,
+        'all three non-empty, with real romanised text in each');
+      // THE NAMED PAIR. `xiōng gǔ tǐ` under 胸骨体 — the exact string the live smoke checks, so the
+      // headless row and the live check are asserting one fact rather than two similar ones.
+      const named = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-find li, .v2-tree-row, .v2-card')];
+        const hit = rows.find((r) => (r.textContent || '').includes('胸骨体'));
+        return {found: !!hit, text: (hit?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90)};
+      });
+      check(py.name, `[${S4_V}] and 胸骨体 carries "xiōng gǔ tǐ" specifically`,
+        named.found && /xiōng gǔ tǐ/.test(named.text),
+        named.found ? named.text : 'no row containing 胸骨体 was found',
+        'the tone-marked reading, beside the name it is a reading of');
+
+      /**
+       * ── THE ROW GREW BY EXACTLY 18 px, AND NOTHING IS CLIPPED ─────────────────────────────────
+       *
+       * `spec.md` §Geometry: "bilingual children 54 fine … add 18 px when pinyin is on". This is the
+       * assertion that keeps the reading a real third line rather than a line squeezed into a fixed
+       * row — my first implementation shared the secondary line to avoid touching `ROW_H`, and that
+       * was the wrong call against the visual contract. Two halves: the height IS 72, and the
+       * content FITS in it (`scrollHeight <= clientHeight`), because a taller row that still clips
+       * would satisfy the first and defeat the point.
+       */
+      const geom = await page.evaluate(() => {
+        const row = [...document.querySelectorAll('.v2-tree-row.is-concept')]
+          .find((r) => r.querySelector('.v2-py'));
+        if (!row) return {error: 'no concept row carrying a reading'};
+        const name = row.querySelector('.v2-tree-name');
+        return {
+          h: Math.round(row.getBoundingClientRect().height),
+          clipped: name ? name.scrollHeight > Math.ceil(name.clientHeight) + 1 : null,
+          lines: row.querySelectorAll('.v2-tree-name > b, .v2-tree-name > s.v2-py, .v2-tree-name > i').length,
+        };
+      });
+      check(py.name, `[${S4_V}] a tree row with a reading is 54+18 = 72 px, and its lines are not clipped`,
+        !geom.error && geom.h === 72 && geom.clipped === false && geom.lines >= 3,
+        geom.error || `height=${geom.h}px (want 72) clipped=${geom.clipped} lines=${geom.lines}`,
+        'spec.md §Geometry: 54 plus 18 when pinyin is on, with the third line actually fitting');
+
+      // ── 3. ABOUT ───────────────────────────────────────────────────────────────────────────────
+      const about = await page.evaluate(async () => {
+        // Close the palette first — Escape, through the overlay's own trap.
+        document.querySelector('.v2-find')?.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        await new Promise((r) => setTimeout(r, 250));
+        const gear = [...document.querySelectorAll('button')]
+          .find((b) => /Settings|设置|設定/.test(b.getAttribute('aria-label') || b.getAttribute('title') || ''));
+        if (!gear) return {error: 'no Settings invoker'};
+        gear.click();
+        await new Promise((r) => setTimeout(r, 350));
+        const focusedTab = document.activeElement?.className || '';
+        const autofocus = document.querySelectorAll('.v2-modal [data-autofocus]').length;
+        const tabs = [...document.querySelectorAll('.v2-mtab')];
+        tabs.find((t) => /About|关于|關於/.test(t.textContent || ''))?.click();
+        await new Promise((r) => setTimeout(r, 250));
+        const text = (document.querySelector('.v2-about')?.textContent || '').replace(/\s+/g, ' ');
+        return {focusedTab, autofocus, text, len: text.length};
+      });
+      check(py.name, `[${S4_V}] the Settings overlay focuses its SELECTED TAB, not the close button`,
+        !about.error && about.autofocus === 1 && /v2-mtab/.test(about.focusedTab),
+        about.error || `activeElement class="${about.focusedTab}" · ${about.autofocus} [data-autofocus] in the panel`,
+        'exactly one declared target, and it is the selected tab');
+      check(py.name, `[${S4_V}] About names the pinyin library WITH its pinned version`,
+        !about.error && /pinyin-pro@\d+\.\d+\.\d+/.test(about.text),
+        about.error || `matched: ${/pinyin-pro@[\d.]+/.exec(about.text)?.[0] ?? 'NOTHING'} (${about.len} chars of About text)`,
+        'pinyin-pro@<x.y.z> — derived from the shipped map\'s own stamp, never typed into copy');
+      check(py.name, `[${S4_V}] About names the resolved dependency set with versions`,
+        !about.error && /react 1?\d+\.\d+\.\d+/.test(about.text) && /three \d+\.\d+\.\d+/.test(about.text),
+        about.error || `react: ${/react [\d.]+[^·]*/.exec(about.text)?.[0] ?? 'NOTHING'} · three: ${/three [\d.]+[^·]*/.exec(about.text)?.[0] ?? 'NOTHING'}`,
+        'each package at its RESOLVED version, read from its own manifest at build time');
+      check(py.name, `[${S4_V}] About names the deployed build and the commit`,
+        !about.error && /l31v21bc/.test(about.text) && /\b[0-9a-f]{7}\b/.test(about.text),
+        about.error || `${/(build|版本)[^·]*·[^·]*/.exec(about.text)?.[0]?.slice(0, 80) ?? 'NOTHING'}`,
+        'the SITE_BUILD from wrangler.toml and a short commit sha');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ── THE CONTROL ARM FOR THE +18, AND THE ONE DEVIATION FROM A LITERAL READING OF THE SPEC ─────
+   *
+   * `spec.md` says "add 18 px when pinyin is on". The implementation grows the row on
+   * `pinyin && t.zh`, because in an ENGLISH interface the tree label is English, `py` correctly
+   * returns nothing, and growing 3,432 rows by 18 px for a line that is never drawn would be 18 px
+   * of empty space per row. "Bilingual children" in the spec IS the Chinese interface.
+   *
+   * That is a DEVIATION and it gets its own row rather than a comment, so if anyone later decides
+   * the literal reading was meant, this is the assertion they have to change on purpose.
+   */
+  {
+    const ctx = await newContext(py);
+    await ctx.addInitScript(() => {
+      try { localStorage.setItem('atlas.pinyin', '{"v":1,"on":true}'); localStorage.setItem('atlas.lang', 'en'); } catch { /* ignore */ }
+    });
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?select=${BARE_ID}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      const en = await page.evaluate(() => {
+        const rows = [...document.querySelectorAll('.v2-tree-row.is-concept')];
+        return {
+          n: rows.length,
+          h: rows[0] ? Math.round(rows[0].getBoundingClientRect().height) : 0,
+          readings: document.querySelectorAll('.v2-py').length,
+        };
+      });
+      check(py.name, `[${S4_V}] pinyin ON in an ENGLISH interface: no reading, and the row stays 54 px`,
+        en.n > 0 && en.h === 54 && en.readings === 0,
+        `${en.n} concept rows, first is ${en.h}px (want 54), ${en.readings} readings`,
+        'no empty 18px band where there is no Chinese name to read');
+    } catch (e) {
+      check(py.name, `[${S4_V}] the English-with-pinyin pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 4. A CORRUPT SETTING STILL RENDERS (RC12) ─────────────────────────────────────────────────
+  {
+    const {ctx, page, ledger} = await coldVisit('{"v":9,"on":"maybe"', `${base}${path}?select=${BARE_ID}`);
+    try {
+      const alive = await page.evaluate(() => ({
+        shell: !!document.querySelector('.v2'),
+        field: !!document.querySelector('.v2-field'),
+        py: document.querySelectorAll('.v2-py').length,
+        ready: document.documentElement.getAttribute('data-atlas-scene-ready'),
+      }));
+      // A corrupt value is unparseable, so it is "never chosen", so the setting is OFF — which
+      // means no request either. Both halves, because a fallback that still fetched would be a
+      // different defect wearing the same green.
+      check(py.name, `[${S4_V}] a corrupt atlas.pinyin still renders the shell, as OFF`,
+        alive.shell && alive.field && alive.py === 0 && pinyinStarts(ledger).length === 0,
+        `shell=${alive.shell} field=${alive.field} readings=${alive.py} ready=${alive.ready} pinyin starts=${pinyinStarts(ledger).length}`,
+        'the shell renders, nothing is drawn, and nothing is fetched');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 5. THE PHONE'S A6/A7 SHEET (RC5: an APPENDED row, nothing pre-existing touched) ───────────
+  {
+    const phone = {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true};
+    const ctx = await newContext(phone);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      const sheet = await page.evaluate(async () => {
+        // The margin has to be open for its action row to be reachable — the same drag a reader
+        // makes. Then Settings, by TEXT, the way the other margin oracles find their buttons.
+        document.querySelector('.v2-handle')?.click();
+        await new Promise((r) => setTimeout(r, 400));
+        const b = [...document.querySelectorAll('.v2-actions button')]
+          .find((x) => /Settings|设置|設定/.test(x.textContent || ''));
+        if (!b) return {error: 'no Settings button in the margin'};
+        b.click();
+        await new Promise((r) => setTimeout(r, 400));
+        const panel = document.querySelector('.v2-modal');
+        if (!panel) return {error: 'the overlay did not open'};
+        const r = panel.getBoundingClientRect();
+        const handle = panel.querySelector('.v2-sheet-handle');
+        const hr = handle?.getBoundingClientRect();
+        const hasAbout = [...panel.querySelectorAll('.v2-mtab')].some((t) => /About|关于|關於/.test(t.textContent || ''));
+        // ⚠️ THE SWITCH IS ON THE **LANGUAGE** TAB, and Settings opens on General. The first version
+        // of this row looked for `.v2-switch` in the panel as opened and measured `switch=false` —
+        // a true reading of the wrong question, and it would have read as "the phone cannot reach
+        // the toggle". One tap is the reader's own route; the row takes it.
+        [...panel.querySelectorAll('.v2-mtab')].find((t) => /Language|语言|語言/.test(t.textContent || ''))?.click();
+        await new Promise((r) => setTimeout(r, 300));
+        const sw = panel.querySelector('.v2-switch');
+        return {
+          isSheet: panel.classList.contains('is-sheet'),
+          bottom: Math.round(window.innerHeight - r.bottom),
+          handleH: hr ? Math.round(hr.height) : 0,
+          hasAbout, hasSwitch: !!sw,
+          // The geometry constants RC5(a) freezes, read WHILE the sheet is open: a sheet that
+          // resized the page beneath it would be the way this feature breaks the phone.
+          head: Math.round(document.querySelector('.v2-head')?.getBoundingClientRect().height ?? 0),
+          rail: Math.round(document.querySelector('.v2-rail')?.getBoundingClientRect().width ?? 0),
+        };
+      });
+      check(phone.name, `[${S4_V}] Settings opens as the A6/A7 SHEET, on S0's primitive`,
+        !sheet.error && sheet.isSheet === true && sheet.handleH >= 44 && sheet.bottom <= 1,
+        sheet.error || `is-sheet=${sheet.isSheet} handle=${sheet.handleH}px bottom gap=${sheet.bottom}px`,
+        'the sheet presentation, a >=44px handle, flush to the bottom');
+      check(phone.name, `[${S4_V}] and it carries the pinyin switch and the About tab`,
+        !sheet.error && sheet.hasSwitch === true && sheet.hasAbout === true,
+        sheet.error || `switch=${sheet.hasSwitch} about=${sheet.hasAbout}`,
+        'both — the phone was the one tier where neither was reachable');
+      check(phone.name, `[${S4_V}] and the phone's frozen geometry is untouched while it is open`,
+        !sheet.error && sheet.head === 56 && sheet.rail === 45,
+        sheet.error || `header=${sheet.head}px (want 56) rail=${sheet.rail}px (want 45)`,
+        '56 / 45 — RC5(a), measured with the sheet up');
+      await page.screenshot({path: join(outDir, `${label}-s4-phone-settings.png`), timeout: SHOT_MS}).catch(() => {});
+    } catch (e) {
+      check(phone.name, `[${S4_V}] the phone Settings pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── SCREENSHOTS TO LOOK AT. Not a check — the three defects S3c found were found by looking. ──
+  {
+    for (const [lang, seed] of [['en', '{"v":1,"on":true}'], ['zh-Hans', '{"v":1,"on":true}']]) {
+      const ctx = await newContext(py);
+      await ctx.addInitScript((args) => {
+        try { localStorage.setItem('atlas.pinyin', args[0]); localStorage.setItem('atlas.lang', args[1]); } catch { /* ignore */ }
+      }, [seed, lang]);
+      const page = await ctx.newPage();
+      try {
+        await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        await page.waitForTimeout(2200);
+        await page.evaluate(async () => {
+          for (const sys of [...document.querySelectorAll('.v2-tree-row.is-system')].slice(0, 3)) {
+            (sys.querySelector('.v2-tw[type=button]') ?? sys.querySelector('.v2-tree-name'))?.click();
+            await new Promise((r) => setTimeout(r, 150));
+          }
+        });
+        await page.screenshot({path: join(outDir, `${label}-s4-pinyin-${lang}.png`), timeout: SHOT_MS}).catch(() => {});
+        // And the About panel, which is the other thing a human has to read rather than assert.
+        await page.evaluate(async () => {
+          [...document.querySelectorAll('button')]
+            .find((b) => /Settings|设置|設定/.test(b.getAttribute('aria-label') || b.getAttribute('title') || ''))?.click();
+          await new Promise((r) => setTimeout(r, 300));
+          [...document.querySelectorAll('.v2-mtab')].find((t) => /About|关于|關於/.test(t.textContent || ''))?.click();
+          await new Promise((r) => setTimeout(r, 250));
+        });
+        await page.screenshot({path: join(outDir, `${label}-s4-about-${lang}.png`), timeout: SHOT_MS}).catch(() => {});
+      } catch { /* a screenshot is evidence, never a gate */ } finally { await ctx.close(); }
+    }
   }
 }
 

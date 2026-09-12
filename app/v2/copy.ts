@@ -13,6 +13,7 @@
  * furniture lives here.
  */
 import type {Lang} from '../i18n/ui';
+import type {Reason} from './controller.ts';
 
 type Row = Record<Lang, string>;
 
@@ -206,6 +207,103 @@ export const V2: Record<string, Row> = {
  'refusal.unchanged': {en: 'Your {n} structures are unchanged.', 'zh-Hans': '你的 {n} 个结构保持不变。', 'zh-Hant': '你的 {n} 個結構保持不變。'},
  'refusal.review': {en: 'Review selection', 'zh-Hans': '检查所选结构', 'zh-Hant': '檢查所選結構'},
 
+ // ══ L31 v2.1b+c, S4 — THE REASON ITSELF, KEYED ═════════════════════════════════════════════════
+ //
+ // ⚠️ THIS IS A LIVE DEFECT S3 SHIPPED, not a new feature. `app/v2/controller.ts` produced its ~14
+ // refusal reasons as English string LITERALS, and S3 added the first surface at >=1180 that draws
+ // them. The result, measured on the live site in a 简体 interface (worklog 2026-09-13, S3c):
+ //
+ //   未添加 — 当前视图未作更改 that is 838 structures and the maximum is 24 — remove some first
+ //   你的 5 个结构保持不变
+ //
+ // A translated frame wrapped around a raw English sentence — and the English is the only part that
+ // says what went wrong. So the controller now returns a `Reason` (`{key, vars, detail}`) and THIS
+ // TABLE is what turns it into words. The controller stays UI-free: it names the bound it hit and
+ // the numbers, and knows nothing about any language.
+ //
+ // WHY KEYS AND NOT `tr` THREADED INTO THE CONTROLLER. `reduce` is a pure function with ~40 tests
+ // and two non-React callers (`window.atlas`, the URL seed); handing it a translator would make
+ // every one of them supply one, and would put the interface language inside the one module whose
+ // whole value is that it has no interface in it.
+ //
+ // ⚠️ `v2t` RETURNS THE KEY FOR A MISSING ROW — which would be a Latin-only string in a Chinese
+ // card, i.e. exactly this defect again in a new costume (it already happened once: S2 shipped
+ // `tr('refusal.tooMany')` against a key that did not exist and the palette rendered the key).
+ // `test/v2-copy-reasons.test.mjs` enumerates every key the controller can emit and asserts each
+ // has a row here with CJK in both Chinese columns. That test is the guard, not this comment.
+ //
+ // THE `{n}` AUDIT (RC13), in full: `refusal.limitStructures` interpolates `{n} structures` and
+ // `refusal.encoded`/`refusal.linkEncoded` interpolate `{n} characters` — in all three, `{n}` is
+ // strictly GREATER than its bound by construction (>24, >1,400), so the English singular is
+ // unreachable copy and none of them belongs in `V2_ONE`. `refusal.addFull` interpolates `{max}`,
+ // which is a constant, not a count of anything the reader has.
+ 'refusal.limitStructures': {
+  en: 'that is {n} structures and the maximum is {max} — remove some first',
+  'zh-Hans': '这是 {n} 个结构，上限为 {max} 个 — 请先移除一些',
+  'zh-Hant': '這是 {n} 個結構，上限為 {max} 個 — 請先移除一些',
+ },
+ 'refusal.encoded': {
+  en: 'this scene encodes to {n} characters and the limit is {max} — remove a structure, or shorten the title or note',
+  'zh-Hans': '这个场景编码后有 {n} 个字符，上限为 {max} 个 — 请移除一个结构，或缩短标题或备注',
+  'zh-Hant': '這個場景編碼後有 {n} 個字元，上限為 {max} 個 — 請移除一個結構，或縮短標題或備註',
+ },
+ 'refusal.addFull': {
+  en: 'a view holds at most {max} structures — remove one first',
+  'zh-Hans': '一个视图最多容纳 {max} 个结构 — 请先移除一个',
+  'zh-Hant': '一個視圖最多容納 {max} 個結構 — 請先移除一個',
+ },
+ 'refusal.lastStructure': {
+  en: 'a view needs at least one structure — use Clear to leave this view',
+  'zh-Hans': '一个视图至少需要一个结构 — 如要离开此视图，请使用“清空”',
+  'zh-Hant': '一個視圖至少需要一個結構 — 如要離開此視圖，請使用「清空」',
+ },
+ 'refusal.nothing': {
+  en: 'nothing to select',
+  'zh-Hans': '没有可选择的结构',
+  'zh-Hant': '沒有可選擇的結構',
+ },
+ 'refusal.opacityNoScene': {
+  en: 'opacity is part of a saved view — this page is not showing one',
+  'zh-Hans': '不透明度属于已保存的视图 — 当前页面没有在显示视图',
+  'zh-Hant': '不透明度屬於已儲存的視圖 — 目前頁面沒有在顯示視圖',
+ },
+ 'refusal.opacityNotMember': {
+  en: 'opacity applies to a structure in this view — add it first',
+  'zh-Hans': '不透明度只作用于本视图中的结构 — 请先将它加入本视图',
+  'zh-Hant': '不透明度只作用於本視圖中的結構 — 請先將它加入本視圖',
+ },
+ 'refusal.linkEncoded': {
+  en: "this link's view encodes to {n} characters and the limit is {max}",
+  'zh-Hans': '这个链接的视图编码后有 {n} 个字符，上限为 {max} 个',
+  'zh-Hant': '這個連結的視圖編碼後有 {n} 個字元，上限為 {max} 個',
+ },
+ // ⚠️ THE ONE PAIR WHOSE DETAIL STAYS ENGLISH, AND IT IS SAID OUT LOUD RATHER THAN HIDDEN.
+ // `validateScene` lives in `app/scene-codec.js` and produces ~17 English sentences of its own
+ // ("focus.ids contains …, which is not in select, context or ghost", "unknown emphasis …"). That
+ // file is inside `deploy.ps1`'s `renderPaths`, so keying it means a SITE_BUILD bump, a Worker
+ // deploy and a plate-golden comparison — out of S4's scope by the kickoff's own terms.
+ //
+ // So the SENTENCE the reader reads is translated, and the codec's English is carried as a
+ // labelled technical quotation under it (`refusal.detail`) rather than spliced into the middle of
+ // a Chinese paragraph. That is honest in a way "some of it is translated" is not, and it is
+ // reachable only by a malformed link or a hand-edited scene — never by the over-tick that made
+ // this defect visible. Owner for keying the codec: whoever next opens the render path.
+ 'refusal.sceneInvalid': {
+  en: 'this view could not be applied',
+  'zh-Hans': '这个视图无法应用',
+  'zh-Hant': '這個視圖無法套用',
+ },
+ 'refusal.linkInvalid': {
+  en: "this link's view could not be applied",
+  'zh-Hans': '这个链接的视图无法应用',
+  'zh-Hant': '這個連結的視圖無法套用',
+ },
+ 'refusal.detail': {
+  en: 'Technical detail',
+  'zh-Hans': '技术细节（英文）',
+  'zh-Hant': '技術細節（英文）',
+ },
+
  // Why the opacity slider is disabled in an EXPLORE scene: the codec draws every named structure
  // solid there, so the control cannot express what it looks like it expresses (codex round 3, H1).
  'panel.opacityExplore': {en: 'This view draws every selected structure solid — use the eye in Layers to hide one for this session.', 'zh-Hans': '本视图会把所选结构全部实心绘制 — 如需临时隐藏，请使用图层中的眼睛。', 'zh-Hant': '本視圖會把所選結構全部實心繪製 — 如需暫時隱藏，請使用圖層中的眼睛。'},
@@ -292,20 +390,51 @@ export const V2: Record<string, Row> = {
  'about.fork':     {en: 'GitHub · fork', 'zh-Hans': 'GitHub · 分支', 'zh-Hant': 'GitHub · 分支'},
  'about.anatomy':  {en: 'Anatomy data', 'zh-Hans': '解剖数据', 'zh-Hant': '解剖資料'},
  'about.attribution': {en: 'BodyParts3D, © The Database Center for Life Science licensed under CC Attribution 4.0 International.', 'zh-Hans': 'BodyParts3D，© 生命科学数据库中心，采用 CC 署名 4.0 国际许可。', 'zh-Hant': 'BodyParts3D，© 生命科學資料庫中心，採用 CC 姓名標示 4.0 國際授權。'},
- 'about.adapt':    {en: 'BodyParts3D 4.0 · TARO adult male reference, from isa_BP3D_4.0_obj_99.zip. Axes and units converted from millimetres/Z-up to metres/Y-up; geometry simplified with meshoptimizer at a 0.2% relative error limit; normals quantized to signed 16-bit; meshes packed into chunks; display groups curated. 3,432 concepts / 2,234 meshes. Educational use; not a clinical tool.', 'zh-Hans': 'BodyParts3D 4.0 · TARO 成年男性参考模型，源自 isa_BP3D_4.0_obj_99.zip。坐标与单位由毫米／Z 轴向上转换为米／Y 轴向上；以 meshoptimizer 按 0.2% 相对误差简化几何；法线量化为有符号 16 位；网格分块；显示分组经人工整理。3,432 个概念 / 2,234 个网格。用于教育，非临床工具。', 'zh-Hant': 'BodyParts3D 4.0 · TARO 成年男性參考模型，源自 isa_BP3D_4.0_obj_99.zip。座標與單位由毫米／Z 軸向上轉換為公尺／Y 軸向上；以 meshoptimizer 按 0.2% 相對誤差簡化幾何；法線量化為有號 16 位元；網格分塊；顯示分組經人工整理。3,432 個概念 / 2,234 個網格。用於教育，非臨床工具。'},
+ // ⚠️ S4 — THE RELATIONSHIP TABLES ARE NAMED. `public/ATTRIBUTION.md` credits "English names and
+ // relationships: IS-A and PART-OF concept, element, and inclusion tables from the same archive",
+ // and About did not mention them. The whole 3,432-concept hierarchy — which is what the Layers tree
+ // IS — comes from those tables, so leaving them out of an attribution panel that claims to name
+ // every source was a real omission, found by reading ATTRIBUTION.md against this table.
+ 'about.adapt':    {en: 'BodyParts3D 4.0 · TARO adult male reference, from isa_BP3D_4.0_obj_99.zip. English names and the concept hierarchy come from the same archive\'s IS-A and PART-OF concept, element and inclusion tables. Axes and units converted from millimetres/Z-up to metres/Y-up; geometry simplified with meshoptimizer at a 0.2% relative error limit; normals quantized to signed 16-bit; meshes packed into chunks; display groups curated. 3,432 concepts / 2,234 meshes. Educational use; not a clinical tool.', 'zh-Hans': 'BodyParts3D 4.0 · TARO 成年男性参考模型，源自 isa_BP3D_4.0_obj_99.zip。英文名称与概念层级来自同一档案的 IS-A、PART-OF 概念表、元素表与包含关系表。坐标与单位由毫米／Z 轴向上转换为米／Y 轴向上；以 meshoptimizer 按 0.2% 相对误差简化几何；法线量化为有符号 16 位；网格分块；显示分组经人工整理。3,432 个概念 / 2,234 个网格。用于教育，非临床工具。', 'zh-Hant': 'BodyParts3D 4.0 · TARO 成年男性參考模型，源自 isa_BP3D_4.0_obj_99.zip。英文名稱與概念層級來自同一檔案的 IS-A、PART-OF 概念表、元素表與包含關係表。座標與單位由毫米／Z 軸向上轉換為公尺／Y 軸向上；以 meshoptimizer 按 0.2% 相對誤差簡化幾何；法線量化為有號 16 位元；網格分塊；顯示分組經人工整理。3,432 個概念 / 2,234 個網格。用於教育，非臨床工具。'},
+ 'about.dataset':  {en: 'BodyParts3D · dataset', 'zh-Hans': 'BodyParts3D · 数据集', 'zh-Hant': 'BodyParts3D · 資料集'},
+ 'about.historyDoi': {en: 'HuBMAP · 10.48539/HBM352.BTSQ.586', 'zh-Hans': 'HuBMAP · 10.48539/HBM352.BTSQ.586', 'zh-Hant': 'HuBMAP · 10.48539/HBM352.BTSQ.586'},
  'about.legacy':   {en: 'The source OBJ comments name an older CC BY-SA 2.1 Japan licence. The current database licence linked above supersedes that legacy text and explicitly permits redistribution and adaptation under CC BY 4.0.', 'zh-Hans': '源 OBJ 注释中提到较早的 CC BY-SA 2.1 日本许可。上方链接的现行数据库许可取代该旧文本，并明确允许在 CC BY 4.0 下再分发与改编。', 'zh-Hant': '原始 OBJ 註解中提到較早的 CC BY-SA 2.1 日本授權。上方連結的現行資料庫授權取代該舊文字，並明確允許在 CC BY 4.0 下再散布與改作。'},
  'about.paper':    {en: 'Mitsuhashi et al. (2009), BodyParts3D: 3D structure database for anatomical concepts.', 'zh-Hans': 'Mitsuhashi 等（2009），BodyParts3D：解剖概念的三维结构数据库。', 'zh-Hant': 'Mitsuhashi 等（2009），BodyParts3D：解剖概念的三維結構資料庫。'},
  'about.language': {en: 'Names & translations', 'zh-Hans': '名称与翻译', 'zh-Hant': '名稱與翻譯'},
  'about.translation': {en: 'Wikidata P1402 anchors; Wikipedia references (no article text imported). Machine translation: codex gpt-6-astra, second-model grading and manual corrections; OpenCC script conversion. Not every term is independently verified.', 'zh-Hans': 'Wikidata P1402 锚点；Wikipedia 参考资料（未导入文章正文）。机器翻译：codex gpt-6-astra、第二模型评分及人工修正；OpenCC 简繁转换。并非每个术语都经独立核实。', 'zh-Hant': 'Wikidata P1402 錨點；Wikipedia 參考資料（未匯入文章正文）。機器翻譯：codex gpt-6-astra、第二模型評分及人工修正；OpenCC 簡繁轉換。並非每個術語都經獨立核實。'},
- 'about.pinyin':   {en: 'Pinyin: a build-time whole-word dictionary. The library and its pinned version are recorded here when S4 ships it.', 'zh-Hans': '拼音：构建时生成的整词词典。所用库及锁定版本将在 S4 交付时记录于此。', 'zh-Hant': '拼音：建置時產生的整詞詞典。所用函式庫及鎖定版本將在 S4 交付時記錄於此。'},
+ // ⚠️ S4 — THE REAL SOURCE, replacing the S0 placeholder ("recorded here when S4 ships it"). The
+ // version is NOT written here: `{lib}` is interpolated from the shipped `public/i18n/pinyin.json`'s
+ // own `library` stamp, read at build time (vite.config.ts `readPinyinLib`). A literal here would be
+ // the third copy of a version number, and the S1 review is on record about what happens to those.
+ // The DERIVATION is stated because it is a real limitation a reader should be able to see: the
+ // reading comes from the 简体 spelling, and 繁體 shares it.
+ 'about.pinyin':   {
+  en: 'Pinyin: generated at build time from the 简体 names by {lib}, with tone marks — one reading per atlas id, {n} in all. 繁體 shares the reading, because the two dictionaries are conversions of one another and pinyin is the Mandarin reading rather than a transcript of the glyphs. Downloaded only when the setting is on.',
+  'zh-Hans': '拼音：构建时由 {lib} 从简体名称生成，带声调 — 每个图谱编号一条读音，共 {n} 条。繁體沿用同一读音：两份词典互为转换，而拼音是普通话读音，并非字形的转写。仅在开启该设置时下载。',
+  'zh-Hant': '拼音：建置時由 {lib} 從簡體名稱產生，含聲調 — 每個圖譜編號一條讀音，共 {n} 條。繁體沿用同一讀音：兩份詞典互為轉換，而拼音是普通話讀音，並非字形的轉寫。僅在開啟該設定時下載。',
+ },
  'about.fonts':    {en: 'Fonts', 'zh-Hans': '字体', 'zh-Hant': '字型'},
  'about.fontList': {en: 'No webfont is downloaded. Installed faces only — Latin: Inter, Segoe UI, Roboto, Arial. Chinese: PingFang SC/TC, Noto Sans CJK SC/TC, Source Han Sans, Hiragino Sans GB, Microsoft YaHei/JhengHei.', 'zh-Hans': '不下载任何网络字体，仅使用本机已安装字体 — 拉丁：Inter、Segoe UI、Roboto、Arial；中文：苹方 SC/TC、Noto Sans CJK SC/TC、思源黑体、冬青黑体、微软雅黑／正黑体。', 'zh-Hant': '不下載任何網路字型，僅使用本機已安裝字型 — 拉丁：Inter、Segoe UI、Roboto、Arial；中文：蘋方 SC/TC、Noto Sans CJK SC/TC、思源黑體、冬青黑體、微軟雅黑／正黑體。'},
  'about.runtime':  {en: 'Rendering & hosting', 'zh-Hans': '渲染与托管', 'zh-Hant': '算繪與託管'},
- 'about.runtimeList': {en: 'React 19 · three.js r159 · Vite · meshoptimizer · OpenCC. Cloudflare Pages and Functions, Browser Rendering, R2 and Access.', 'zh-Hans': 'React 19 · three.js r159 · Vite · meshoptimizer · OpenCC。Cloudflare Pages 与 Functions、Browser Rendering、R2 与 Access。', 'zh-Hant': 'React 19 · three.js r159 · Vite · meshoptimizer · OpenCC。Cloudflare Pages 與 Functions、Browser Rendering、R2 與 Access。'},
+ // ⚠️ S4 — `{deps}` IS THE RESOLVED SET, read out of each package's own `node_modules/…/package.json`
+ // at build time (vite.config.ts `readDeps`). It replaced "React 19 · three.js r159 · Vite ·
+ // meshoptimizer · OpenCC" — a hand-typed line on the panel whose job is to say what the reader is
+ // looking at, i.e. the exact staleness magnet the S1 review caught two lines below it. Hosting is
+ // still named by hand because it is not a package and has no version to drift.
+ 'about.runtimeList': {en: 'Downloaded by your browser: {deps}. Hosted on Cloudflare Pages and Functions, with Browser Rendering, R2 and Access.', 'zh-Hans': '浏览器实际下载：{deps}。托管于 Cloudflare Pages 与 Functions，并使用 Browser Rendering、R2 与 Access。', 'zh-Hant': '瀏覽器實際下載：{deps}。託管於 Cloudflare Pages 與 Functions，並使用 Browser Rendering、R2 與 Access。'},
  'about.historical': {en: 'Historical assets — not loaded', 'zh-Hans': '历史资源 — 当前未载入', 'zh-Hant': '歷史資源 — 目前未載入'},
  'about.history':  {en: 'Human Reference Atlas / HuBMAP, 3D Reference Organ Set for Female v1.5 (2023), Kristen Browne and Heidi Schlehlein, CC BY 4.0. Earlier geometry was translated, welded and simplified; it is not part of this model.', 'zh-Hans': 'Human Reference Atlas / HuBMAP，女性参考器官集 v1.5（2023），Kristen Browne 与 Heidi Schlehlein，CC BY 4.0。早期几何经平移、焊接和简化；不属于当前模型。', 'zh-Hant': 'Human Reference Atlas / HuBMAP，女性參考器官集 v1.5（2023），Kristen Browne 與 Heidi Schlehlein，CC BY 4.0。早期幾何經平移、焊接和簡化；不屬於目前模型。'},
  'about.build':    {en: 'Deployed build {build} · commit {commit}', 'zh-Hans': '部署版本 {build} · 提交 {commit}', 'zh-Hant': '部署版本 {build} · 提交 {commit}'},
- 'about.notices':  {en: 'Per-dependency licence notices are generated from the resolved package set at build time; this list names the sources, not the full notice text.', 'zh-Hans': '各依赖的许可声明在构建时由实际解析的依赖集生成；此处列出来源，不含完整声明正文。', 'zh-Hant': '各相依套件的授權聲明在建置時由實際解析的相依集產生；此處列出來源，不含完整聲明正文。'},
+ // ⚠️ S4 — CORRECTED. This said the notices "are generated from the resolved package set at build
+ // time", and nothing generated anything: the list above it was a hand-typed sentence. The list IS
+ // generated now (name, resolved version and declared licence, from each package's own manifest),
+ // and what is still absent — the full notice TEXTS — is named as absent instead of implied to be
+ // covered. A sentence that describes a pipeline is a claim, and this one was false.
+ 'about.notices':  {
+  en: 'The list above is read at build time from each package\'s own manifest in the resolved dependency tree — name, version and declared licence. The full notice texts are not bundled; each is published with its own project.',
+  'zh-Hans': '上面的清单在构建时从实际解析的依赖树中读取各包自身的 manifest — 名称、版本与声明的许可。完整的许可声明正文未随本站打包，各自随其项目发布。',
+  'zh-Hant': '上面的清單在建置時從實際解析的相依樹中讀取各套件自身的 manifest — 名稱、版本與宣告的授權。完整的授權聲明正文未隨本站打包，各自隨其專案發布。',
+ },
 
  // ── the key map (`?`) ──────────────────────────────────────────────────────────────────────────
  'keys.title':     {en: 'Keyboard', 'zh-Hans': '快捷键', 'zh-Hant': '快捷鍵'},
@@ -406,6 +535,17 @@ export const V2_ONE: Record<string, string> = {
  //                         one-structure scene refusing a bulk add). Needed.
  //   `refusal.limit`     — FIXED codec constants, no placeholder. Nothing to plural.
  'refusal.unchanged': 'Your {n} structure is unchanged.',
+ // L31 v2.1b+c, S4 — the audit of this group's `{n}`/count rows, in full (RC13 again):
+ //   `about.pinyin`            — "{n} in all" → `{n}` is the size of the shipped map (5,681). It is
+ //                               never 1 by construction (the atlas has 3,432 concepts alone), so a
+ //                               singular would be unreachable copy. NOT listed, on purpose.
+ //   `refusal.limitStructures` — "{n} structures" → `{n}` is strictly GREATER than the bound (>24)
+ //                               or the refusal would not have fired. Unreachable singular.
+ //   `refusal.encoded` / `refusal.linkEncoded` — "{n} characters" → same, >1,400.
+ //   `refusal.addFull`         — `{max}`, a constant, not a count of anything the reader has.
+ //   `about.runtimeList`       — `{deps}`, a rendered list. Not a count.
+ // So S4 adds NO row here, and the reason is recorded rather than the absence being left to look
+ // like an oversight.
 };
 
 /** `{n}`-style placeholders, same contract as `i18n/ui.ts fmt`, plus the English singular above. */
@@ -422,4 +562,20 @@ export function v2t(lang: Lang, key: string, vars?: Record<string, string | numb
   s = V2_ONE[key];
  }
  return s.replace(/\{(\w+)\}/g, (whole, k) => (vars[k] === undefined ? whole : String(vars[k])));
+}
+
+/**
+ * A CONTROLLER REFUSAL, IN THE READER'S LANGUAGE (L31 v2.1b+c, S4).
+ *
+ * The ONE place a `Reason` becomes words. Every surface that draws a refusal — the studio's
+ * `.v2-refusal` card, the phone's `.v2-refused` line, the Find palette's banner — calls this, so
+ * there is no second renderer that could translate differently or forget to.
+ *
+ * `detail` is returned SEPARATELY rather than concatenated, because the two have different
+ * standing: the sentence is translated copy, the detail is `validateScene`'s own English and is
+ * labelled as such where it is drawn. A caller that ignores `detail` loses precision, never
+ * correctness — which is the right failure mode for a surface with no room for it.
+ */
+export function reasonText(lang: Lang, r: Reason): {text: string; detail?: string} {
+ return {text: v2t(lang, r.key, r.vars), detail: r.detail};
 }

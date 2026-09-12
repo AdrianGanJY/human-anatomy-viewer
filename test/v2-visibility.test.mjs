@@ -22,6 +22,7 @@ import {existsSync, readFileSync} from 'node:fs';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
 import {sceneOpacities} from '../app/scene-model.ts';
 import {sceneDeclaresLang} from '../app/v2/scene-lang.ts';
+import {reasonText} from '../app/v2/copy.ts';
 import {initialState, reduce} from '../app/v2/controller.ts';
 import {alphaCause, conceptAlpha, eyeAction, eyeActionable, eyeOn, laneBlocks, partAlphas, readEye, resolvedStructureAlpha, sceneAlphaMap, withSessionHidden} from '../app/v2/visibility.ts';
 
@@ -425,7 +426,11 @@ test('round 5, Medium 1 — the controller refusal really is atomic, which is wh
   assert.ok(st.scene, 'and it really was published, so the command has something to refuse');
   const out = reduce(st, {type: 'set-opacity', id: 'FMA22359', opacity: 1});
   assert.ok(out.rejected, 'THE PRECONDITION: this command must be refused');
-  assert.match(out.rejected, /1400|characters/, 'and refused for the encoded-length reason');
+  assert.equal(out.rejected.key, 'refusal.encoded', 'and refused for the encoded-length reason');
+  assert.match(reasonText('en', out.rejected).text, /1400|characters/);
+  // S4: the SAME refusal, in 简体 — the defect this keying exists to end is a Latin-only
+  // sentence inside a translated card, so the Chinese resolution is asserted, not assumed.
+  assert.match(reasonText('zh-Hans', out.rejected).text, /[一-鿿]/);
   assert.equal(out.state, st, 'a refusal returns the SAME state object — nothing moved');
   assert.equal(out.state.blob, before, 'and the blob on screen is byte-identical');
 });

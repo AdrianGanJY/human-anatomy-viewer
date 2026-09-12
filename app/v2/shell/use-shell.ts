@@ -10,7 +10,8 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {HOLD, HOLD_CODES, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
-import {effectiveDocks, readDocks, writeDocks, type DockKey} from './store.ts';
+import {effectiveDocks, readDocks, readPinyin, writeDocks, writePinyin, type DockKey} from './store.ts';
+import {loadPinyin, pinyinOf} from '../pinyin.ts';
 
 /** A live viewport reading. `matchMedia` rather than a resize listener: the browser coalesces the
  *  change events, and the four queries below are exactly the four boundaries that matter, so a
@@ -66,6 +67,20 @@ export interface ShellState {
  held: ReadonlySet<string>; holdN: number;
  /** The pad's press/release, straight into the dispatcher's held set. */
  press(code: string): void; release(code: string): void;
+ /** ── S4 ─────────────────────────────────────────────────────────────────────────────────── */
+ /** The pinyin setting, from `localStorage['atlas.pinyin']`. It lives here, in the hook the page
+  *  calls at EVERY width, because the phone's A6 Settings sheet writes the same key as the studio's
+  *  Settings modal — one owner, or the two would drift into two settings with one name. */
+ pinyin: boolean; setPinyin(on: boolean): void;
+ /**
+  * THE READING FOR ONE ROW, or null — the single accessor every pinyin surface uses.
+  *
+  * It folds in three things the call sites must not each remember: the toggle state, whether the
+  * map has arrived, and whether the string being drawn is Chinese at all (`pinyinOf`). Threading a
+  * function rather than the map is what makes "pinyin is off" and "pinyin has not loaded"
+  * indistinguishable to a row, which is correct — a row draws nothing in both cases.
+  */
+ py(id: string, shown: string): string | null;
 }
 
 export type NavMode = 'orbit' | 'pan';
@@ -132,6 +147,38 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
  const toggleSide = useCallback(() => {
   setPrefs((cur) => { const next = {...cur, sideCollapsed: !cur.sideCollapsed}; writeDocks(next); return next; });
  }, []);
+
+ /**
+  * ── S4 — THE PINYIN SETTING, AND WHY THE FETCH IS IN AN EFFECT ON `pinyin` ────────────────────
+  *
+  * RC10 gives this feature two request-ledger rows: OFF ⇒ zero starts for `/i18n/pinyin.json` on a
+  * fresh English visit, ON ⇒ exactly one. Both fall out of the shape rather than out of care: the
+  * only call to `loadPinyin()` in the app is guarded by `if (!on) return` inside an effect whose
+  * dependency IS the setting, and `loadPinyin` memoises its success. There is no eager warm-up and
+  * no prefetch, because either would be a third row nobody asked for.
+  *
+  * `pyRev` exists because the map is module state, not React state: when the fetch lands, nothing
+  * React can see has changed. Bumping a counter is what gives `py` a new identity so the rows
+  * holding it re-render once, when the readings actually become available.
+  */
+ const [pinyin, setPinyinState] = useState(() => readPinyin().on);
+ const [pyRev, setPyRev] = useState(0);
+ useEffect(() => {
+  if (!pinyin) return;
+  let alive = true;
+  loadPinyin().then(() => { if (alive) setPyRev((r) => r + 1); });
+  return () => { alive = false; };
+ }, [pinyin]);
+ const setPinyin = useCallback((on: boolean) => {
+  setPinyinState(on);
+  writePinyin({v: 1, on});
+ }, []);
+ // `pyRev` is in the dependency list precisely so this closure is REPLACED when the map arrives;
+ // an eslint-style "unused dependency" reading of it would be wrong.
+ const py = useCallback(
+  (id: string, shown: string) => (pinyin ? pinyinOf(id, shown) : null),
+  [pinyin, pyRev],
+ );
 
  const [keysOpen, setKeysOpen] = useState(false);
  const [settingsOpen, setSettingsOpen] = useState(false);
@@ -301,5 +348,6 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   held: dispRef.current?.held ?? EMPTY_HELD, holdN,
   press: useCallback((code: string) => dispRef.current?.press(code), []),
   release: useCallback((code: string) => dispRef.current?.release(code), []),
+  pinyin, setPinyin, py,
  };
 }

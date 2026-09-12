@@ -54,6 +54,14 @@ try {
   node scripts/build-zh.mjs
   if ($LASTEXITCODE -ne 0) { throw 'build-zh failed' }
 
+  # 1b. L31 v2.1b+c S4 -- scripts/build-pinyin.mjs writes public/i18n/pinyin.json from the zh-Hans
+  #     dictionary step 1 has just produced. AFTER build-zh (it reads that file) and BEFORE
+  #     build-index (the ordering the increment specifies), offline and deterministic: its only
+  #     inputs are that JSON and a version-pinned devDependency, and it exits non-zero on an empty
+  #     or half-converted map rather than shipping a toggle that does nothing.
+  node scripts/build-pinyin.mjs
+  if ($LASTEXITCODE -ne 0) { throw 'build-pinyin failed' }
+
   node scripts/build-index.mjs
   if ($LASTEXITCODE -ne 0) { throw 'build-index failed' }
 
@@ -64,6 +72,10 @@ try {
   if (-not (Test-Path 'dist/_routes.json'))       { throw 'dist/_routes.json missing - the SPA would swallow /mcp' }
   if (-not (Test-Path 'dist/i18n/zh-Hans.json'))  { throw 'dist/i18n/zh-Hans.json missing - the language switch would 404' }
   if (-not (Test-Path 'dist/i18n/zh-Hant.json'))  { throw 'dist/i18n/zh-Hant.json missing - the language switch would 404' }
+  # S4: the pinyin toggle fetches this. A 404 here is answered by Pages with the SPA shell at HTTP
+  # 200 (the trap app/i18n/dict.ts documents), so the loader's content-type guard rejects it and the
+  # toggle silently shows nothing. Asserted in the deploy rather than discovered by a reader.
+  if (-not (Test-Path 'dist/i18n/pinyin.json'))   { throw 'dist/i18n/pinyin.json missing - the pinyin toggle would silently show nothing' }
 
   npx wrangler pages deploy --project-name human-anatomy-viewer --branch main --commit-dirty=true
   if ($LASTEXITCODE -ne 0) { throw 'wrangler pages deploy failed' }

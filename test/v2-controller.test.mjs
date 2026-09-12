@@ -11,7 +11,26 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {initialState, reduce} from '../app/v2/controller.ts';
+import {reasonText} from '../app/v2/copy.ts';
 import {decodeScene, encodeScene, normalizeScene, LIMITS} from '../app/scene-codec.js';
+
+/**
+ * ── L31 v2.1b+c, S4 — A REFUSAL IS A KEY NOW, SO THE ASSERTIONS RESOLVE IT ──────────────────────
+ *
+ * These rows used to `assert.match(out.rejected, /24/)` against an English template literal. The
+ * controller returns `{key, vars, detail}` and `copy.ts` words it, so the assertions go through
+ * `say()` — which is STRICTLY STRONGER than the old form, not a weakening: `v2t` returns the KEY
+ * for a row that does not exist, so a refusal whose copy was never written resolves to
+ * `"refusal.limitStructures"` and fails these matches. The old literal could not be wrong that way
+ * because it *was* the copy.
+ *
+ * The detail is joined with an em dash only to reproduce the sentence these assertions were written
+ * about; the UI draws it as a labelled English quotation (see `app/v2/refusal.tsx`).
+ */
+const say = (r, lang = 'en') => {
+  const {text, detail} = reasonText(lang, r);
+  return detail ? `${text} — ${detail}` : text;
+};
 
 /** The §9 forward-bend scene — the same fixture the oracles and the regression cases use, and it
  *  carries a style, an annotation and a declared focus precisely so "reconcile every reference"
@@ -100,7 +119,8 @@ test('the 24-structure bound is enforced atomically and the state comes back UNC
   const before = JSON.stringify(s);
   const out = reduce(s, {type: 'add', id: 'FMA9999'});
   assert.ok(out.rejected, 'the 25th structure must be refused');
-  assert.match(out.rejected, /24/);
+  assert.equal(out.rejected.key, 'refusal.addFull');
+  assert.match(say(out.rejected), /24/);
   assert.equal(JSON.stringify(out.state), before, 'a refused edit must leave the state untouched');
   assert.equal(out.state.picks.includes('FMA9999'), false, 'and must NOT silently truncate');
 });
@@ -116,7 +136,8 @@ test('the 1,400-character encoded bound is enforced on the ACTUAL encoding', () 
   assert.ok(encodeScene(fat).length > LIMITS.SCENE_MAX_B64 - 200, 'fixture must be near the bound to be a test');
   const out = reduce(state, {type: 'add', id: 'FMA7088'});
   if (out.rejected) {
-    assert.match(out.rejected, /1400|characters/);
+    assert.equal(out.rejected.key, 'refusal.encoded');
+    assert.match(say(out.rejected), /1400|characters/);
     assert.equal(out.state.blob, state.blob, 'a refused edit must leave the blob untouched');
   } else {
     assert.ok(out.state.blob.length <= LIMITS.SCENE_MAX_B64, 'an accepted edit must be within the bound');
@@ -128,7 +149,8 @@ test('a scene cannot be emptied by removing its last structure', () => {
   const state = {scene: one, blob: encodeScene(one), picks: ['FMA22359'], focusId: 'FMA22359', render: {...render}};
   const out = reduce(state, {type: 'remove', id: 'FMA22359'});
   assert.ok(out.rejected, 'an empty scene is not a scene');
-  assert.match(out.rejected, /Clear/);
+  assert.equal(out.rejected.key, 'refusal.lastStructure');
+  assert.match(say(out.rejected), /Clear/);
   assert.equal(out.state.scene.structures.length, 1);
 });
 
@@ -300,7 +322,8 @@ test('an ARRIVING scene is validated: 25 real structures in a short blob is refu
   const before = bare();
   const out = reduce(before, {type: 'apply-scene', scene: fat, blob: encodeScene(fat)});
   assert.ok(out.rejected, 'a 25-structure arrival must be refused');
-  assert.match(out.rejected, /25 structures|maximum is 24/);
+  assert.equal(out.rejected.key, 'refusal.linkInvalid');
+  assert.match(say(out.rejected), /25 structures|maximum is 24/);
   assert.equal(out.state, before, 'and the page keeps the state it already had');
 });
 
@@ -631,7 +654,8 @@ test('an over-bound BULK tick refuses ATOMICALLY — not one id is committed', (
   const many = Array.from({length: LIMITS.MAX_STRUCTURES + 4}, (_, i) => `FMA9000${i}`);
   const {state, rejected} = reduce(before, {type: 'tick', ids: many, on: true});
   assert.ok(rejected, 'it refuses');
-  assert.ok(/maximum is 24|24 structures/.test(rejected), `the message names the bound: ${rejected}`);
+  assert.equal(rejected.key, 'refusal.limitStructures');
+  assert.ok(/maximum is 24|24 structures/.test(say(rejected)), `the message names the bound: ${say(rejected)}`);
   // THE POINT OF THE ROW: the state is the INPUT, unchanged. A fold over single adds would have
   // committed the first 24 and then refused, which is the silent truncation the contract forbids.
   assert.deepEqual(state.picks, before.picks);
@@ -661,7 +685,8 @@ test('unticking the LAST structure in scene mode is refused, not silently a clea
   const all = s.picks.slice();
   const {state, rejected} = reduce(s, {type: 'tick', ids: all, on: false});
   assert.ok(rejected, 'it refuses');
-  assert.ok(/at least one structure/.test(rejected), rejected);
+  assert.equal(rejected.key, 'refusal.lastStructure');
+  assert.ok(/at least one structure/.test(say(rejected)), say(rejected));
   assert.equal(state.blob, s.blob, 'the teaching link keeps its title, note and structures');
 });
 
@@ -693,7 +718,9 @@ test('set-opacity on a NON-MEMBER is refused with a reason, and on a scene-less 
   assert.equal(notMember.state.blob, withScene().blob);
   const noScene = reduce(bare(), {type: 'set-opacity', id: 'FMA9611', opacity: 0.5});
   assert.ok(noScene.rejected, 'a page with no scene is refused');
-  assert.ok(/saved view|not showing one/.test(noScene.rejected), noScene.rejected);
+  assert.equal(noScene.rejected.key, 'refusal.opacityNoScene');
+  assert.equal(notMember.rejected.key, 'refusal.opacityNotMember');
+  assert.ok(/saved view|not showing one/.test(say(noScene.rejected)), say(noScene.rejected));
 });
 
 test('set-opacity clamps out-of-range values rather than storing them', () => {

@@ -71,6 +71,25 @@ export interface AtlasTools {
   *  gated (`/api/snap` needs an owner identity), so a local tool never spends it silently. */
  plate(): {url: string; blob: string; ids: string[]};
  state(): AtlasState;
+ /**
+  * ── L31 v2.1b+c, S4 — THE RESOLVED PER-MESH ALPHA, FOR INSTRUMENTS ────────────────────────────
+  *
+  * codex round 9's open Low: "neither browser row proves member-Show wiring". Both existing rows
+  * read the eye's own `aria-pressed` and `is-inert`, which is the CONTROL reporting on itself —
+  * and S3b's whole lesson was that a control's declaration is not the five-link chain the renderer
+  * walks. An oracle that wants to prove a Show CHANGED THE PICTURE has to read the picture.
+  *
+  * So this returns the exact `meshAlpha` map `app/v2/page.tsx` hands to the visibility controls,
+  * which is computed from the `renderState` object handed to `AnatomyScene` in the same render.
+  *
+  * ⚠️ WHAT IT IS NOT: a GPU readback. It is one step before the draw call, not zero. It cannot
+  * catch a renderer that ignores its own `opacity` input — `scripts/verify-render.mjs`'s pixel
+  * comparison is the lane for that. Stated here so no oracle overclaims it.
+  *
+  * Keyed by MESH (part) id, not by concept: the concept maximum is exactly the abstraction that
+  * could not see a Hide blanking two of three meshes while a sharer kept the third (round 8).
+  */
+ alphas(): Record<string, number>;
  /** Add one structure to the view. In scene mode it joins the scene as CONTEXT. */
  add(id: string): boolean;
  /** Remove one structure, reconciling the declared focus, styles and annotations that named it. */
@@ -80,6 +99,14 @@ export interface AtlasTools {
  setView(view: string): boolean;
  /** Subscribe to the event stream. Returns the unsubscriber. */
  on(listener: (e: AtlasEvent) => void): () => void;
+ /**
+  * STILL 3 AFTER S4 ADDED `alphas()`, and deliberately. The number exists so a future client can
+  * tell whether the verbs it needs are present; an ADDITIVE method breaks no caller written against
+  * 3, and bumping it would tell every existing client it is out of date to describe a change that
+  * cannot affect it. It bumps when a verb's signature or semantics change, not when the surface
+  * grows. (`alphas()` is also an INSTRUMENT rather than a verb — no client drives the viewer with
+  * it — which is the other reason it does not belong in the contract's version.)
+  */
  readonly version: 3;
 }
 
@@ -88,6 +115,7 @@ type Handlers = {
  focus: (ids: string[]) => boolean;
  plate: () => {url: string; blob: string; ids: string[]};
  state: () => AtlasState;
+ alphas: () => Record<string, number>;
  add: (id: string) => boolean;
  remove: (id: string) => boolean;
  clear: () => boolean;
@@ -107,6 +135,7 @@ export function installAtlasTools(h: Handlers): () => void {
   focus: (ids) => h.focus(typeof ids === 'string' ? [ids] : [...(ids ?? [])].filter((x) => typeof x === 'string')),
   plate: () => h.plate(),
   state: () => h.state(),
+  alphas: () => h.alphas(),
   // Guarded the same way `applyScene` is: a caller that hands this surface a non-string gets false
   // rather than a thrown error inside a voice session's tool loop.
   add: (id) => (typeof id === 'string' && !!id.trim() ? h.add(id.trim()) : false),

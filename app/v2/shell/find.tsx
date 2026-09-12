@@ -32,6 +32,8 @@ import {type Lang} from '../../i18n/ui.ts';
 import {loadZhDicts, loadedLanes, zhPartial, type Dicts, type T} from '../../i18n/dict.ts';
 import {CAP, LANE_ORDER, search, type Hit, type Lane} from '../find.ts';
 import Overlay from './overlay.tsx';
+import RefusalText from '../refusal.tsx';
+import type {Reason} from '../controller.ts';
 
 /**
  * RECENTS LIVE IN MEMORY, NOT localStorage — and that is a deliberate refusal, not an omission.
@@ -75,9 +77,13 @@ export interface FindProps {
   * bound would have been shown the literal string "refusal.tooMany". Worse, it would have been a
   * SECOND wording of a refusal the controller already words precisely (which bound, by how much,
   * and that the selection is unchanged) — two sources for one fact, and the invented one less
-  * informative. The page already renders this string in the margin; the palette shows the same one.
+  * informative. The page already renders this refusal in the margin; the palette shows the same one.
+  *
+  * S4: a keyed `Reason` rather than a sentence — resolved by `RefusalText` in the reader's language.
   */
- refused: string;
+ refused: Reason | null;
+ /** S4: the reading for one row, or null (off / not loaded / not Chinese). See `use-shell.ts`. */
+ py(id: string, shown: string): string | null;
 }
 
 /** `en`/`id` never reach here — `Hit.matched` is null for those (find.ts). */
@@ -325,7 +331,14 @@ export default function FindPalette(p: FindProps) {
     {sys && <span className="v2-dot" style={{background: sys.color}} aria-hidden="true"/>}
     <span className="v2-find-name">
      {display}
+     {/* S4 — THE READING GOES UNDER WHICHEVER LINE IS CHINESE, and in this palette that is not
+         always the primary. In a 简体 interface `display` is the Chinese name; in an ENGLISH
+         interface `display` is English and the CHINESE is the paired line the query matched on
+         (`t.alt`). `py` is asked about each string separately, so the reading lands under the
+         spelling it is a reading OF — which is the whole reason it takes the shown text. */}
+     {p.py(h.id, display) && <s className="v2-py">{p.py(h.id, display)}</s>}
      {pair && <i>{pair}{h.matched && <em className="v2-find-script">{SCRIPT_LABEL[h.matched.script] ?? ''}</em>}</i>}
+     {pair && p.py(h.id, pair) && <s className="v2-py">{p.py(h.id, pair)}</s>}
     </span>
     {h.parent && <span className="v2-find-parent">{h.parent}</span>}
     {h.lane === 'system' && <span className="v2-kbd">{p.tr('search.scopeTo')}</span>}
@@ -379,7 +392,7 @@ export default function FindPalette(p: FindProps) {
        coincidence. */}
    <p className="v2-find-cross">{p.tr('search.cross')}</p>
 
-   {refusedHere && p.refused && <p className="v2-refused" role="alert">{p.refused}</p>}
+   {refusedHere && p.refused && <p className="v2-refused" role="alert"><RefusalText lang={p.t.lang} r={p.refused}/></p>}
 
    {/* STATE 1 — LOADING. Never "no results" while a lane is in flight. */}
    {loading && <p className="v2-find-note" role="status">{p.tr('search.loading')}</p>}

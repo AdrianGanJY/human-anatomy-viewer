@@ -336,6 +336,31 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 .v2-seg button{height:36px;padding:0 14px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);font-size:var(--v2-type-sm);color:var(--v2-ink-2)}
 .v2-seg button.is-on{color:var(--v2-accent);border-color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
 .v2-static{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:6px;background:var(--v2-surface-2);font-size:var(--v2-type-xs);color:var(--v2-ink-2)}
+
+/* ══ S4 — THE PINYIN TOGGLE AND THE READING ═════════════════════════════════════════════════════
+   The switch is the FIRST real two-state control in Settings (background, motion and gating are all
+   read-only statements; the language and keypad rows are segmented groups). It is a `role="switch"`
+   button rather than a checkbox so the accessible name and `aria-checked` are one control, and it
+   is 44x26 with a 44 px tap target on coarse pointers like every other control in this file. */
+.v2-switch{position:relative;width:44px;height:26px;border-radius:999px;background:var(--v2-surface-2);border:1px solid var(--v2-line-2);transition:background .16s ease,border-color .16s ease;flex-shrink:0}
+.v2-switch i{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:var(--v2-surface);box-shadow:0 1px 2px #0000002e;transition:transform .16s ease}
+.v2-switch.is-on{background:var(--v2-accent);border-color:var(--v2-accent)}
+.v2-switch.is-on i{transform:translateX(18px)}
+@media (pointer:coarse){.v2-switch{width:52px;height:30px}.v2-switch i{width:24px;height:24px}.v2-switch.is-on i{transform:translateX(22px)}}
+@media (prefers-reduced-motion:reduce){.v2-switch,.v2-switch i{transition:none}}
+
+/* THE READING. One class, four hosts — the Selection card, the Info card, a Find result row and the
+   phone's set row draw it as its own line; the tree draws it INSIDE the secondary line (tree.tsx
+   explains why: `ROW_H` may not become a function of a setting). `font-variant` is left alone and
+   the tone marks come from the same installed faces as everything else: no webfont is downloaded
+   for this, which is the claim `about.fontList` already makes for the whole page. */
+.v2-py{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-accent);letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* In the tree it is its own line, and the row is 18 px taller for it (`spec.md` §Geometry, via
+   `tree.tsx` `rowHeights`). `<s>` is the element the tree already uses for its supporting lines, so
+   the default strike-through is cleared there, not here. */
+.v2-tree-name .v2-py{text-decoration:none}
+/* The Settings preview reserves its 18 px line from S0, so it keeps that line-height exactly. */
+.v2-srow .v2-py{line-height:18px}
 .v2-about h3{margin:20px 0 6px;font-size:var(--v2-type-sm);font-weight:600;color:var(--v2-ink)}
 .v2-about p{margin:0 0 8px;font-size:var(--v2-type-sm);line-height:1.7;color:var(--v2-ink-2)}
 .v2-about a{color:var(--v2-accent);text-decoration:none;margin-right:16px;display:inline-flex;align-items:center;min-height:32px}
@@ -524,6 +549,12 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 .v2-refusal b{display:block;font-size:var(--v2-type-body);font-weight:600;color:var(--v2-warn);margin-bottom:6px}
 .v2-refusal p{margin:0 0 6px;font-size:var(--v2-type-sm);line-height:1.55;color:var(--v2-ink)}
 .v2-refusal-unchanged{font-weight:500}
+/* S4 — `validateScene`'s own English, quoted rather than spliced. It is a BLOCK with its own label
+   so a Chinese reader sees a translated sentence and, beneath it, something visibly marked as a
+   technical quotation. Rendered by `app/v2/refusal.tsx`; also reachable from the phone's
+   `.v2-refused` line, hence the bare class rather than a descendant selector. */
+.v2-refusal-detail{display:block;margin-top:6px;font-size:var(--v2-type-xs);line-height:1.5;color:var(--v2-ink-3)}
+.v2-refusal-detail b{display:inline;font-size:inherit;color:inherit;margin:0}
 .v2-refusal button{margin-top:4px;border-color:var(--v2-warn);color:var(--v2-warn)}
 /* The bounds, stated once and always — so a reader who is ABOUT to hit them can see them coming
    rather than discovering them through a refusal. */

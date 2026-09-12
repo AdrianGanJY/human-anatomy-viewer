@@ -49,6 +49,37 @@ import {eyeAction, eyeOn as eyeOnOf, resolvedStructureAlpha, type EyeKind, type 
  *  rather than measured: a prefix sum over measured heights is a layout read per row, which is the
  *  cost virtualisation exists to avoid. */
 export const ROW_H = {system: 52, concept: 54} as const;
+/**
+ * ── S4: THE PINYIN LINE IS A REAL THIRD LINE, AND THE ROW GROWS FOR IT ─────────────────────────
+ *
+ * `spec.md` §Geometry is explicit: "bilingual children 54 fine / 64 coarse, 60 phone; **add 18 px
+ * when pinyin is on**." My first implementation put the reading INSIDE the secondary line
+ * (`xiōng gǔ tǐ · Body of sternum`) to keep `ROW_H` a constant — sound engineering, and the wrong
+ * call: the kickoff's rule is that this kickoff's SCOPE wins and `spec.md`'s VISUALS win, and the
+ * visual contract asks for three lines in a taller row.
+ *
+ * It is safe for the exact reason the S3 note in `shell.css` anticipated: "a virtualised row's
+ * height is an INLINE style from `tree.tsx`'s `ROW_H` … if a coarse tier ever needs taller rows,
+ * `ROW_H` is the one place to change and the prefix sum follows." Both the inline height and the
+ * prefix sum read `rowHeights()`, so they cannot disagree — the invariant is "one source", not
+ * "a literal".
+ *
+ * ⚠️ IT GROWS ON `pinyin && t.zh`, NOT ON `pinyin` ALONE. In an English interface the tree label is
+ * English and `py` correctly returns nothing, so growing every row would add 18 px of empty space
+ * to 3,432 rows for a line that is never drawn. "Bilingual children" in the spec IS the Chinese
+ * interface. Uniform per tree rather than per row, so the prefix sum stays one multiplication and a
+ * toggle cannot leave rows at two different heights mid-list.
+ *
+ * ⚠️ IT GROWS ON THE SETTING, NOT ON THE MAP HAVING ARRIVED — so between the toggle and the fetch
+ * landing there is a brief taller row with no reading in it yet. That is the deliberate direction of
+ * the trade, and the same one S0 made when it reserved the 18 px line in the Settings preview: the
+ * alternative is every row in the tree jumping down a line the moment 214 KB finishes downloading.
+ */
+export const PINYIN_ROW_EXTRA = 18;
+export const rowHeights = (grow: boolean) => ({
+ system: ROW_H.system + (grow ? PINYIN_ROW_EXTRA : 0),
+ concept: ROW_H.concept + (grow ? PINYIN_ROW_EXTRA : 0),
+});
 /** How many rows above and below the visible window stay mounted, so a fast scroll does not show
  *  blank. Four is roughly a flick at 60 Hz; more is wasted mounting. */
 const OVERSCAN = 4;
@@ -109,6 +140,11 @@ export interface TreeProps {
  eyeState(conceptId: string, kind: EyeKind, on: boolean): EyeReading;
  focusedId: string | null;
  onFocus(id: string): void;
+ /** S4: the reading for one row, or null (off / not loaded / not Chinese). See `use-shell.ts`. */
+ py(id: string, shown: string): string | null;
+ /** S4: the SETTING, separately from the accessor — the row HEIGHT depends on whether a reading
+  *  line exists at all, and `py` can only answer that per id. See `rowHeights`. */
+ pinyin?: boolean;
  /** The filter box's query. Owned above so the box can live in the sidebar head. */
  query: string;
  /** Phone presentation: the A3 high-detent tree. Same component, shorter chrome. */
@@ -183,23 +219,29 @@ export default function Tree(p: TreeProps) {
   * otherwise the reader types a structure's name and is shown fifteen closed rows, i.e. the filter
   * appears to have found nothing. Without a query the reader's own expansion state stands.
   */
+ // S4: the tree's rows are 18 px taller while a reading is being drawn in them. `t.zh` is what
+ // decides whether the label is Chinese at all, so it is the second half of the condition — see
+ // `rowHeights`. It is in the memo's dependency list, so toggling the setting re-flows the prefix
+ // sum in the same render the heights change.
+ const pyRows = p.pinyin === true && t.zh;
  const rows = useMemo(() => {
+  const H = rowHeights(pyRows);
   const list: TreeRow[] = [];
   let top = 0;
   for (const s of liveSystems(idx)) {
    const kids = filtered.out.get(s.id);
    if (!kids) continue;
-   list.push({kind: 'system', id: s.id, name: s.name, system: s.id, level: 1, count: kids.length, top, h: ROW_H.system});
-   top += ROW_H.system;
+   list.push({kind: 'system', id: s.id, name: s.name, system: s.id, level: 1, count: kids.length, top, h: H.system});
+   top += H.system;
    const open = q ? !filtered.sysHit.has(s.id) || expanded.has(s.id) : expanded.has(s.id);
    if (!open) continue;
    for (const c of kids) {
-    list.push({kind: 'concept', id: c.id, name: c.name, system: s.id, level: 2, top, h: ROW_H.concept});
-    top += ROW_H.concept;
+    list.push({kind: 'concept', id: c.id, name: c.name, system: s.id, level: 2, top, h: H.concept});
+    top += H.concept;
    }
   }
   return {list, total: top};
- }, [idx, filtered, expanded, q]);
+ }, [idx, filtered, expanded, q, pyRows]);
 
  /** The picked set, and the meshes it already draws — the two readings every row needs. */
  const picked = useMemo(() => new Set(p.picks), [p.picks]);
@@ -597,6 +639,8 @@ export default function Tree(p: TreeProps) {
       const kind = eyeKind(row);
       const label = row.kind === 'system' ? t.system(row.system, row.name) : t.name(row.id, row.name);
       const second = row.kind === 'concept' ? t.secondary(row.id, row.name) : '';
+      // S4: null unless the setting is on, the map has arrived AND `label` is actually Chinese.
+      const pyRead = p.py(row.id, label);
       const state = row.kind === 'system' ? sysState(row.system) : (picked.has(row.id) ? 'on' : 'off');
       const cover = row.kind === 'concept' ? coverageOf(row.id) : null;
       const via = drawnThrough(row);
@@ -685,6 +729,14 @@ export default function Tree(p: TreeProps) {
        <button type="button" className="v2-tree-name" tabIndex={-1} title={label}
         onClick={() => (row.kind === 'system' ? toggleOpen(row.system) : (picked.has(row.id) ? p.onFocus(row.id) : p.dispatch({type: 'tick', ids: [row.id], on: true})))}>
         <b>{label}</b>
+        {/* ── S4: THE READING, ON ITS OWN LINE, IN A ROW THAT GREW FOR IT ──────────────────────
+            `spec.md` §Geometry: "bilingual children 54 fine … add 18 px when pinyin is on". The
+            +18 comes from `rowHeights()`, which the prefix sum and the inline height both read.
+
+            A SYSTEM row gets a reading too — the tree's top-level rows are Chinese system names,
+            and a tree whose children carry a reading and whose parents do not reads as a broken
+            feature rather than as a scope boundary (recorded in build-pinyin.mjs). */}
+        {pyRead && <s className="v2-py">{pyRead}</s>}
         {second && <i lang={second === row.name ? 'en' : undefined}>{second}</i>}
         {cover && <s id={`v2-cov-${row.id}`}>{tr('tree.covered', {name: cover})}</s>}
         {/* ⚠️ THE TWO NOTES THAT MAKE AN HONEST EYE LEGIBLE (S3b, codex r4 H3 + H4). Without them

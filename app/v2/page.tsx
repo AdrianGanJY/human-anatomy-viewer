@@ -34,7 +34,8 @@ import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
 import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
-import {initialState, reduce, type Command, type V2State} from './controller';
+import {initialState, reduce, type Command, type Reason, type V2State} from './controller';
+import RefusalText from './refusal.tsx';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {conceptAlpha,partAlphas,readEye,sceneAlphaMap,withSessionHidden,type EyeKind} from './visibility.ts';
 import {sceneDeclaresLang} from './scene-lang.ts';
@@ -93,8 +94,14 @@ export default function V2() {
   return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
  }, [scene, legacyCaption]);
  /** An edit the controller REFUSED, in words, for the human. Never a silent truncation. Seeded
-  *  from the cold arrival, so a link carrying an unusable scene says so instead of half-applying it. */
- const [refused, setRefused] = useState(seed.rejected ?? '');
+  *  from the cold arrival, so a link carrying an unusable scene says so instead of half-applying it.
+  *
+  *  ⚠️ S4 — IT IS A `Reason`, NOT A SENTENCE. The controller names the bound it hit and its numbers;
+  *  `reasonText` (copy.ts) turns that into the reader's language at the moment of drawing. Holding a
+  *  pre-rendered string here would have frozen it in whatever language was active when the refusal
+  *  happened, so switching to 简体 with a refusal on screen would leave the English behind — the
+  *  same class of defect, one level up. */
+ const [refused, setRefused] = useState<Reason | null>(seed.rejected ?? null);
  const [lang, setLang] = useState<Lang>(() => {
   if (url.lang) return url.lang;
   let stored: string | null = null;
@@ -354,7 +361,7 @@ export default function V2() {
    setDetent('half');
    return false;
   }
-  if (!seedArrival) setRefused('');
+  if (!seedArrival) setRefused(null);
   /**
    * ⚠️ S3. AN ARRIVING VIEW CLEARS THE SESSION-ONLY HIDDEN SET, and it is cleared HERE rather than
    * at each call site so no future arrival path can forget.
@@ -435,6 +442,15 @@ export default function V2() {
  // rendered `focused` object instead is what made `state().name` describe the previous selection.
  const live = useRef({lang, phase, bytes, stage, t, plate, conceptsById, parts});
  live.current = {lang, phase, bytes, stage, t, plate, conceptsById, parts};
+ /**
+  * S4 — THE RESOLVED PER-MESH ALPHA, for `atlas.alphas()`. A ref because `meshAlpha` is computed
+  * far below this point in the render (it needs `renderState`), and a ref assigned during RENDER
+  * because that is exactly the freshness this fact wants: an alpha map is a statement about the
+  * PICTURE, so the value between a dispatch and its re-render genuinely is the old one, and an
+  * oracle that reads it before the re-render should see the old one. The opposite of `ctlRef`,
+  * deliberately, and for the reason stated in the comment above.
+  */
+ const alphaRef = useRef<{of: (partId: string) => number; ids: string[]}>({of: () => 0, ids: []});
  useEffect(() => installAtlasTools({
   applyScene: (input) => {
    // Accept a bare blob or any URL/query carrying `scene=`. A hash write re-drives the page
@@ -485,6 +501,16 @@ export default function V2() {
     // state, so it comes from the controller.
     framing: {focus: l.plate?.focus.length ?? 0, frame: l.plate?.frame.length ?? 0, isolate: c.render.isolate},
    };
+  },
+  // MATERIALISED HERE, not held as a map: `partAlphas` returns a CLOSURE over the render state
+  // (visibility.ts), which is what lets the controls ask about one mesh without building 2,234
+  // entries on every render. The tool surface wants a plain object, so it is built on demand — a
+  // fresh one per call, so a caller cannot mutate what the controls read.
+  alphas: () => {
+   const {of, ids} = alphaRef.current;
+   const out: Record<string, number> = {};
+   for (const id of ids) out[id] = of(id);
+   return out;
   },
  }), [focusPick, known, dispatch]);
 
@@ -865,6 +891,9 @@ export default function V2() {
   */
  const partSystem = useMemo(() => new Map((atlas?.parts ?? []).map((p) => [p.id, p.system])), [atlas]);
  const meshAlpha = useMemo(() => partAlphas(renderState, partSystem), [renderState, partSystem]);
+ // THE EXACT MAP THE CONTROLS READ, published for `atlas.alphas()` (S4). Assigned here rather than
+ // in an effect so the value is the one this render's picture was built from.
+ alphaRef.current = {of: meshAlpha, ids: (atlas?.parts ?? []).map((p) => p.id)};
  const effectiveAlpha = useCallback((id: string) => conceptAlpha(meshAlpha, elementsOf(id)), [meshAlpha, elementsOf]);
 
  /**
@@ -906,6 +935,7 @@ export default function V2() {
    sheet={shell.sheet} coarse={shell.coarse}
    dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
+   py={shell.py} pinyin={shell.pinyin} onPinyin={shell.setPinyin}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
       In the studio it is Ctrl+K's centred modal; below 768 it is `spec.md`'s A4 bottom sheet,
@@ -919,7 +949,7 @@ export default function V2() {
    open={shell.findOpen} onClose={() => shell.setFindOpen(false)} sheet={shell.sheet}
    atlas={atlas} dicts={dicts} onDicts={setDicts} t={t} tr={tr}
    replace={(ids, focus) => replacePicks(ids, focus)} add={(id) => addToPicks(id)}
-   picks={picks} refused={refused}
+   picks={picks} refused={refused} py={shell.py}
   />
   {/* HOSTED AT EVERY WIDTH. `?` is a keyboard explanation, not a studio control, so the map has to
       open on a narrow window too — and that is what gives `Overlay`'s SHEET presentation a
@@ -929,6 +959,7 @@ export default function V2() {
    keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
    studio={shell.studio}
+   pinyin={shell.pinyin} onPinyin={shell.setPinyin} py={shell.py}
   />
   {/* THE HEADER IS PAINTED FROM THE URL, IN THE FIRST FRAME. It never resizes afterwards:
       its height is fixed in CSS, so the title arriving, the name arriving and the model
@@ -1051,7 +1082,7 @@ export default function V2() {
         the state unchanged with a sentence when an edit cannot be committed — never a silent
         truncation (codex-plan-review.md §A.4). Without this the refusal would be invisible and the
         control would read as broken. */}
-    {refused && <p className="v2-refused" role="alert">{refused}</p>}
+    {refused && <p className="v2-refused" role="alert"><RefusalText lang={lang} r={refused}/></p>}
     <div className="v2-actions">
      {/* ── THE PHONE'S FIND NOW OPENS THE A4 SHEET (S2) ───────────────────────────────────────
          It used to toggle `panel === 'search'`, an in-margin list. `spec.md` A4 draws Find as a
@@ -1067,6 +1098,19 @@ export default function V2() {
       onClick={() => shell.setFindOpen(true)}>{tr('search.open')}</button>
      <button type="button" className={panel === 'systems' ? 'is-on' : ''} onClick={() => { setPanel((p) => (p === 'systems' ? 'none' : 'systems')); setDetent('half'); }}>{tr('systems.open')}</button>
      <button type="button" onClick={() => dispatch({type: 'reset-view'})}>{tr('view.reset')}</button>
+     {/* ── S4: THE PHONE'S SETTINGS INVOKER (`spec.md` A6/A7) ──────────────────────────────────
+         `StudioOverlays` has been hosted at EVERY width since S0, and `Overlay` already presents
+         as a bottom sheet below 768 — so A6/A7 needed a way IN, not a second implementation. The
+         key map got its invoker at S0 (`?` works on a narrow window); Settings had none, which
+         made the phone the one tier where the language radio and About were unreachable and the
+         sheet branch of the overlay was exercised by exactly one caller.
+
+         RC5: `.v2-actions` is `flex-wrap:wrap` (v2.css:157) and lives inside `.v2-margin-scroll`,
+         which already scrolls and is `display:none` at the peek detent — so none of the asserted
+         geometry constants (56 / 45 / 108 / min(48dvh,420)) can move. Both oracles that reach into
+         this row select their button BY TEXT, not by index, so a fourth one cannot displace them. */}
+     <button type="button" aria-haspopup="dialog" aria-expanded={shell.settingsOpen}
+      onClick={() => shell.setSettingsOpen(true)}>{tr('settings.open')}</button>
     </div>
 
     {/* ⚠️ S3: THE VIEWS ROW AND THE DESCRIPTION STAND DOWN WHILE THE LAYERS PANEL IS OPEN, and that
@@ -1157,7 +1201,7 @@ export default function V2() {
       visible={state.visible} visibleIntent={visibleIntent} isolate={state.isolate} dispatch={dispatch}
       hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
       focusedId={focused?.id ?? null} onFocus={focusPick}
-      query={treeQuery} phone coarse={shell.coarse}
+      query={treeQuery} phone coarse={shell.coarse} py={shell.py} pinyin={shell.pinyin}
      />
     </div>}
 
@@ -1166,7 +1210,11 @@ export default function V2() {
      {basket.map((p) => <div key={p.id} className={`v2-row ${focused?.id === p.id ? 'is-on' : ''}`}>
       <button type="button" className="v2-row-name" onClick={() => focusPick(p.id)}>
        <span className="v2-dot" style={{background: SYSTEMS.find((s) => s.id === p.system)?.color ?? '#9aa3ab'}}/>
-       <span><b>{t.name(p.id, p.name)}</b>{t.secondary(p.id, p.name) && <i>{t.secondary(p.id, p.name)}</i>}</span>
+       <span>
+        <b>{t.name(p.id, p.name)}</b>
+        {shell.py(p.id, t.name(p.id, p.name)) && <s className="v2-py">{shell.py(p.id, t.name(p.id, p.name))}</s>}
+        {t.secondary(p.id, p.name) && <i>{t.secondary(p.id, p.name)}</i>}
+       </span>
        <em>{p.elements.length}</em>
       </button>
       <button type="button" className="v2-row-x" aria-label={`${tr('margin.clear')} ${t.name(p.id, p.name)}`} onClick={() => dispatch({type: 'remove', id: p.id})}>×</button>

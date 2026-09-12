@@ -159,9 +159,9 @@ const uniq = (ids: readonly string[]): string[] => [...new Set(ids.map((s) => s.
  * REFUSED, NEVER TRUNCATED. Silently dropping the tail is how a scene renders a confidently wrong
  * picture, which is the failure this whole contract exists to prevent.
  */
-const overBound = (ids: readonly string[]): string | null =>
+const overBound = (ids: readonly string[]): Reason | null =>
  ids.length > LIMITS.MAX_STRUCTURES
-  ? `that is ${ids.length} structures and the maximum is ${LIMITS.MAX_STRUCTURES} — remove some first`
+  ? {key: 'refusal.limitStructures', vars: {n: ids.length, max: LIMITS.MAX_STRUCTURES}}
   : null;
 import {legacySceneState} from './legacy-url.ts';
 import type {LegacyUrlFields} from './legacy-url';
@@ -270,10 +270,47 @@ export type Command =
   */
  | {type: 'set-opacity'; id: string; opacity: number | null};
 
+/**
+ * ── A REFUSAL, AS A KEY AND ITS NUMBERS — NOT AS A SENTENCE (L31 v2.1b+c, S4) ───────────────────
+ *
+ * Every `rejected` in this file used to be an English template literal. That was invisible until S3
+ * shipped the studio's refusal card, and then a 简体 reader who over-ticked a system read a
+ * translated title, a raw English reason, and a translated footer — in one card (worklog, S3c).
+ *
+ * So a refusal now names WHICH bound was hit and WITH WHAT NUMBERS, and `app/v2/copy.ts`
+ * (`reasonText`) turns that into words in the reader's language. This file remains UI-free: it
+ * imports no copy table and cannot render anything.
+ *
+ * `detail` is the ONE escape hatch, and it exists for exactly one producer: `validateScene` in
+ * `app/scene-codec.js` returns its own English sentences, that file is inside `deploy.ps1`'s
+ * `renderPaths`, and keying it is a render-path change S4 is not scoped for. The detail is drawn as
+ * a LABELLED English quotation beneath a translated sentence rather than spliced into it — see the
+ * note beside `refusal.sceneInvalid`.
+ */
+export interface Reason {
+ /** A `V2` copy key. Every value this file can emit is enumerated in `REFUSAL_KEYS` below. */
+ key: string;
+ vars?: Record<string, string | number>;
+ /** Untranslated technical text from the codec, shown labelled. Never the whole message. */
+ detail?: string;
+}
+
+/**
+ * EVERY KEY THIS MODULE CAN EMIT. It is here, beside the producer, so the test that proves each one
+ * exists in all three languages cannot drift from the code by someone adding an eleventh refusal
+ * and not the row: `test/v2-copy-reasons.test.mjs` asserts this list is exactly the set of keys
+ * appearing in this file's source AND that every member has a translated row.
+ */
+export const REFUSAL_KEYS = [
+ 'refusal.limitStructures', 'refusal.encoded', 'refusal.addFull', 'refusal.lastStructure',
+ 'refusal.nothing', 'refusal.opacityNoScene', 'refusal.opacityNotMember',
+ 'refusal.linkEncoded', 'refusal.sceneInvalid', 'refusal.linkInvalid',
+] as const;
+
 export interface Outcome {
  state: V2State;
- /** A message for the HUMAN when an edit was refused. Present ⇒ `state` is the input, unchanged. */
- rejected?: string;
+ /** A refusal for the HUMAN when an edit was refused. Present ⇒ `state` is the input, unchanged. */
+ rejected?: Reason;
  /** True when the scene identity changed, so the caller withdraws readiness and opens a new
   *  renderer generation (see `sceneEpoch` in app/scene.tsx). */
  epoch?: boolean;
@@ -293,13 +330,13 @@ const intent = (render: SceneState, patch: Partial<SceneState> = {}): SceneState
 function commitScene(state: V2State, candidate: unknown, render: SceneState): Outcome {
  const next = normalizeScene(candidate) as Scene;
  const invalid = validateScene(next);
- if (invalid) return {state, rejected: invalid};
+ if (invalid) return {state, rejected: {key: 'refusal.sceneInvalid', detail: invalid}};
  const blob = encodeScene(next);
  if (blob.length > LIMITS.SCENE_MAX_B64) {
   // NOT A TRUNCATION. The encoded budget exists so the whole plate URL stays under the 2,000
   // characters the server enforces; silently dropping the tail would render a wrong picture under
   // a valid key, which is the failure class this whole file is guarding.
-  return {state, rejected: `this scene encodes to ${blob.length} characters and the limit is ${LIMITS.SCENE_MAX_B64} — remove a structure, or shorten the title or note`};
+  return {state, rejected: {key: 'refusal.encoded', vars: {n: blob.length, max: LIMITS.SCENE_MAX_B64}}};
  }
  return {
   state: {...state, scene: next, blob, picks: sceneSelectIds(next), focusId: sceneFocusId(next), render},
@@ -347,7 +384,7 @@ function withoutStructure(scene: Scene, id: string) {
 export function initialState(
  url: {scene?: Scene | null; sceneBlob?: string; select?: string[]} & LegacyUrlFields,
  render: SceneState,
-): {state: V2State; rejected?: string} {
+): {state: V2State; rejected?: Reason} {
  // The seed's intent is whatever the URL asked for, or the render seed's own set. `legacySceneState`
  // is not consulted here because it needs a `previous` and this IS the previous.
  /**
@@ -401,7 +438,11 @@ export function initialState(
   const picks = uniq(url.select ?? []).slice(0, LIMITS.MAX_STRUCTURES);
   return {
    state: {...blank, picks, render: legacySceneState(url, render)},
-   rejected: `this link's view could not be applied — ${invalid ?? `it encodes to ${encoded.length} characters, over the ${LIMITS.SCENE_MAX_B64} limit`}`,
+   // TWO DISTINCT REASONS, not one sentence with a branch inside it: an invalid scene carries the
+   // codec's English as a labelled detail, an over-long one carries its own numbers and needs none.
+   rejected: invalid
+    ? {key: 'refusal.linkInvalid', detail: invalid}
+    : {key: 'refusal.linkEncoded', vars: {n: encoded.length, max: LIMITS.SCENE_MAX_B64}},
   };
  }
  const picks = uniq(url.select ?? []);
@@ -426,10 +467,10 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // state the page already had, with a message — never to a page rendering a scene it cannot
    // serialise, and never to a truncation.
    const invalidArrival = validateScene(scene);
-   if (invalidArrival) return {state, rejected: `this link's view could not be applied — ${invalidArrival}`};
+   if (invalidArrival) return {state, rejected: {key: 'refusal.linkInvalid', detail: invalidArrival}};
    const arrivalBlob = encodeScene(scene);
    if (arrivalBlob.length > LIMITS.SCENE_MAX_B64) {
-    return {state, rejected: `this link's view encodes to ${arrivalBlob.length} characters and the limit is ${LIMITS.SCENE_MAX_B64}`};
+    return {state, rejected: {key: 'refusal.linkEncoded', vars: {n: arrivalBlob.length, max: LIMITS.SCENE_MAX_B64}}};
    }
    const render = intent(state.render, {
     view: scene.camera.view,
@@ -519,7 +560,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
   // ── membership ────────────────────────────────────────────────────────────────────────────
   case 'replace': {
    const ids = uniq(cmd.ids);
-   if (!ids.length) return {state, rejected: 'nothing to select'};
+   if (!ids.length) return {state, rejected: {key: 'refusal.nothing'}};
    const replaceTooMany = overBound(ids);
    if (replaceTooMany) return {state, rejected: replaceTooMany};
    // "Show me this instead" — a search result, or a tap on the model. It IS a camera intent.
@@ -558,7 +599,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // NOT a camera intent (rule 5): adding a supporting structure must not throw away the pose.
    if (!state.scene) {
     if (picks.length > LIMITS.MAX_STRUCTURES) {
-     return {state, rejected: `a view holds at most ${LIMITS.MAX_STRUCTURES} structures — remove one first`};
+     return {state, rejected: {key: 'refusal.addFull', vars: {max: LIMITS.MAX_STRUCTURES}}};
     }
     return {state: {...state, picks, focusId: cmd.id}};
    }
@@ -579,7 +620,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    if (state.scene.structures.length <= 1) {
     // `validateScene` refuses a scene with no structures, and it is right to: an empty scene is not
     // a scene, it is a cleared page. Say so instead of failing to encode.
-    return {state, rejected: 'a view needs at least one structure — use Clear to leave this view'};
+    return {state, rejected: {key: 'refusal.lastStructure'}};
    }
    return commitScene(state, withoutStructure(state.scene, cmd.id), state.render);
   }
@@ -616,7 +657,7 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     // IN SCENE MODE IT IS REFUSED, not silently turned into a clear. `validateScene` rejects a
     // scene with no structures, and emptying a teaching link by unticking the last row would
     // discard its title and note as a side effect of a checkbox.
-    return {state, rejected: 'a view needs at least one structure — use Clear to leave this view'};
+    return {state, rejected: {key: 'refusal.lastStructure'}};
    }
    const inScene = new Set(state.scene.structures.map((s) => s.id));
    const structures = cmd.on
@@ -642,10 +683,10 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    if (!state.scene) {
     // NO SCENE, NO STYLE. `styles` is a scene field; outside scene mode there is nowhere to put it
     // and the render-only override in the page is the honest surface. Said, not silently ignored.
-    return {state, rejected: 'opacity is part of a saved view — this page is not showing one'};
+    return {state, rejected: {key: 'refusal.opacityNoScene'}};
    }
    if (!state.scene.structures.some((s) => s.id === cmd.id)) {
-    return {state, rejected: 'opacity applies to a structure in this view — add it first'};
+    return {state, rejected: {key: 'refusal.opacityNotMember'}};
    }
    /**
     * ⚠️ `null` REMOVES THE OPACITY, NOT THE WHOLE STYLE ENTRY — codex round 3, Medium 2.
