@@ -4724,7 +4724,11 @@ if (variant === 'v2') {
         return {
           h: Math.round(row.getBoundingClientRect().height),
           clipped: name ? name.scrollHeight > Math.ceil(name.clientHeight) + 1 : null,
-          lines: row.querySelectorAll('.v2-tree-name > b, .v2-tree-name > s.v2-py, .v2-tree-name > i').length,
+          // ⚠️ ELEMENT-AGNOSTIC. This read `s.v2-py`, and the moment the reading became a neutral
+          // `<span>` (codex round 11's a11y Low — `<s>` MEANS deleted content) the count silently
+          // dropped from 3 to 2 and the row went red on a row that was perfectly fine. An oracle
+          // that names a TAG is coupled to markup it has no opinion about; it wants the CLASS.
+          lines: row.querySelectorAll('.v2-tree-name > b, .v2-tree-name > .v2-py, .v2-tree-name > i').length,
         };
       });
       check(py.name, `[${S4_V}] a tree row with a reading is 54+18 = 72 px, and its lines are not clipped`,
