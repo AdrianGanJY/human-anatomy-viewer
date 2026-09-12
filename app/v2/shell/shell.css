@@ -341,7 +341,17 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
    soft-keyboard hazard the `.v2-find-box` comment below warns about.
    Both of the invariants stated in the comments below were FALSE as shipped (stand-in review S2 r2,
    HIGH-2). Scoped to `.is-find` so the key map and Settings keep the body scroller they want. */
-.v2-modal.is-find .v2-modal-body{display:flex;flex-direction:column;overflow:hidden}
+/* ⚠️ `overflow-y:auto`, NOT `hidden` — AND THE LIST NEEDS A FLOOR, OR THE FIX ABOVE BECOMES A
+   WORSE DEFECT (stand-in review S2 r3, HIGH-1). `overflow:hidden` removed the escape hatch: the
+   sheet is sized off `--v2-vv`, which the SOFT KEYBOARD shrinks, and every non-list child here is
+   flex-shrink:0 — so the list absorbed the entire loss. Measured at 390x844: vv=464 (iOS + the
+   accessory bar) left the list 61 px, not one whole row; a pinyin candidate bar (vv~440) left
+   41 px; an iPhone SE-class vv=367 left the list at ZERO with the footer outside the modal and
+   nothing scrollable at all. Worst precisely for the cross-script reader S2 exists for.
+   BOTH halves are load-bearing: `overflow-y:auto` alone does not help, because flex shrinks the
+   list to 0 before the body ever overflows. The floor makes the content exceed the body in those
+   cramped states, and the body then scrolls as the last resort it should always have been. */
+.v2-modal.is-find .v2-modal-body{display:flex;flex-direction:column;overflow-y:auto}
 .v2-find{display:flex;flex-direction:column;min-height:0;flex:1}
 /* The input sits ABOVE the scroller and never scrolls away: on the phone it must stay above the
    keyboard, which is what the Overlay's --v2-vv sizing is for. */
@@ -359,7 +369,12 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 /* The list is the ONLY scroller in the palette, so the footer's contract ("Enter replaces…") and
    the input stay on screen at every list length. overscroll-behavior stops a flick that reaches the
    end from scrolling the page underneath — on the phone, that page is the field. */
-.v2-find-list{list-style:none;margin:10px 0 0;padding:0;flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
+/* `min-height` IS THE FLOOR FROM THE NOTE ABOVE, AND IT LIVES HERE — a separate `.v2-find-list`
+   rule placed earlier was silently overridden by this one (equal specificity, later wins), which is
+   why the first attempt measured list=0 at vv=367 exactly as before. ~2 rows: small enough never to
+   bind at a normal viewport, where `flex:1` wins and the LIST is the scroller (HIGH-2's fix); large
+   enough that a keyboard-cramped sheet still shows results and the body takes the overflow. */
+.v2-find-list{list-style:none;margin:10px 0 0;padding:0;flex:1;min-height:128px;overflow-y:auto;overscroll-behavior:contain}
 /* ⚠️ THE GROUP IS AN <li>, AND v2.css ALREADY HAS A RULE FOR ONE.
    `.v2-search li{display:flex;align-items:center;gap:6px;border-bottom:...}` (v2.css:163) styles the
    phone's old RESULT rows — and the palette reuses `.v2-search` on its container so the long-standing

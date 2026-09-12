@@ -194,6 +194,9 @@ export default function FindPalette(p: FindProps) {
  }, [q, p.picks, p.atlas]);
 
  const rows = q.trim() ? res.all : idle;
+ /** CJK Unified Ideographs (+ Extension A). A query in Han script is the only one whose emptiness a
+  *  missing Chinese dictionary can explain — see the empty-state gate below. */
+ const hasCjk = /[㐀-䶿一-鿿]/.test(q);
  // CLAMP, never trust. The active index survives a keystroke that shortens the list, and an index
  // past the end would make Enter commit `undefined`.
  // ⚠️ BOTH BOUNDS. The first version guarded only the upper one, so `setActive(i => Math.min(
@@ -235,7 +238,10 @@ export default function FindPalette(p: FindProps) {
   // is the IME accepting a candidate — committing a structure there would select whatever happened
   // to be first while the reader was still typing the word.
   if (ev.nativeEvent.isComposing || ev.keyCode === 229) return;
-  if (ev.key === 'ArrowDown') { ev.preventDefault(); byKey.current = true; setActive((i) => Math.min(rows.length - 1, i + 1)); }
+  // ⚠️ FLOORED AT THE SOURCE AS WELL AS AT THE READ SITE. Clamping only where `at` is computed left
+  // the STATE at -1, so the first ArrowDown after rows arrived merely returned it to 0 and was
+  // silently swallowed (stand-in review S2 r3, Low). Both ends, in both places.
+  if (ev.key === 'ArrowDown') { ev.preventDefault(); byKey.current = true; setActive((i) => Math.max(0, Math.min(rows.length - 1, i + 1))); }
   else if (ev.key === 'ArrowUp') { ev.preventDefault(); byKey.current = true; setActive((i) => Math.max(0, i - 1)); }
   else if (ev.key === 'Enter') { ev.preventDefault(); commit(rows[at], ev.shiftKey); }
   else if (ev.key === 'Backspace' && !q && scope) { ev.preventDefault(); setScope(null); }
@@ -420,10 +426,15 @@ export default function FindPalette(p: FindProps) {
       : <li className="v2-empty">{p.tr('status.emptyHint')}</li>}
 
     {/* STATE 3 — genuinely nothing, and only once the dictionaries are in. */}
-    {/* ⚠️ AND NOT WHILE EVERY DICTIONARY IS MISSING. Gated on `!loading` alone, a total dictionary
-       failure rendered the banner AND "No structures match." underneath it — telling the reader two
-       things at once, one of them a false claim about the ATLAS (stand-in review S2 r2, M2). */}
-   {q.trim() && !res.all.length && !loading && !(zhPartial() && !loadedLanes().length) &&
+    {/* ⚠️ SUPPRESSED ONLY FOR A QUERY THE MISSING DICTIONARIES COULD HAVE SERVED.
+       Gated on `!loading` alone, a total dictionary failure rendered the banner AND "No structures
+       match." underneath it — two statements at once, one of them false about the ATLAS (r2, M2).
+       But gating on the failure alone OVER-fired: with both lanes down, a genuinely unmatched
+       ENGLISH query showed no empty state at all, only a Chinese banner (r3, Medium). An English
+       query's result does not depend on a Chinese dictionary, so its "no results" is TRUE and must
+       still be said. `hasCjk` is the discriminator: only a CJK query is the one whose emptiness the
+       missing dictionaries explain. */}
+   {q.trim() && !res.all.length && !loading && !(hasCjk && zhPartial() && !loadedLanes().length) &&
     <li className="v2-empty">{p.tr('search.empty')}</li>}
    </ul>
 

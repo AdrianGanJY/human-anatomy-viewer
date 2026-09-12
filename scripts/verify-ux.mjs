@@ -1613,11 +1613,35 @@ if (variant === 'v2') {
        * So this arm parks a REAL pointer over the list once, never moves it again, and drives real
        * key presses. It is the control arm's opposite: same claim, adversarial state.
        */
-      const listBox = await page.$('.v2-find-list .v2-result');
-      let hoverWalk = {error: 'no result row to park on'};
+      /**
+       * ⚠️ PARK ON THE LIST'S OWN RECT, NOT ON ROW 0 — AND PROVE THE POINTER IS ACTUALLY OVER IT.
+       *
+       * The first version parked on `.v2-find-list .v2-result`, the FIRST row. By this point the
+       * 12-press walk above has already scrolled it off the top: the park point measured y = -104
+       * (also -70, -124 at other viewports), `elementFromPoint` returned null, and ZERO mouseover
+       * events fired during the entire walk. The row therefore established no adversarial state and
+       * could not go red on the defect it exists to prevent — a FALSE GREEN at five viewports, in
+       * the guard written to stop HIGH-1 coming back (stand-in review S2 r3, HIGH-2).
+       *
+       * So: the query is re-seeded (which returns the active index to 0 and the list to the top),
+       * the pointer is parked at the centre of the LIST's rect — which is on screen by construction
+       * — and the row now ASSERTS that hover events actually fired. An arm that cannot be armed is
+       * not a control arm.
+       */
+      await page.keyboard.press('Backspace');           // re-seed: shortens then restores the query,
+      await page.waitForTimeout(250);                   // which resets active to 0 and scrolls to top
+      await page.keyboard.type('骨');
+      await page.waitForTimeout(500);
+      const listBox = await page.$('.v2-find-list');
+      let hoverWalk = {error: 'no list to park on'};
       if (listBox) {
         const bb = await listBox.boundingBox();
         if (bb) {
+          await page.evaluate(() => {
+            window.__hoverN = 0;
+            document.querySelector('.v2-find-list')
+              ?.addEventListener('mouseover', () => { window.__hoverN++; }, {capture: true});
+          });
           await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
           await page.waitForTimeout(150);
           const total = await page.evaluate(() => document.querySelectorAll('.v2-find-list .v2-result').length);
@@ -1645,14 +1669,23 @@ if (variant === 'v2') {
             if (v < seq[i - 1]) return true;                    // moved backwards: the defect
             return v === seq[i - 1] && v < last;                // stalled before the end: also wrong
           }).length;
-          hoverWalk = {seq, backwards, total};
+          // THE ARM, ARMED. Zero hover events means the pointer was not over the list and the walk
+          // proved nothing — which is exactly how this row was passing before.
+          const hoverN = await page.evaluate(() => window.__hoverN ?? 0);
+          const onList = await page.evaluate(({x, y}) => {
+            const el = document.elementFromPoint(x, y);
+            return !!el?.closest?.('.v2-find-list');
+          }, {x: Math.round(bb.x + bb.width / 2), y: Math.round(bb.y + bb.height / 2)});
+          hoverWalk = {seq, backwards, total, hoverN, onList};
         }
       }
       check(vp.name, `[${STUDIO_V}] ArrowDown still advances with the POINTER RESTING on the list`,
-        Array.isArray(hoverWalk.seq) && hoverWalk.seq.length > 0 && hoverWalk.backwards === 0,
+        Array.isArray(hoverWalk.seq) && hoverWalk.seq.length > 0
+          && hoverWalk.onList && hoverWalk.hoverN >= 1 && hoverWalk.backwards === 0,
         hoverWalk.error ?? `positions: ${hoverWalk.seq.join(',')} of ${hoverWalk.total} rows `
-          + `(${hoverWalk.backwards} backwards-or-stalled steps)`,
-        'advances one per press until the last row, then holds');
+          + `(${hoverWalk.backwards} backwards-or-stalled steps); pointer over the list=${hoverWalk.onList}, `
+          + `${hoverWalk.hoverN} hover events fired during the walk`,
+        'pointer really over the list (>=1 hover event), and it advances one per press to the end');
 
       /**
        * ⚠️ THE LIST IS THE SCROLLER, NOT THE BODY — asserted AFTER scrolling, which is the only
