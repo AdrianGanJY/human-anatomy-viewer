@@ -155,6 +155,12 @@ export const V2: Record<string, Row> = {
  'tree.tickSystem': {en: 'Ticks every structure in this system at once — a view holds 24, so a large system is refused whole', 'zh-Hans': '一次勾选本系统的全部结构 — 视图上限为 24 个，超出时整体拒绝', 'zh-Hant': '一次勾選本系統的全部結構 — 視圖上限為 24 個，超出時整體拒絕'},
  // "Included through {name}" — the covered child. Described, never a false checkmark.
  'tree.covered':   {en: 'Included through {name}', 'zh-Hans': '已随{name}一并显示', 'zh-Hant': '已隨{name}一併顯示'},
+ // ⚠️ S3b — THE THREE NOTES AN HONEST EYE NEEDS (codex round 4, H3 + H4). Each explains a case where
+ // the control now reports what the RENDERER draws rather than its own declaration, and where the
+ // difference would otherwise read as a broken control.
+ 'tree.drawnThrough': {en: 'Still drawn through {name} — they share a part', 'zh-Hans': '仍通过{name}绘制 — 两者共用同一部件', 'zh-Hant': '仍透過{name}繪製 — 兩者共用同一部件'},
+ 'tree.sysShownByView': {en: 'Shown by this view, not by your setting', 'zh-Hans': '由本视图显示，而非你的设置', 'zh-Hant': '由本視圖顯示，而非你的設定'},
+ 'tree.sysHiddenByView': {en: 'Hidden by this view — your setting has it on', 'zh-Hans': '被本视图隐藏 — 你的设置是开启', 'zh-Hant': '被本視圖隱藏 — 你的設定是開啟'},
  'tree.hide':      {en: 'hide', 'zh-Hans': '隐藏', 'zh-Hant': '隱藏'},
  'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
  // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader

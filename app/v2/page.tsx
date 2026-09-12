@@ -36,6 +36,8 @@ import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,re
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
+import {conceptAlpha,partAlphas,sceneAlphaMap,withSessionHidden} from './visibility.ts';
+import {sceneDeclaresLang} from './scene-lang.ts';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
 import Tree from './shell/tree.tsx';
@@ -239,16 +241,18 @@ export default function V2() {
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
   if (!scene) return null;
-  const {structures: alpha, rest} = sceneOpacities(scene) as {render: boolean; structures: Record<string, number>; rest: number};
+  const {rest} = sceneOpacities(scene) as {render: boolean; structures: Record<string, number>; rest: number};
   const roleOf = new Map(scene.structures.map((s) => [s.id, s.role]));
   const wantFocus = new Set(scene.camera.focus);
   const wantFrame = new Set(sceneFrameIds(scene));
-  const opacity: Record<string, number> = {}, focus: string[] = [], frame: string[] = [], primary: string[] = [];
+  // ⚠️ S3b. THE ALPHA MAP MOVED TO `visibility.ts` AND NOTHING ELSE ABOUT IT CHANGED — it is the
+  // identical `max` over `sceneOpacities`, lifted so the CONTROLS read the same implementation the
+  // renderer does. codex r4's four Highs are all "a control read one link of this chain".
+  const opacity = sceneAlphaMap(scene, basket);
+  const focus: string[] = [], frame: string[] = [], primary: string[] = [];
   for (const p of basket) {
-   const a = alpha[p.id];
    for (const el of p.elements) {
     if (wantFrame.has(p.id)) frame.push(el);
-    if (a !== undefined) opacity[el] = Math.max(opacity[el] ?? 0, a);
     if (roleOf.get(p.id) === 'primary' || !roleOf.has(p.id)) primary.push(el);
     if (wantFocus.has(p.id)) focus.push(el);
    }
@@ -496,8 +500,28 @@ export default function V2() {
   * question as ANGLE, and "the subject is big" is not the same claim as "this is the picture the
   * link asked for". Recorded because it is exactly the false green the P0 gate asked about.
   */
- const applySceneState = useCallback((sc: Scene, blob: string) => {
-  if (sc.lang) applyLang(sc.lang);
+ /**
+  * ⚠️ S3b — A SCENE THAT DID NOT DECLARE A LANGUAGE NO LONGER OVERRIDES THE LINK'S `?lang=`.
+  *
+  * The line below used to be `if (sc.lang) applyLang(sc.lang)`, and `sc.lang` is ALWAYS set:
+  * `scene-codec.js:73` defaults it to `'en'` in `normalizeScene`. So the guard was always true and
+  * every scene without a declared language asserted English over the reader's explicit choice
+  * ~900 ms after entry — then the debounced serializer dropped `lang=` from the address bar, so the
+  * link could not even be re-read. Measured on the LIVE S2 deploy, four cases:
+  *   `?lang=zh-Hans` ✅ · `?select=…&lang=` ✅ · `?scene=<garbage>&lang=` ✅ · `?scene=<valid>&lang=` ❌
+  *
+  * ⚠️ THIS CHANGES WHAT EXISTING LINKS DO, and that is the point: a `?scene=…&lang=zh-Hans` link
+  * that has been reverting to English now stays Chinese. A scene that DOES declare a language still
+  * wins — a teaching plate authored in Chinese is a statement about the plate, not a default.
+  *
+  * "Declared" is read off the WIRE object (`app/v2/scene-lang.ts`), not off the normalised scene,
+  * because the normalised one cannot tell the two apart. `canonicalScene` omits `lang` when it is
+  * `'en'`, so a scene that declared English is indistinguishable from one that said nothing — and in
+  * that tie the reader's explicit `?lang=` wins, which is the side that cannot surprise anybody.
+  */
+ const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null) => {
+  const declared = sceneDeclaresLang(blob);
+  if (sc.lang && !(urlLang && !declared)) applyLang(sc.lang);
   if (!dispatch({type: 'apply-scene', scene: sc, blob})) return;
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -527,7 +551,7 @@ export default function V2() {
  useEffect(() => {
   if (!atlas || sceneApplied.current) return;
   sceneApplied.current = true;
-  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene));
+  if (scene) applySceneState(scene, sceneBlob || encodeScene(scene), url.lang);
   // A COLD LEGACY LINK. Without this the picks were the only thing a `?select=…&view=…&isolate=…`
   // link achieved on /v2/ — see app/v2/legacy-url.ts for the measurement.
   else dispatch({type: 'apply-legacy', url: {...url, select: url.select?.filter(known)}});
@@ -546,7 +570,7 @@ export default function V2() {
    // the barrier and full load it published `false` and nothing ever restored it, and before the
    // first barrier the pending barrier belonged to the scene being superseded.
    setEpoch((n) => n + 1);
-   if (u.scene) { applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene)); return; }
+   if (u.scene) { applySceneState(u.scene, u.sceneBlob ?? encodeScene(u.scene), u.lang); return; }
    if (u.clearScene) { clearSceneState(u); return; }
    // Neither a scene nor an explicit clear: a legacy re-drive. `apply-legacy` carries BOTH the
    // picks and the camera/visibility keys, so it is one transaction rather than two.
@@ -782,15 +806,26 @@ export default function V2() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [refused, shell.studio]);
 
+ const elementsOf = useCallback((id: string): readonly string[] => conceptsById.get(id)?.elements ?? [id], [conceptsById]);
  const renderState = useMemo(() => {
   const base = {...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET};
-  if (!hidden.size) return base;
-  const opacity: Record<string, number> = {...(base.opacity ?? {})};
-  for (const id of hidden) {
-   for (const el of conceptsById.get(id)?.elements ?? [id]) opacity[el] = 0;
-  }
-  return {...base, opacity};
- }, [state, plate, studioFrame, hidden, conceptsById]);
+  const opacity = withSessionHidden(base.opacity, hidden, elementsOf);
+  return opacity === base.opacity ? base : {...base, opacity};
+ }, [state, plate, studioFrame, hidden, elementsOf]);
+
+ /**
+  * ⚠️ S3b — THE ONE READING EVERY VISIBILITY CONTROL USES, and it is taken off `renderState`, the
+  * EXACT object handed to `AnatomyScene`. codex r4: four Highs, one cause — the tree's eye and the
+  * Selection slider each reported their own declaration while the renderer computed something else
+  * off `roleOpacity` → `styles` → a MAX across shared meshes → this session override → the
+  * visibility lane. A control that reads the finished map cannot disagree with the picture.
+  *
+  * Memoised on `renderState` so it recomputes exactly when the picture does; the per-concept max is
+  * a handful of map lookups and runs only for the rows a control actually draws.
+  */
+ const partSystem = useMemo(() => new Map((atlas?.parts ?? []).map((p) => [p.id, p.system])), [atlas]);
+ const meshAlpha = useMemo(() => partAlphas(renderState, partSystem), [renderState, partSystem]);
+ const effectiveAlpha = useCallback((id: string) => conceptAlpha(meshAlpha, elementsOf(id)), [meshAlpha, elementsOf]);
 
  return <main
   className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
@@ -815,7 +850,7 @@ export default function V2() {
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
    findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
-   dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide}
+   dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
@@ -1065,8 +1100,9 @@ export default function V2() {
      </div>
      <Tree
       t={t} tr={tr} atlas={atlas} dicts={dicts} picks={picks} scene={scene}
-      visibleIntent={visibleIntent} isolate={state.isolate} dispatch={dispatch}
-      hidden={hidden} onHide={hide} focusedId={focused?.id ?? null} onFocus={focusPick}
+      visible={state.visible} visibleIntent={visibleIntent} isolate={state.isolate} dispatch={dispatch}
+      hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha}
+      focusedId={focused?.id ?? null} onFocus={focusPick}
       query={treeQuery} phone coarse={shell.coarse}
      />
     </div>}

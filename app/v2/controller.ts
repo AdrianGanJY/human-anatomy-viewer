@@ -100,6 +100,27 @@
  * The fourth possibility — a real per-part visibility field in the codec — is still not built and
  * still not needed: none of the three above invents one.
  *
+ * ══ AMENDED AGAIN BY S3b (2026-09-12) — WHAT AN EYE READS, WHICH IS NOT WHAT IT WRITES ═════════
+ * The split above is about WRITING, and it survives round 4 unchanged. Round 4's four Highs are all
+ * about READING, and they are one defect: each control reported its own declaration while the
+ * renderer computed something else off a five-link chain (`roleOpacity` → `styles` → a MAX across
+ * meshes two concepts share → the page's session override → the visibility lane). So:
+ *
+ *   READ  → `app/v2/visibility.ts`, off the EXACT object handed to the renderer. One reading for
+ *           the tree's eye, the Selection slider and anything added later.
+ *   WRITE → here, unchanged, plus two corrections at the CALL SITES:
+ *           · "show" sends an EXPLICIT `1`, never `null`. `set-opacity(null)` still means "remove
+ *             the entry" — that is a legitimate command and `structureOpacity` then inherits
+ *             `roleOpacity[role]`, which is 0.55 / 0.25 / whatever the link declares. It is simply
+ *             not what a reader clicking "show" is asking for.
+ *           · every control that RAISES visibility also clears the session override, because a row
+ *             hidden as a non-member and then ticked becomes a member row whose eye can no longer
+ *             reach the override that is blanking it.
+ *
+ * The SYSTEM eye also changed which fact it reads: `render.visible` (what is drawn, and what
+ * `system=` serialises) rather than `visibleIntent`. The intent is not lost — the tree row publishes
+ * it as `data-intent` and says so in words when the two disagree. `set-visible` still writes both.
+ *
  * ══ WHY A PURE REDUCER ═════════════════════════════════════════════════════════════════════════
  * Every rule above is a statement about a STATE TRANSITION, so it is testable without a browser,
  * a renderer or React — and `app/v2/page.tsx` cannot be unit-tested at all (Node strips types, not

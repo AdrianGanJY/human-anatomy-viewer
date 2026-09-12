@@ -42,6 +42,7 @@ import {searchEntries, systemEntries, type Dicts, type T} from '../../i18n/dict'
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {atlasIndex, best, norm} from '../find.ts';
+import {eyeAction, eyeOn as eyeOnOf, type EyeKind} from '../visibility.ts';
 
 /** Fixed heights. `spec.md` A3: "48/60 px rows"; D4 draws a 52 px system row over a 54 px child
  *  row, and the child is the taller one because it carries a second (paired-name) line. Fixed
@@ -51,8 +52,6 @@ export const ROW_H = {system: 52, concept: 54} as const;
 /** How many rows above and below the visible window stay mounted, so a fast scroll does not show
  *  blank. Four is roughly a flick at 60 Hz; more is wasted mounting. */
 const OVERSCAN = 4;
-
-export type EyeKind = 'system' | 'member' | 'session';
 
 export interface TreeRow {
  kind: 'system' | 'concept';
@@ -76,15 +75,31 @@ export interface TreeProps {
  /** The controller's EXACT REQUESTED IDS. The tick is a reading of this and nothing else. */
  picks: string[];
  scene: Scene | null;
- /** The human's system set — `visibleIntent`, never `render.visible` (a ghost scene overwrites the
-  *  latter, and the eye would then report the scene's choice as the reader's). */
+ /**
+  * ⚠️ S3b — BOTH SYSTEM FACTS ARE PROPS NOW, and the row draws both. codex r4's fourth High:
+  * S3 read `visibleIntent` and the renderer reads `render.visible`, so after a ghost scene the eye
+  * said "skeletal hidden" over a drawn skeleton and the link it produced said `system=skeletal`.
+  *
+  * THE DECISION: the EYE reads `visible` (what is drawn — an eye that does not describe the picture
+  * is the defect), and the row publishes `visibleIntent` as `data-intent` plus a one-line note when
+  * the two disagree. Two facts, two surfaces. The `systems-intent` oracle is re-pointed at
+  * `data-intent`, where it now asserts the DIVERGENCE directly rather than inferring it from a
+  * control that had stopped carrying it.
+  */
+ /** `render.visible` — the EFFECTIVE system set, what the renderer draws and what `system=` writes. */
+ visible: SystemId[];
+ /** The human's own set. Not the eye's state; the row's `data-intent` and its override note. */
  visibleIntent: SystemId[];
  isolate: boolean;
  dispatch(cmd: Command): boolean;
- /** The session-only hidden set (non-member rows). Owned by the page, merged into the renderer's
-  *  opacity map, never serialised. */
+ /** The session-only hidden set. ⚠️ READ ONLY AS A DECLARATION — "has the reader asked for this to
+  *  be hidden?" — NEVER as the eye's state. The eye's state is `effectiveAlpha`. The two differ
+  *  exactly when a shared mesh keeps a structure on screen, which is the case the note explains. */
  hidden: ReadonlySet<string>;
  onHide(id: string, on: boolean): void;
+ /** What the RENDERER draws this concept at, 0..1, through the whole chain (`visibility.ts`). The
+  *  single reading behind every eye and the Selection slider. */
+ effectiveAlpha(conceptId: string): number;
  focusedId: string | null;
  onFocus(id: string): void;
  /** The filter box's query. Owned above so the box can live in the sidebar head. */
@@ -242,22 +257,60 @@ export default function Tree(p: TreeProps) {
   return isMember && p.scene?.mode === 'render' ? 'member' : 'session';
  }, [p.scene]);
 
- const eyeOn = useCallback((row: TreeRow): boolean => {
-  if (row.kind === 'system') return p.visibleIntent.includes(row.system);
-  if (eyeKind(row) === 'member') return (p.scene?.styles.find((s) => s.id === row.id)?.opacity ?? 1) > 0;
-  return !p.hidden.has(row.id);
- }, [p.visibleIntent, p.scene, p.hidden, eyeKind]);
+ /**
+  * ⚠️ ONE READING, AND IT IS THE RENDERER'S — codex r4, all four Highs.
+  *
+  * Every clause of this used to be a local declaration: the system eye read the intent, the member
+  * eye read `styles[id].opacity ?? 1`, the session eye read the hidden set. Each is one link of a
+  * five-link chain, and the renderer walks all five. `visibility.ts eyeOn` is now the only place
+  * that decides, and it is fed the finished number.
+  */
+ const eyeOn = useCallback((row: TreeRow): boolean => eyeOnOf({
+  kind: eyeKind(row), system: row.kind === 'system' ? row.system : undefined,
+  visible: p.visible, alpha: row.kind === 'concept' ? p.effectiveAlpha(row.id) : undefined,
+ }), [p.visible, p.effectiveAlpha, eyeKind]);
 
+ /**
+  * THE CLICK, also decided in `visibility.ts` so the two halves cannot drift apart. Three things
+  * changed from round 4, all of them the same lesson:
+  *   · "show" writes an EXPLICIT `1`. `null` removes the entry and `scene-codec.js:403` then
+  *     inherits `roleOpacity[role]` — codex executed a ghost with `roleOpacity.ghost = 0`, where
+  *     "show" left the structure completely invisible.
+  *   · "show" ALSO clears the session override, whatever kind of row it is. A row hidden as a
+  *     non-member and then TICKED became a member row whose eye could no longer reach the override
+  *     that was blanking it.
+  *   · a system click is computed from the EFFECTIVE set, so it does what it looks like it does.
+  */
  const toggleEye = useCallback((row: TreeRow) => {
-  const on = eyeOn(row);
-  if (row.kind === 'system') {
-   const next = on ? p.visibleIntent.filter((x) => x !== row.system) : [...p.visibleIntent, row.system];
-   p.dispatch({type: 'set-visible', visible: next});
-   return;
-  }
-  if (eyeKind(row) === 'member') { p.dispatch({type: 'set-opacity', id: row.id, opacity: on ? 0 : null}); return; }
-  p.onHide(row.id, on);
+  const act = eyeAction({kind: eyeKind(row), on: eyeOn(row), system: row.kind === 'system' ? row.system : undefined, visible: p.visible});
+  if (act.visible) { p.dispatch({type: 'set-visible', visible: act.visible}); return; }
+  if (act.session === 'hide') p.onHide(row.id, true);
+  if (act.session === 'clear') p.onHide(row.id, false);
+  if (act.opacity !== undefined) p.dispatch({type: 'set-opacity', id: row.id, opacity: act.opacity});
  }, [eyeOn, eyeKind, p]);
+
+ /**
+  * WHY A ROW THE READER HID IS STILL ON SCREEN — and it has to be SAID, or the click reads as
+  * broken. codex r4 H3: hiding *Body of sternum* while *Sternum* is also selected leaves their
+  * shared mesh at alpha 1, because the plate takes the MAX. The eye is now honest about that (it
+  * stays on), which without this note would look like a control that does nothing.
+  *
+  * Returns the name of the structure keeping it visible, or null. Bounded by `picks` (≤ 24).
+  */
+ const drawnThrough = useCallback((row: TreeRow): string | null => {
+  if (row.kind !== 'concept' || !covered) return null;
+  const declaredOff = p.hidden.has(row.id)
+   || (eyeKind(row) === 'member' && (p.scene?.styles.find((s) => s.id === row.id)?.opacity ?? 1) === 0);
+  if (!declaredOff || p.effectiveAlpha(row.id) <= 0) return null;
+  const mine = new Set(covered.byId.get(row.id)?.elements ?? []);
+  for (const id of p.picks) {
+   if (id === row.id) continue;
+   const other = covered.byId.get(id);
+   if (!other?.elements.some((e) => mine.has(e))) continue;
+   if (p.effectiveAlpha(id) > 0) return t.name(id, other.name);
+  }
+  return null;
+ }, [covered, p, eyeKind, t]);
 
  /** The eye's TOOLTIP NAMES ITS SERIALISATION. RC8 refuses to ship an eye that does not — the
   *  reader has to be able to tell, before clicking, whether the link they copy afterwards will
@@ -390,7 +443,22 @@ export default function Tree(p: TreeProps) {
   if (k === 'Home') { move(0); e.preventDefault(); return; }
   if (k === 'End') { move(rows.list.length - 1); e.preventDefault(); return; }
   if (k === 'ArrowRight') {
-   if (row.kind === 'system' && !expanded.has(row.system) && !q) toggleOpen(row.system, true);
+   /**
+    * ⚠️ S3b — "IS IT OPEN?" IS NOT "HAS THE READER EXPANDED IT?" (codex round 4, Medium 4).
+    *
+    * The guard was `!expanded.has(row.system) && !q`, i.e. the key stopped working the moment a
+    * filter was live. The `!q` was there for the auto-expand rule — with a query, a system whose
+    * CHILDREN matched is drawn open without being in `expanded` — but a system that matched BY NAME
+    * (`filtered.sysHit`) is drawn CLOSED, and those are exactly the rows a reader filters to and
+    * then tries to open. codex executed it with `query='Skeleton'`: `expanded=[]`,
+    * `aria-expanded=false`, and ArrowRight moved to the next row instead of opening it.
+    *
+    * So the test is the row's ACTUAL open state — the same expression the row renders from, which is
+    * why it is computed here rather than re-derived from `expanded`.
+    */
+   const openNow = row.kind === 'system'
+     && (q ? !filtered.sysHit.has(row.system) || expanded.has(row.system) : expanded.has(row.system));
+   if (row.kind === 'system' && !openNow) toggleOpen(row.system, true);
    else if (row.kind === 'system') move(active + 1);
    e.preventDefault(); return;
   }
@@ -463,6 +531,9 @@ export default function Tree(p: TreeProps) {
       const second = row.kind === 'concept' ? t.secondary(row.id, row.name) : '';
       const state = row.kind === 'system' ? sysState(row.system) : (picked.has(row.id) ? 'on' : 'off');
       const cover = row.kind === 'concept' ? coverageOf(row.id) : null;
+      const via = drawnThrough(row);
+      // The system row's OTHER fact: the human's own set, which a scene's arrival does not touch.
+      const intent = row.kind === 'system' ? p.visibleIntent.includes(row.system) : undefined;
       const openNow = row.kind === 'system' && (q ? !filtered.sysHit.has(row.system) || expanded.has(row.system) : expanded.has(row.system));
       return <li
        key={`${row.kind}:${row.id}`}
@@ -474,7 +545,8 @@ export default function Tree(p: TreeProps) {
        aria-expanded={row.kind === 'system' ? openNow : undefined}
        aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
        aria-selected={p.focusedId === row.id}
-       aria-describedby={cover ? `v2-cov-${row.id}` : undefined}
+       aria-describedby={[cover && `v2-cov-${row.id}`, via && `v2-via-${row.id}`].filter(Boolean).join(' ') || undefined}
+       data-intent={intent === undefined ? undefined : (intent ? 'on' : 'off')}
        tabIndex={isActive ? 0 : -1}
        onFocus={() => setActive(at)}
        className={`v2-tree-row is-${row.kind} ${isActive ? 'is-active' : ''} ${p.focusedId === row.id ? 'is-on' : ''} ${on ? '' : 'is-hidden'}`}
@@ -515,6 +587,11 @@ export default function Tree(p: TreeProps) {
         <b>{label}</b>
         {second && <i lang={second === row.name ? 'en' : undefined}>{second}</i>}
         {cover && <s id={`v2-cov-${row.id}`}>{tr('tree.covered', {name: cover})}</s>}
+        {/* ⚠️ THE TWO NOTES THAT MAKE AN HONEST EYE LEGIBLE (S3b, codex r4 H3 + H4). Without them
+            a truthful control looks like a broken one: the reader clicks hide and the eye stays on
+            (a shared mesh), or the eye is on for a system they never asked for (a ghost scene). */}
+        {via && <s id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</s>}
+        {intent !== undefined && intent !== on && <s>{tr(intent ? 'tree.sysHiddenByView' : 'tree.sysShownByView')}</s>}
        </button>
        {row.kind === 'system' && <em>{(row.count ?? 0).toLocaleString()}</em>}
        <button type="button" tabIndex={-1}

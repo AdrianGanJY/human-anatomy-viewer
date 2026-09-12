@@ -128,6 +128,8 @@ export interface ShellProps {
   *  renderer's opacity map), never serialised, cleared when a scene is applied. */
  hidden: ReadonlySet<string>;
  onHide(id: string, on: boolean): void;
+ /** What the RENDERER draws a concept at, through the whole chain. `app/v2/visibility.ts`. */
+ effectiveAlpha(conceptId: string): number;
  /** The sidebar's filter box. Lifted here so the head can render it and the tree can read it. */
  treeQuery: string; onTreeQuery(q: string): void;
  /** Sheet presentation below 768 — the phone path for the `?` map. */
@@ -323,9 +325,16 @@ export default function Shell(p: ShellProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [p.basket, p.scene]);
  const title = p.caption.title || (p.focused ? t.name(p.focused.id, p.focused.name) : tr('app.title'));
- /** A scene member's declared alpha, defaulting to 1 when it has no style entry. Read from the
-  *  CONTROLLER's scene, never from local state, so the slider and the tree's eye are one reading. */
- const alphaOf = (id: string): number => p.scene?.styles.find((s) => s.id === id)?.opacity ?? 1;
+ /**
+  * ⚠️ S3b — THE SLIDER READS WHAT THE RENDERER DRAWS, not the scene's declaration.
+  *
+  * It used to be `styles.find(...)?.opacity ?? 1`, and codex r4's second High is that an absent
+  * opacity is NOT 1: `scene-codec.js:403` inherits `roleOpacity[role]`. codex executed the slider's
+  * own "100%" command (`set-opacity(null)`) on a context structure and measured the control printing
+  * 100% while the renderer drew 0.55. `p.effectiveAlpha` is the same reading the tree's eye uses —
+  * one fact, two controls, and now genuinely one number.
+  */
+ const alphaOf = (id: string): number => p.effectiveAlpha(id);
 
  const dockTitle: Record<DockKey, string> = {
   selection: tr('panel.selection'), info: tr('panel.info'), json: tr('panel.json'), ask: tr('panel.ask'),
@@ -448,8 +457,9 @@ export default function Shell(p: ShellProps) {
   </div>}
   {!p.sideStub && <Tree
    t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
-   visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
-   hidden={p.hidden} onHide={p.onHide} focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
+   visible={p.state.visible} visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
+   hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha}
+   focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
    query={p.treeQuery} coarse={p.coarse}
   />}
   {/* ⚠️ NOTHING LATE-ARRIVING IN THE FOOT. It printed the derived concept total, which is 0 until
@@ -534,11 +544,19 @@ export default function Shell(p: ShellProps) {
             at 0 would write 0 into the blob and change nothing on screen. Disabled with the reason
             adjacent, which is the true-disabled case: the control exists and this scene cannot
             express what it does. The tree's member eye is gated on the same fact. */}
+        {/* ⚠️ AN EXPLICIT NUMBER AT EVERY POSITION, INCLUDING 100 — codex r4 H2. The old right
+            endpoint sent `null`, which REMOVES the style entry and falls back to `roleOpacity`;
+            dragging a context structure to 100% left it at 0.55. And any RAISE clears the session
+            override first, or the drag is silently overridden by a hide the reader made earlier
+            through the tree (codex r4 H1, the same stranding in its second surface). */}
         <input type="range" min={0} max={100} step={5} value={Math.round(alphaOf(b.id) * 100)}
          disabled={p.scene?.mode !== 'render'}
          aria-label={tr('tree.opacityOf', {name: t.name(b.id, b.name)})}
-         onChange={(e) => p.dispatch({type: 'set-opacity', id: b.id,
-          opacity: Number(e.target.value) >= 100 ? null : Number(e.target.value) / 100})}/>
+         onChange={(e) => {
+          const v = Number(e.target.value) / 100;
+          if (v > 0) p.onHide(b.id, false);
+          p.dispatch({type: 'set-opacity', id: b.id, opacity: v});
+         }}/>
         <em>{alphaOf(b.id) === 0 ? tr('tree.hiddenWord') : `${Math.round(alphaOf(b.id) * 100)}%`}</em>
        </div>}
        {on && p.scene?.mode !== 'render' && <div className="v2-card-row">
