@@ -67,14 +67,31 @@ test('REFUSAL_KEYS is exactly the set of refusal keys the controller emits', () 
   * every refusal key is a visible literal, and that contract is what makes this file able to check
   * them at all.
   */
- const emitted = new Set([...src.matchAll(/key:\s*['"`](refusal\.[A-Za-z.]+)['"`]/g)].map((m) => m[1]));
- // ⚠️ ANCHORED ON `{`, because the first version of this pass flagged `key: string;` — the `Reason`
- // INTERFACE's own type annotation. A scanner that reports a type declaration as a computed key is
- // a guard nobody will keep. Every real emission is an object literal opening with `key:`, so the
- // brace is the discriminator; the interface's `key` sits after a doc comment and cannot match.
- const nonLiteral = [...src.matchAll(/\{\s*key:\s*([^,}\n]+)/g)]
-  .map((m) => m[1].trim())
-  .filter((v) => !/^['"`]refusal\.[A-Za-z.]+['"`]$/.test(v));
+ const emitted = new Set([...src.matchAll(/\bkey\s*:\s*['"`](refusal\.[A-Za-z.]+)['"`]/g)].map((m) => m[1]));
+ /**
+  * ⚠️ THREE MORE ESCAPES, CLOSED — codex round 11's third Low. It executed these against the
+  * round-10 scans and every one left the emitted set unchanged with no non-literal finding:
+  *
+  *   {key : "refusal.tamperProof"}   whitespace BEFORE the colon defeated both passes
+  *   {vars: {}, key: someVar}        property ORDER defeated the `{`-anchored non-literal pass
+  *   {key}                           SHORTHAND defeated it too
+  *
+  * The non-literal pass no longer anchors on `{`: it inspects every `key` PROPERTY position
+  * wherever it sits in the object, plus shorthand. The `Reason` interface's own `key: string` — the
+  * false positive the `{` anchor was covering for — is excluded by rejecting bare TypeScript types
+  * instead, which is what it actually is.
+  *
+  * ⚠️ AND THE HONEST LIMIT, because codex is right that a regex over source is the wrong tool for a
+  * completeness claim: it can always be escaped by a spelling nobody has thought of. The durable
+  * fix is an AST check, or a constructor that is the ONLY way to build a `Reason` — recorded for
+  * S5a. What this buys today is that the three known escapes fail loudly rather than silently
+  * widening the surface.
+  */
+ const TYPE_POS = /^(string|number|boolean|any|unknown)\b/;
+ const nonLiteral = [
+  ...[...src.matchAll(/[,{]\s*key\s*:\s*([^,}\n]+)/g)].map((m) => m[1].trim()),
+  ...[...src.matchAll(/[,{]\s*key\s*[,}]/g)].map(() => 'shorthand `key`'),
+ ].filter((v) => !/^['"`]refusal\.[A-Za-z.]+['"`]$/.test(v) && !TYPE_POS.test(v));
  assert.deepEqual(nonLiteral, [],
   'a refusal key must be a QUOTED LITERAL — a computed or interpolated key cannot be scanned, so it cannot be covered');
  assert.ok(emitted.size >= 10, `the scan must FIND the emissions, not silently match nothing (found ${emitted.size})`);

@@ -691,6 +691,12 @@ export default function Tree(p: TreeProps) {
        aria-selected={p.focusedId === row.id}
        aria-describedby={[cover && `v2-cov-${row.id}`, via && `v2-via-${row.id}`].filter(Boolean).join(' ') || undefined}
        data-intent={intent === undefined ? undefined : (intent ? 'on' : 'off')}
+       // ⚠️ THE ROW SAYS WHICH STRUCTURE IT IS — codex round 11's PERSISTED Low. The probe read
+       // `data-id` and got `''`, so an assertion meant to name the CLICKED structure could only
+       // ever say "something", and codex executed a counterexample where the Hide wrote its zero to
+       // a different id and the row still passed. An instrument needs the row's identity from the
+       // DOM, and the DOM should carry it — `data-intent` beside it is the same idea. Inert.
+       data-id={row.id}
        tabIndex={isActive ? 0 : -1}
        onFocus={() => setActive(at)}
        className={`v2-tree-row is-${row.kind} ${isActive ? 'is-active' : ''} ${p.focusedId === row.id ? 'is-on' : ''} ${on ? '' : 'is-hidden'}`}
@@ -736,7 +742,7 @@ export default function Tree(p: TreeProps) {
             A SYSTEM row gets a reading too — the tree's top-level rows are Chinese system names,
             and a tree whose children carry a reading and whose parents do not reads as a broken
             feature rather than as a scope boundary (recorded in build-pinyin.mjs). */}
-        {pyRead && <s className="v2-py">{pyRead}</s>}
+        {pyRead && <span className="v2-py">{pyRead}</span>}
         {second && <i lang={second === row.name ? 'en' : undefined}>{second}</i>}
         {cover && <s id={`v2-cov-${row.id}`}>{tr('tree.covered', {name: cover})}</s>}
         {/* ⚠️ THE TWO NOTES THAT MAKE AN HONEST EYE LEGIBLE (S3b, codex r4 H3 + H4). Without them

@@ -340,10 +340,10 @@ body.v2-stage .v2{grid-template-columns:1fr;grid-template-rows:1fr;grid-template
 /* `align-self:stretch` so the button's RECT is the row's height (52/54), not its text's (20 px) —
    the same correction the studio's coarse rule needed (codex round 3, Medium 4). */
 .v2-tree-phone .v2-tree-name{flex:1;align-self:stretch;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden;background:none;border:0;padding:0;font:inherit;color:inherit}
-.v2-tree-phone .v2-tree-name b,.v2-tree-phone .v2-tree-name i,.v2-tree-phone .v2-tree-name s{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.v2-tree-phone .v2-tree-name b,.v2-tree-phone .v2-tree-name i,.v2-tree-phone .v2-tree-name s,.v2-tree-phone .v2-tree-name .v2-py{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 .v2-tree-phone .v2-tree-name b{font-size:14px;line-height:20px;font-weight:500;color:var(--v2-ink)}
 .v2-tree-phone .v2-tree-name i{font-size:12px;line-height:16px;font-style:normal;color:var(--v2-ink-2)}
-.v2-tree-phone .v2-tree-name s{font-size:11px;line-height:15px;text-decoration:none;color:var(--v2-ink-3)}
+.v2-tree-phone .v2-tree-name s,.v2-tree-phone .v2-tree-name .v2-py{font-size:11px;line-height:15px;text-decoration:none;color:var(--v2-ink-3)}
 .v2-tree-phone .v2-tree-row>em{flex-shrink:0;min-width:4ch;text-align:right;font-style:normal;font-size:12px;color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
 .v2-tree-phone .v2-eye{width:44px;height:44px;display:flex;align-items:center;justify-content:center;color:var(--v2-ink-3);flex-shrink:0;border-radius:8px;background:none;border:0}
 .v2-tree-phone .v2-eye.is-session.is-off{outline:1px dashed var(--v2-ink-3);outline-offset:-8px}

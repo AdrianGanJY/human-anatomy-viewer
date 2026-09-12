@@ -336,9 +336,9 @@ export default function FindPalette(p: FindProps) {
          interface `display` is English and the CHINESE is the paired line the query matched on
          (`t.alt`). `py` is asked about each string separately, so the reading lands under the
          spelling it is a reading OF — which is the whole reason it takes the shown text. */}
-     {p.py(h.id, display) && <s className="v2-py">{p.py(h.id, display)}</s>}
+     {p.py(h.id, display) && <span className="v2-py">{p.py(h.id, display)}</span>}
      {pair && <i>{pair}{h.matched && <em className="v2-find-script">{SCRIPT_LABEL[h.matched.script] ?? ''}</em>}</i>}
-     {pair && p.py(h.id, pair) && <s className="v2-py">{p.py(h.id, pair)}</s>}
+     {pair && p.py(h.id, pair) && <span className="v2-py">{p.py(h.id, pair)}</span>}
     </span>
     {h.parent && <span className="v2-find-parent">{h.parent}</span>}
     {h.lane === 'system' && <span className="v2-kbd">{p.tr('search.scopeTo')}</span>}

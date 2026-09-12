@@ -1212,7 +1212,7 @@ export default function V2() {
        <span className="v2-dot" style={{background: SYSTEMS.find((s) => s.id === p.system)?.color ?? '#9aa3ab'}}/>
        <span>
         <b>{t.name(p.id, p.name)}</b>
-        {shell.py(p.id, t.name(p.id, p.name)) && <s className="v2-py">{shell.py(p.id, t.name(p.id, p.name))}</s>}
+        {shell.py(p.id, t.name(p.id, p.name)) && <span className="v2-py">{shell.py(p.id, t.name(p.id, p.name))}</span>}
         {t.secondary(p.id, p.name) && <i>{t.secondary(p.id, p.name)}</i>}
        </span>
        <em>{p.elements.length}</em>

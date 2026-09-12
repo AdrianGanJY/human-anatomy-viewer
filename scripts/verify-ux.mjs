@@ -2137,6 +2137,26 @@ if (variant === 'v2') {
           return holdResult(code, {moved: true, padHeld: false, released: rel.released, attempts: n, pose,
             note: `${n} attempt${n > 1 ? 's' : ''} — THE CAMERA MOVED, but the pad never reported ${code} held (pad=not-reported). The camera claim stands on the pose; the pad and the release are separate facts, asserted by their own rows.${rel.note}`});
         }
+        /**
+         * ⚠️ A FAILED RELEASE ENDS THE CALL IMMEDIATELY — codex round 11, the remaining blocker.
+         *
+         * Round 10's fix made every RETURN measure release. It did not stop the RETRY path from
+         * throwing an observed failure away: when `movedAnyway` was false this branch ignored
+         * `rel.released`, a blur permitted another attempt, and only the eventual return reached the
+         * ledger. codex executed exactly that sequence — attempt 1 never held, never moved, and its
+         * release wait timed out with the pad reading `true`; attempt 2 succeeded — and got
+         * `moved:true, padHeld:true, released:true` with `s1-holds: PASS — 1 holds, 0 not released`.
+         *
+         * A key observed still down is a fact about the app, and a later successful attempt does not
+         * unmake it. So it is recorded and returned here, before anything can retry past it. This is
+         * codex's own "cheapest correction": terminate and record failure whenever
+         * `rel.released !== true`, before considering a retry.
+         */
+        if (rel.released !== true) {
+          const pose = await page.evaluate(POSE);
+          return holdResult(code, {moved: false, padHeld: false, released: false, attempts: n, pose,
+            note: `attempt ${n}: the dispatcher never reported ${code} held, the pose did not move, AND the release was not observed —${rel.note} A failed release is not retried past: every row after it in this page is suspect.`});
+        }
         history.push(`#${n} the dispatcher never reported ${code} held AND the pose did not move`);
         note = `attempt ${n}: the dispatcher never reported ${code} held AND the pose did not move`;
         /**
@@ -2309,12 +2329,23 @@ if (variant === 'v2') {
     }
     return false;
   }
-  async function releaseKey(page, code, {timeout = 3000} = {}) {
-    await page.keyboard.up(code).catch(() => {});
-    await page.waitForFunction(
-      (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
-      {timeout, polling: 60},
-    ).catch(() => {});
+  /**
+   * ⚠️ ROUTED THROUGH THE SAME OBSERVER AND THE SAME LEDGER — codex round 11's first Low.
+   *
+   * This swallowed its timeout with a bare `.catch(() => {})`, which is the exact defect round 4
+   * found in `holdUntilMoved` and round 10 found again in its rewrite — living, all along, in the
+   * helper beside it. codex executed it: one successful ledger entry, then `holdDown(KeyS)` and a
+   * FAILED `releaseKey(KeyS)`, and `s1-holds` still passed. Only one of the three callers checked
+   * the released state independently; the `S` callers did not.
+   *
+   * The aggregate claim is "NO hold in the S1 pass left a key down". A release this helper performs
+   * is a hold being let go, so it belongs in the ledger the claim reads — otherwise the row means
+   * "no hold that went through the other helper", which is not what it says.
+   */
+  async function releaseKey(page, code) {
+    const rel = await releaseAndObserve(page, code);
+    holdLedger.push({code, moved: null, padHeld: null, released: rel.released, note: `releaseKey${rel.note}`});
+    return rel.released;
   }
 
   // ── S1.1 A MANUAL POSE SURVIVES A DOCK TOGGLE ────────────────────────────────────────────────
@@ -3864,17 +3895,22 @@ if (variant === 'v2') {
           const zeroed = (hidden.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
           const stillZero = (shown.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
           const grew = probe.blob2.length - probe.blob0.length;
+          /**
+           * ⚠️ THE CLICKED STRUCTURE, NOT "SOMETHING" — codex round 11's second Low. The predicate
+           * accepted ANY opacity-zero style, and `probe.id` was collected and never used. codex
+           * executed it with real codec blobs: clicked `FMA22359`, Hide writing 0 to `FMA22449`,
+           * Show writing 1 to `FMA22449` — PASS. So session-hiding the clicked structure plus an
+           * erroneous scene write somewhere else satisfied both halves.
+           */
           return {
-            // The Hide must put SOMETHING at opacity 0 in the scene, and the Show must leave nothing
-            // at 0. A session-only write produces neither.
-            ok: zeroed.length > 0 && stillZero.length === 0,
-            why: `Hide -> styles at opacity 0: [${zeroed.join(',')}] · Show -> [${stillZero.join(',')}] · blob ${probe.blob0.length} -> ${probe.blob1.length} -> ${probe.blob2.length} chars (residue +${grew}, S5a)`,
+            ok: !!probe.id && zeroed.includes(probe.id) && !stillZero.includes(probe.id),
+            why: `clicked ${probe.id || '(no id)'} · Hide -> styles at opacity 0: [${zeroed.join(',')}] · Show -> [${stillZero.join(',')}] · blob ${probe.blob0.length} -> ${probe.blob1.length} -> ${probe.blob2.length} chars (residue +${grew}, S5a)`,
           };
         } catch (e) { return {ok: false, why: `the blob did not decode: ${String(e).slice(0, 80)}`}; }
       })();
       check(vp.name, `[${S4_V}] and the member Hide PERSISTED into the scene (styles opacity 0), and the Show lifted it`,
         persisted.ok, persisted.why,
-        'the blob changed, decodes to an opacity-0 style for the clicked structure, and nothing is left at 0 after the Show');
+        'the blob changed, the CLICKED structure is the one at opacity 0, and it is not at 0 after the Show');
     } catch (e) {
       check(vp.name, `[S4-prelude] the member-show pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
