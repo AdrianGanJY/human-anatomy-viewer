@@ -320,6 +320,15 @@ export function eyeAction(args: {
  * hypothetical input rather than a second model of it.
  */
 export interface EyeProbe {
+ /**
+  * The LIVE per-mesh alpha — `page.tsx`'s memoised `partAlphas(renderState, partSystem)`.
+  *
+  * ⚠️ IT IS PASSED IN RATHER THAN REBUILT, for cost: codex round 8 measured `readEye` at 21.4 ms
+  * for 20 rows on a 2,234-mesh selection because it rebuilt this three times per row. Virtualisation
+  * bounds the ROWS, not the work behind each one. Reusing the memo leaves exactly ONE `partAlphas`
+  * per row — the counterfactual, which by definition cannot be memoised.
+  */
+ alphaOf(partId: string): number;
  /** `renderState` — the exact object handed to `AnatomyScene`. Read for the lane and the rest. */
  base: AlphaState & {opacity?: Record<string, number>};
  /** The alpha map **before** the session set — `plate.opacity`. The session set is re-applied here
@@ -334,12 +343,14 @@ export interface EyeProbe {
  basket: readonly {id: string; elements: readonly string[]}[];
 }
 
-/** The alpha the renderer would compute for one concept under a hypothetical session set + scene. */
-function alphaUnder(
- probe: EyeProbe, conceptId: string, sceneOpacity: Record<string, number> | undefined, hidden: ReadonlySet<string>,
-): number {
+/** The per-MESH alphas the renderer would compute under a hypothetical session set + scene. */
+function meshesUnder(
+ probe: EyeProbe, elements: readonly string[],
+ sceneOpacity: Record<string, number> | undefined, hidden: ReadonlySet<string>,
+): number[] {
  const opacity = withSessionHidden(sceneOpacity, hidden, probe.elementsOf);
- return conceptAlpha(partAlphas({...probe.base, opacity}, probe.partSystem), probe.elementsOf(conceptId));
+ const alphaOf = partAlphas({...probe.base, opacity}, probe.partSystem);
+ return elements.map(alphaOf);
 }
 
 /**
@@ -358,11 +369,26 @@ function alphaUnder(
  * So this applies the write to a COPY of the inputs and asks the chain again. It is one extra
  * `partAlphas` over one concept's meshes per drawn row — the same handful of map lookups the eye
  * already costs. A SYSTEM row is exempt: `set-visible` moves the lane itself, so it always acts.
+ *
+ * ⚠️ THE COMPARISON IS PER MESH, NOT THE CONCEPT'S MAX — codex round 8, the High, and it is the
+ * same MAX trap the eye's READING is built on, walked into from the other side. `conceptAlpha` takes
+ * the max because ONE drawn mesh means the structure is on screen; but "did anything change?" is a
+ * question about the WHOLE vector. codex executed it against the real atlas: a render scene with
+ * *Sternum* and *Body of sternum* both primary, Sternum's Hide —
+ *
+ *     FJ3153: 1 -> 0     FJ3178: 1 -> 1 (kept by the sharer)     FJ3290: 1 -> 0
+ *     maximum: 1 -> 1
+ *
+ * The click removes two meshes from the picture and the max cannot see it, so the gate disabled a
+ * working Hide. The MAX stays where it belongs — `eyeOn`, which asks "is it on screen?" — and
+ * actionability reads the vector.
  */
 export function eyeActionable(probe: EyeProbe, conceptId: string, kind: EyeKind, on: boolean): boolean {
  if (kind === 'system') return true;
  const act = eyeAction({kind, on, visible: probe.base.visible});
- const before = alphaUnder(probe, conceptId, probe.sceneOpacity, probe.hidden);
+ const elements = probe.elementsOf(conceptId);
+ if (!elements.length) return false;
+ const before = elements.map(probe.alphaOf);
 
  const hidden = new Set(probe.hidden);
  if (act.session === 'hide') hidden.add(conceptId);
@@ -377,7 +403,8 @@ export function eyeActionable(probe: EyeProbe, conceptId: string, kind: EyeKind,
   const styles = [...probe.scene.styles.filter((s) => s.id !== conceptId), {...(prev ?? {id: conceptId}), opacity: act.opacity}];
   sceneOpacity = sceneAlphaMap({...probe.scene, styles}, probe.basket);
  }
- return alphaUnder(probe, conceptId, sceneOpacity, hidden) !== before;
+ const after = meshesUnder(probe, elements, sceneOpacity, hidden);
+ return after.some((a, i) => a !== before[i]);
 }
 
 /** What a concept row's eye must SAY and whether it may ACT — one call, one chain, so the two
@@ -386,16 +413,16 @@ export interface EyeReading { actionable: boolean; cause: AlphaCause }
 
 export function readEye(probe: EyeProbe, conceptId: string, kind: EyeKind, on: boolean): EyeReading {
  const elements = probe.elementsOf(conceptId);
- const opacity = withSessionHidden(probe.sceneOpacity, probe.hidden, probe.elementsOf);
- const state = {...probe.base, opacity};
+ // The LIVE reading comes off the page's own memo (`probe.alphaOf`) — no rebuild. Round 8's cost
+ // finding: this function used to construct `partAlphas` three times per row.
  return {
   actionable: eyeActionable(probe, conceptId, kind, on),
   cause: alphaCause({
-   alpha: conceptAlpha(partAlphas(state, probe.partSystem), elements),
+   alpha: conceptAlpha(probe.alphaOf, elements),
    inSession: probe.hidden.has(conceptId),
    resolvedZero: resolvedStructureAlpha(probe.scene, conceptId) === 0,
-   laneBlocked: laneBlocks(state, probe.partSystem, elements),
-   isolate: state.isolate,
+   laneBlocked: laneBlocks(probe.base, probe.partSystem, elements),
+   isolate: probe.base.isolate,
   }),
  };
 }

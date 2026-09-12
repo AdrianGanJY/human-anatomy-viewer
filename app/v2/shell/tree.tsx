@@ -318,21 +318,13 @@ export default function Tree(p: TreeProps) {
   *
   * Returns the name of the structure keeping it visible, or null. Bounded by `picks` (≤ 24).
   */
- const drawnThrough = useCallback((row: TreeRow): string | null => {
+ /**
+  * WHICH PICKED STRUCTURE IS CONTRIBUTING THIS ROW'S SHARED MESH — the scan, split out at S3c so
+  * TWO surfaces can use it: the `drawnThrough` note below, and the reason an eye that is INERT while
+  * its structure is DRAWN has to give (codex round 8, Medium 1). Returns a name, or null.
+  */
+ const sharerOf = useCallback((row: TreeRow): string | null => {
   if (row.kind !== 'concept' || !covered) return null;
-  /**
-   * ⚠️ THE PREREQUISITE READS THE *RESOLVED* ALPHA TOO — codex round 7, Medium 4, and it is the
-   * same defect round 6 fixed one line below. The CONTRIBUTOR test was corrected to
-   * `resolvedStructureAlpha`; the test deciding whether to explain the row at all still read
-   * `styles[id].opacity ?? 1`, so a ghost with `roleOpacity.ghost = 0` and no style entry of its
-   * own resolved to `1`, `declaredOff` was false, and the row drawn through a sharer got no
-   * explanation. codex executed it: ghost *Body of sternum* + primary *Sternum* + `roleOpacity
-   * .ghost: 0` returned `{declared:0, effective:1, note:null}`. `resolvedStructureAlpha` returns
-   * `undefined` for a NON-member, which is why the `eyeKind === 'member'` guard is no longer
-   * needed — a non-member has no declaration to be zero.
-   */
-  const declaredOff = p.hidden.has(row.id) || resolvedStructureAlpha(p.scene, row.id) === 0;
-  if (!declaredOff || p.effectiveAlpha(row.id) <= 0) return null;
   const mine = new Set(covered.byId.get(row.id)?.elements ?? []);
   for (const id of p.picks) {
    if (id === row.id) continue;
@@ -356,7 +348,25 @@ export default function Tree(p: TreeProps) {
    if (contribution > 0 && p.effectiveAlpha(id) > 0) return t.name(id, other.name);
   }
   return null;
- }, [covered, p, eyeKind, t]);
+ }, [covered, p, t]);
+
+ const drawnThrough = useCallback((row: TreeRow): string | null => {
+  if (row.kind !== 'concept' || !covered) return null;
+  /**
+   * ⚠️ THE PREREQUISITE READS THE *RESOLVED* ALPHA TOO — codex round 7, Medium 4, and it is the
+   * same defect round 6 fixed inside the scan. The CONTRIBUTOR test was corrected to
+   * `resolvedStructureAlpha`; the test deciding whether to explain the row at all still read
+   * `styles[id].opacity ?? 1`, so a ghost with `roleOpacity.ghost = 0` and no style entry of its
+   * own resolved to `1`, `declaredOff` was false, and the row drawn through a sharer got no
+   * explanation. codex executed it: ghost *Body of sternum* + primary *Sternum* + `roleOpacity
+   * .ghost: 0` returned `{declared:0, effective:1, note:null}`. `resolvedStructureAlpha` returns
+   * `undefined` for a NON-member, which is why the `eyeKind === 'member'` guard is no longer
+   * needed — a non-member has no declaration to be zero.
+   */
+  const declaredOff = p.hidden.has(row.id) || resolvedStructureAlpha(p.scene, row.id) === 0;
+  if (!declaredOff || p.effectiveAlpha(row.id) <= 0) return null;
+  return sharerOf(row);
+ }, [covered, p, sharerOf]);
 
  /** The eye's TOOLTIP NAMES ITS SERIALISATION. RC8 refuses to ship an eye that does not — the
   *  reader has to be able to tell, before clicking, whether the link they copy afterwards will
@@ -610,9 +620,18 @@ export default function Tree(p: TreeProps) {
       const eyeInert = eye ? !eye.actionable : false;
       // The one sentence an inert eye owes the reader — the S0 inert convention ("an adjacent
       // reason"), keyed by cause so isolation is never described as a switched-off system.
-      const inertWhy = cause === 'isolate' ? tr('tree.hiddenByIsolate')
+      /**
+       * ⚠️ AN INERT EYE OVER A *DRAWN* STRUCTURE IS A DIFFERENT SENTENCE — codex round 8, Medium 1.
+       * The fallback said "this view draws it at zero" over a structure drawn at 1: a member eye
+       * whose write cannot win against a sharer's contribution to the same mesh. The reason has to
+       * name the sharer, which is the same fact `drawnThrough` states — so it uses the same scan.
+       */
+      const inertWhy = !eyeInert ? ''
+       : cause === 'isolate' ? tr('tree.hiddenByIsolate')
        : cause === 'system' ? tr('tree.eyeSystemOff')
-       : tr('tree.hiddenByScene');
+       : cause === 'drawn'
+        ? ((sharer) => sharer ? tr('tree.eyeShared', {name: sharer}) : tr('tree.eyeSharedAnon'))(sharerOf(row))
+        : tr('tree.hiddenByScene');
       // The system row's OTHER fact: the human's own set, which a scene's arrival does not touch.
       const intent = row.kind === 'system' ? p.visibleIntent.includes(row.system) : undefined;
       const openNow = row.kind === 'system' && (q ? !filtered.sysHit.has(row.system) || expanded.has(row.system) : expanded.has(row.system));

@@ -529,10 +529,19 @@ export default function V2() {
    * English warm link stayed Chinese — a link that used to work. Applying `urlLang` explicitly is
    * the same answer on both paths, which is why it replaces the guard rather than joining it.
    */
+  /**
+   * ⚠️ S3c — THE LANGUAGE IS APPLIED *AFTER* THE SCENE IS ACCEPTED, not before (codex round 8,
+   * Medium 3). Round 7 made the SYSTEM half of a refused arrival atomic and left this half behind:
+   * codex executed the arrival callback with 25 real atlas concepts and `lang:'zh-Hans'` and
+   * measured `sameState:true` — the scene correctly refused — alongside `applyLangCalls:['zh-Hans']`.
+   * So a link the app says it could not apply still switched the interface language AND wrote that
+   * choice to storage. A refusal that changes anything the reader can see is not a refusal, and
+   * "anything" includes the language.
+   */
   const declared = sceneDeclaresLang(blob);
+  if (!dispatch({type: 'apply-scene', scene: sc, blob, visible: urlVisible})) return;
   if (urlLang && !declared) applyLang(urlLang);
   else if (sc.lang) applyLang(sc.lang);
-  if (!dispatch({type: 'apply-scene', scene: sc, blob, visible: urlVisible})) return;
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [dispatch]);
@@ -866,9 +875,9 @@ export default function V2() {
   * picture cannot disagree. The cause survives only as the wording next to an inert eye.
   */
  const eyeProbe = useMemo(() => ({
-  base: renderBase, sceneOpacity: renderBase.opacity, partSystem, elementsOf, hidden,
-  scene, basket,
- }), [renderBase, partSystem, elementsOf, hidden, scene, basket]);
+  alphaOf: meshAlpha, base: renderBase, sceneOpacity: renderBase.opacity, partSystem, elementsOf,
+  hidden, scene, basket,
+ }), [meshAlpha, renderBase, partSystem, elementsOf, hidden, scene, basket]);
  const eyeState = useCallback(
   (id: string, kind: EyeKind, on: boolean) => readEye(eyeProbe, id, kind, on), [eyeProbe]);
 

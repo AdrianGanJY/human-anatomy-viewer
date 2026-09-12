@@ -3447,6 +3447,48 @@ if (variant === 'v2') {
           && inert.drawn > 0 && inert.drawnInert === 0,
         `off-system rows: ${inert.offInert}/${inert.off} inert (${inert.offWithoutReason} without a reason, e.g. "${inert.sample}") \u00b7 same system, eye ON: ${inert.litInert}/${inert.lit} inert \u00b7 drawn system: ${inert.drawnInert}/${inert.drawn} inert`,
         'both partitions non-empty: every OFF eye inert with a reason, every ON eye live, none inert in the drawn system');
+
+      /**
+       * ⚠️ AND THE ONE THING THE PARTITION ABOVE STILL CANNOT SEE — codex round 8, Medium 3. It
+       * executed the shipped predicate against a gate replaced by `actionable = on`, and it PASSED:
+       * every OFF eye inert, every ON eye live, by construction. That replacement disables every
+       * working Show there is. The partition needs a row where OFF and ACTIONABLE coexist.
+       *
+       * So this hides a structure in the DRAWN system with a real click. Its eye then reads OFF —
+       * and its Show is the one the reader owns, so it must stay LIVE and the second click must put
+       * the structure back. Under `actionable = on` the row goes inert after the first click and the
+       * second click does nothing, which is the red.
+       */
+      const roundTrip = await page.evaluate(async () => {
+        const sys = [...document.querySelectorAll('.v2-tree-row.is-system')]
+          .find((r) => /Skeleton|\u9aa8\u9abc/.test(r.querySelector('.v2-tree-name b')?.textContent || ''));
+        if (!sys) return {error: 'no Skeleton row'};
+        (sys.querySelector('.v2-tw[type=button]') ?? sys.querySelector('.v2-tree-name'))?.click();
+        await new Promise((r) => setTimeout(r, 600));
+        // The first child whose eye reads ON — something actually drawn, so hiding it can matter.
+        const row = [...document.querySelectorAll('.v2-tree-row.is-concept')]
+          .find((r) => r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false');
+        if (!row) return {error: 'no drawn structure row under Skeleton'};
+        const read = () => {
+          const e = row.querySelector('.v2-eye');
+          return {on: e.getAttribute('aria-pressed') === 'false', inert: e.classList.contains('is-inert')};
+        };
+        const before = read();
+        row.querySelector('.v2-eye').click();
+        await new Promise((r) => setTimeout(r, 500));
+        const hidden = read();
+        row.querySelector('.v2-eye').click();
+        await new Promise((r) => setTimeout(r, 500));
+        const shown = read();
+        return {before, hidden, shown,
+          name: (row.querySelector('.v2-tree-name b')?.textContent || '').trim().slice(0, 28)};
+      });
+      check(vp.name, `[${S3_V}] an eye that reads OFF because the READER hid it stays LIVE, and the Show puts it back`,
+        !roundTrip.error && roundTrip.before?.on === true && roundTrip.before?.inert === false
+          && roundTrip.hidden?.on === false && roundTrip.hidden?.inert === false
+          && roundTrip.shown?.on === true,
+        roundTrip.error || `${roundTrip.name}: on=${roundTrip.before?.on} -> hidden{on=${roundTrip.hidden?.on}, inert=${roundTrip.hidden?.inert}} -> shown{on=${roundTrip.shown?.on}}`,
+        'OFF and NOT inert after the hide (a gate that returned `actionable = on` would be inert here), and ON again after the Show');
     } catch (e) {
       check(vp.name, `[${S3_V}] the systems-ghost pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }

@@ -175,6 +175,10 @@ export const V2: Record<string, Row> = {
  // ACCURATE adjacent reason, which means one string per lane, not one string for the whole class.
  'tree.hiddenByIsolate': {en: 'Isolation is drawing only the selection — tick this structure, or turn isolation off', 'zh-Hans': '独显模式只绘制所选内容 — 勾选此结构,或关闭独显', 'zh-Hant': '獨顯模式只繪製所選內容 — 勾選此結構,或關閉獨顯'},
  'tree.hiddenByScene': {en: 'This view draws it at zero — the eye cannot change that', 'zh-Hans': '本视图将其绘制为 0 — 此按钮无法改变', 'zh-Hant': '本視圖將其繪製為 0 — 此按鈕無法改變'},
+ // codex round 8, Medium 1: an inert eye over a DRAWN structure. Its meshes are being supplied by
+ // a structure this one shares them with, so hiding it here would change nothing on screen.
+ 'tree.eyeShared': {en: 'Its meshes are drawn by {name} — hiding it here would change nothing', 'zh-Hans': '它的网格由{name}绘制 — 在此隐藏不会改变画面', 'zh-Hant': '它的網格由{name}繪製 — 在此隱藏不會改變畫面'},
+ 'tree.eyeSharedAnon': {en: 'Its meshes are drawn by another selected structure — hiding it here would change nothing', 'zh-Hans': '它的网格由另一个已选结构绘制 — 在此隐藏不会改变画面', 'zh-Hant': '它的網格由另一個已選結構繪製 — 在此隱藏不會改變畫面'},
  'tree.hide':      {en: 'hide', 'zh-Hans': '隐藏', 'zh-Hant': '隱藏'},
  'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
  // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader

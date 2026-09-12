@@ -483,10 +483,11 @@ function probeOf({scene, picks, hidden = new Set(), visible = ['skeletal', 'musc
   // Hardcoding 1 here would have silently drawn codex's `rest:{opacity:0}` case at full alpha and
   // the row would have measured a picture the renderer never paints.
   const rest = scene ? sceneOpacities(scene).rest : 1;
-  return {
-    base: {opacity: sceneOpacity, restOpacity: rest, visible, selected, isolate},
-    sceneOpacity, partSystem, elementsOf, hidden, scene, basket,
-  };
+  const base = {opacity: sceneOpacity, restOpacity: rest, visible, selected, isolate};
+  // `page.tsx` hands the probe its MEMOISED live per-mesh alpha (round 8's cost finding). It is
+  // built here off the POST-session map, exactly as `renderState` -> `meshAlpha` does.
+  const alphaOf = partAlphas({...base, opacity: withSessionHidden(sceneOpacity, hidden, elementsOf)}, partSystem);
+  return {alphaOf, base, sceneOpacity, partSystem, elementsOf, hidden, scene, basket};
 }
 /** The alpha the page would draw, off a probe, under a hypothetical session set. */
 const alphaOn = (probe, id, hidden) => conceptAlpha(
@@ -588,4 +589,54 @@ test('round 7, M3 - a MEMBER eye re-resolves the write through the codec, not in
   const blocked = probeOf({scene, picks: [], visible: [], isolate: false});
   assert.equal(readEye(blocked, 'FMA9611', 'member', false).actionable, false,
     'nothing the member eye writes can survive a closed lane');
+});
+
+
+// == S3c, codex ROUND 8 ==========================================================================
+
+test('round 8, the High - actionability compares MESHES, because the concept MAX cannot see a partial change', () => {
+  // codex's construction, on the real atlas: Sternum and Body of sternum both primary in a render
+  // scene. Sternum's Hide blanks FJ3153 and FJ3290 and leaves FJ3178 at 1 (the sharer keeps it), so
+  // the MAX is unchanged at 1 while two meshes leave the picture.
+  const scene = normalizeScene({mode: 'render',
+    structures: [{id: 'FMA7485', role: 'primary'}, {id: 'FMA7487', role: 'primary'}]});
+  const probe = probeOf({scene, picks: ['FMA7485', 'FMA7487'], visible: ['skeletal']});
+  const els = elementsOf('FMA7485');
+  assert.deepEqual(els, ['FJ3153', 'FJ3178', 'FJ3290'], 'the premise: three meshes, one of them shared');
+
+  // THE WRITE, executed: the member eye's Hide is `set-opacity 0`.
+  const styles = [{id: 'FMA7485', opacity: 0}];
+  const after = probeOf({scene: normalizeScene({...scene, styles}), picks: ['FMA7485', 'FMA7487'], visible: ['skeletal']});
+  const beforeV = els.map(probe.alphaOf);
+  const afterV = els.map(after.alphaOf);
+  assert.deepEqual(beforeV, [1, 1, 1]);
+  assert.deepEqual(afterV, [0, 1, 0], 'codex: FJ3153 1->0, FJ3178 1->1, FJ3290 1->0');
+
+  // THE SUPERSEDED READING, measured: the MAX is blind to it.
+  assert.equal(conceptAlpha(probe.alphaOf, els), 1);
+  assert.equal(conceptAlpha(after.alphaOf, els), 1,
+    'the round-8 defect: max 1 -> 1, so the gate said "nothing would change" and disabled the Hide');
+  // THE FIX reads the vector.
+  assert.equal(readEye(probe, 'FMA7485', 'member', true).actionable, true,
+    'two meshes leave the picture, so the eye must act');
+});
+
+test('round 8, M1 - an inert eye over a DRAWN structure is the SHARER sentence, never "drawn at zero"', () => {
+  // codex: in the same scene, Body of sternum's Hide cannot win - its sole mesh is supplied by
+  // Sternum - so the eye is correctly inert while the structure is drawn at 1. The WORDING is the
+  // finding: cause 'drawn' fell through to the "this view draws it at zero" fallback.
+  const scene = normalizeScene({mode: 'render',
+    structures: [{id: 'FMA7485', role: 'primary'}, {id: 'FMA7487', role: 'primary'}]});
+  const probe = probeOf({scene, picks: ['FMA7485', 'FMA7487'], visible: ['skeletal']});
+  assert.deepEqual(elementsOf('FMA7487'), ['FJ3178'], 'the premise: one mesh, and it is the shared one');
+  const reading = readEye(probe, 'FMA7487', 'member', true);
+  assert.equal(conceptAlpha(probe.alphaOf, elementsOf('FMA7487')), 1, 'it IS drawn');
+  assert.equal(reading.actionable, false, 'and its Hide cannot change that');
+  assert.equal(reading.cause, 'drawn',
+    "so the cause is 'drawn' - which is exactly the branch that used to say 'drawn at zero'");
+});
+
+test('round 8 - a concept with no meshes is not actionable, and does not throw', () => {
+  const probe = probeOf({scene: null, picks: [], visible: []});
+  assert.equal(eyeActionable({...probe, elementsOf: () => []}, 'FMA0000', 'session', false), false);
 });
