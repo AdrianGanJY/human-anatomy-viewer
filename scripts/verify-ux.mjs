@@ -1270,7 +1270,11 @@ if (variant === 'v2') {
           // A row whose description still carries the strikethrough "arrives in S<n>" marker is a
           // key the map declares FORTHCOMING. Counting them is how "S1's keys stopped being
           // promises" becomes a measurement instead of a claim.
-          pending: [...document.querySelectorAll('.v2-keys dd s')].length,
+          // `owner` markers ONLY. The per-row "desktop only" mark is also an `<s>`, and counting
+          // them together would have made the forthcoming-count drift with the tier (round 4).
+          pending: [...document.querySelectorAll('.v2-keys dd s')].filter((e) => !e.hasAttribute('data-studio-only')).length,
+          // The rows guard 7 withholds, as the map ADVERTISES them.
+          desktopOnly: [...document.querySelectorAll('.v2-keys dd s[data-studio-only]')].length,
         };
       });
       /**
@@ -1285,7 +1289,7 @@ if (variant === 'v2') {
        * every binding" and a weak one, because it passes on nineteen rows of anything. Naming the
        * keys S1 bound is the direct reading.
        */
-      const KEY_ROWS = 19;
+      const KEY_ROWS = 20;
       check(vp.name, `[${STUDIO_V}] "?" opens the key map, traps focus inside it, and lists every binding`,
         !!modal && modal.focusInside && modal.rows === KEY_ROWS,
         modal ? `${modal.rows} rows, focusInside=${modal.focusInside}, sheet=${modal.sheet}` : 'no overlay opened',
@@ -1293,8 +1297,21 @@ if (variant === 'v2') {
       // S1's OWN BINDINGS, BY NAME, and NONE of them still marked as forthcoming. At S0 every one
       // of these rows carried "arrives in S1"; if a later edit dropped a binding but left its row,
       // or kept the row's owner marker after wiring it, this is what says so.
-      const S1_KEYS = ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H / R', 'Shift P / Shift S'];
+      const S1_KEYS = ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H', 'R', 'Shift P / Shift S'];
       const missingKeys = S1_KEYS.filter((k) => !(modal?.keys ?? []).includes(k));
+      /**
+       * ⚠️ AND THE MAP SAYS WHICH KEYS THIS TIER ACTUALLY HAS. Guard 7 withholds the seven
+       * studio-only camera rows below 1180; `1 2 3 4` and `R` are controller dispatches that work
+       * everywhere and have on-screen buttons there. The first version of the note covered the
+       * whole group, so it told a phone reader that `1 2 3 4` was desktop-only — round 2's High
+       * inverted, inside the fix for round 3's Medium, with no oracle on it at all (round 4,
+       * Mediums 1 and 3). EXACT counts, both directions.
+       */
+      const WITHHELD = 7;
+      check(vp.name, `[${STUDIO_V}] the key map marks exactly the ${WITHHELD} withheld rows as desktop-only ${vp.width >= 1180 ? '(none, in the studio)' : ''}`,
+        modal?.desktopOnly === (vp.width >= 1180 ? 0 : WITHHELD),
+        `${modal?.desktopOnly} rows marked desktop-only at ${vp.width}px`,
+        String(vp.width >= 1180 ? 0 : WITHHELD));
       check(vp.name, `[${STUDIO_V}] the key map names every camera binding S1 wired, and marks none of them forthcoming`,
         !!modal && missingKeys.length === 0 && modal.pending === (KEY_ROWS - 2 - S1_KEYS.length),
         modal ? `${modal.keys.length} keys${missingKeys.length ? `, MISSING: ${missingKeys.join(' / ')}` : ''}, ${modal.pending} still marked forthcoming`

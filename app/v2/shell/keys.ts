@@ -272,6 +272,26 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
    * never reaches this branch. A guard added in a corrective round needs its own reachable case,
    * not the previous round's.
    */
+  /**
+   * ── A MODIFIER ARRIVING MID-HOLD ENDS THE HOLD ─────────────────────────────────────────────────
+   *
+   * This is the resolution of a genuine conflict, stated rather than picked silently (round 4,
+   * Medium 2). Two reasonable rules collide on one event — the auto-repeat of a held code that now
+   * carries Ctrl/Cmd/Alt:
+   *   · CONSUME IT and you keep the camera moving, but you swallow `Ctrl+S` from someone holding S
+   *     to pan and reaching for Save. That was round 3's High.
+   *   · DECLINE IT and Save works, but someone holding `←` to orbit who presses Alt hands `Alt+←`
+   *     to the browser and loses the page to Back.
+   *
+   * Neither is right while the key is still counted as held, so the third option is to stop
+   * counting it: a modifier is the reader moving on to a chord, so the HOLD ENDS and the browser
+   * gets its shortcut. The camera stops rather than panning under a navigation — and this also
+   * closes the latent case guard 6's own note describes, where a key held and then modified may
+   * never deliver a keyup this page can match.
+   *
+   * The event is left untouched, which is the header's rule: we declined it.
+   */
+  if (modified(ev) && held.has(ev.code)) { drop(ev.code); return; }
   if (!modified(ev) && held.has(ev.code)) {
    if (!editor && !opts.modalOpen()) ev.preventDefault();
    return;
@@ -339,7 +359,14 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
  * (they do not zoom), and Ctrl/⌘L is NOT intercepted — the browser's address bar owns it, and Copy
  * link is an explicit button instead.
  */
-export interface KeyRow {keys: string; cmd: string; group: 'now' | 'camera' | 'global' | 'tree'; owner?: string}
+/**
+ * `studioOnly` marks the rows GUARD 7 WITHHOLDS below 1180 — and it is per-ROW, not per-group,
+ * because the camera group is mixed. The first version of the "Desktop only" note was rendered
+ * above the whole group, so `1 2 3 4` and `R` were labelled desktop-only at 390×844 where they work
+ * by keyboard AND have on-screen buttons: round 2's High inverted, in the fix for round 3's
+ * Medium (round 4, Medium 1). The set here is exactly `CAMERA_CMDS` plus the held keys.
+ */
+export interface KeyRow {keys: string; cmd: string; group: 'now' | 'camera' | 'global' | 'tree'; owner?: string; studioOnly?: true}
 export const KEY_MAP: KeyRow[] = [
  {keys: 'Esc', cmd: 'keys.esc', group: 'now'},
  {keys: '?', cmd: 'keys.help', group: 'now'},
@@ -359,14 +386,17 @@ export const KEY_MAP: KeyRow[] = [
   * eleven camera bindings were flattened into one list beside Esc and `?`. Dropping `owner` is the
   * whole edit — a row with no owner is a row that works today.
   */
- {keys: 'W A S D', cmd: 'keys.pan', group: 'camera'},
- {keys: '← →', cmd: 'keys.orbit', group: 'camera'},
- {keys: '↑ ↓', cmd: 'keys.dolly', group: 'camera'},
- {keys: 'Q E', cmd: 'keys.tilt', group: 'camera'},
- {keys: 'O P', cmd: 'keys.modes', group: 'camera'},
+ {keys: 'W A S D', cmd: 'keys.pan', group: 'camera', studioOnly: true},
+ {keys: '← →', cmd: 'keys.orbit', group: 'camera', studioOnly: true},
+ {keys: '↑ ↓', cmd: 'keys.dolly', group: 'camera', studioOnly: true},
+ {keys: 'Q E', cmd: 'keys.tilt', group: 'camera', studioOnly: true},
+ {keys: 'O P', cmd: 'keys.modes', group: 'camera', studioOnly: true},
+ {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'camera', studioOnly: true},
+ {keys: 'H', cmd: 'keys.home', group: 'camera', studioOnly: true},
+ // NOT studio-only: `set-view` and `reset-view` are controller dispatches with on-screen buttons at
+ // every tier, and they worked on every tier before S1 existed.
  {keys: '1 2 3 4', cmd: 'keys.views', group: 'camera'},
- {keys: 'F / Shift F', cmd: 'keys.focusFit', group: 'camera'},
- {keys: 'H / R', cmd: 'keys.homeReset', group: 'camera'},
+ {keys: 'R', cmd: 'keys.reset', group: 'camera'},
  // `+ −` and `I / Shift ⌫` were inert copy for commands v2 does not have: zoom IS the dolly
  // (↑ ↓) rather than a second pair of keys, and there is no per-structure hide until the tree's
  // eyes arrive in S3. A key map that lists a key nobody bound is the thing this file exists to

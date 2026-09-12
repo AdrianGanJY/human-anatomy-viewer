@@ -752,15 +752,25 @@ export function StudioOverlays(p: {
    {/* GUARD 7, IN THE MAP. Below 1180 the camera commands and the held keys are withheld — there
        is no pill and no key pad there — and a map that went on listing them as live would be the
        leaflet this file exists to prevent. The `?` overlay itself stays reachable at every width,
-       so the note travels with it (round 3, Medium). */}
-   {k === 'camera' && !p.studio && <p className="v2-note-sm" style={{margin: '0 0 8px'}}>{tr('keys.cameraOff')}</p>}
+       so the note travels with it (round 3, Medium).
+       ⚠️ ONE NOTE PER GROUP WAS TOO COARSE: it covered `1 2 3 4` and `R`, which work at every tier
+       and have on-screen buttons there — round 2's High inverted (round 4, Medium 1). The mark is
+       now per ROW, from `studioOnly`, which is exactly the set guard 7 withholds. */}
+   {k === 'camera' && !p.studio && rows.some((r) => r.studioOnly) &&
+    <p className="v2-note-sm" style={{margin: '0 0 8px'}}>{tr('keys.cameraOff')}</p>}
    <dl className="v2-keys">
     {rows.map((r) => <div key={r.keys + r.cmd} style={{display: 'contents'}}>
      <dt><span className="v2-kbd">{r.keys}</span></dt>
      {/* A ROW THAT NAMES ITS GROUP IS NOT A PROMISE THAT THE KEY WORKS. Every binding a later
          group brings is labelled with that group, so the map never lists a key that does nothing
          without saying so. */}
-     <dd>{tr(r.cmd)}{r.owner && <s> · {tr('inert.pending', {s: r.owner})}</s>}</dd>
+     <dd>
+      {tr(r.cmd)}
+      {r.owner && <s> · {tr('inert.pending', {s: r.owner})}</s>}
+      {/* PER ROW, so a reader at 390×844 can see that `1 2 3 4` works and `W A S D` does not,
+          rather than being told the whole section is unavailable. */}
+      {!r.owner && r.studioOnly && !p.studio && <s data-studio-only="1"> · {tr('keys.desktopOnly')}</s>}
+     </dd>
     </div>)}
    </dl>
   </div>)}

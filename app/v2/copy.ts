@@ -217,6 +217,7 @@ export const V2: Record<string, Row> = {
  // no key pad; a key map that listed them as live at 390x844 would be the leaflet this file exists
  // to prevent (round 3, Medium).
  'keys.cameraOff': {en: 'Desktop only — these need the studio layout (1180px and wider)', 'zh-Hans': '仅限桌面 — 需要 1180 像素以上的工作台布局', 'zh-Hant': '僅限桌面 — 需要 1180 像素以上的工作台佈局'},
+ 'keys.desktopOnly': {en: 'desktop only', 'zh-Hans': '仅限桌面', 'zh-Hant': '僅限桌面'},
  'keys.esc':       {en: 'Close the top overlay, or leave presentation mode', 'zh-Hans': '关闭最上层弹层，或退出展示模式', 'zh-Hant': '關閉最上層彈層，或退出展示模式'},
  'keys.help':      {en: 'This key map', 'zh-Hans': '这张快捷键表', 'zh-Hant': '這張快捷鍵表'},
  'keys.find':      {en: 'Find a structure', 'zh-Hans': '查找结构', 'zh-Hant': '查找結構'},
@@ -232,7 +233,12 @@ export const V2: Record<string, Row> = {
  'keys.modes':     {en: 'Orbit mode / Pan mode', 'zh-Hans': '旋转模式／平移模式', 'zh-Hant': '旋轉模式／平移模式'},
  'keys.views':     {en: 'Three-quarter / Front / Side / Back', 'zh-Hans': '四分之三／前视／侧视／后视', 'zh-Hant': '四分之三／前視／側視／後視'},
  'keys.focusFit':  {en: 'Focus the current structure / fit the whole selection', 'zh-Hans': '聚焦当前结构／适配全部所选', 'zh-Hant': '聚焦目前結構／適配全部所選'},
- 'keys.homeReset': {en: 'Whole body / reset the view', 'zh-Hans': '全身视图／重置视角', 'zh-Hant': '全身視圖／重置視角'},
+ // SPLIT. `H` is studio-only (it runs G3's whole-body formula through `__atlasNav`); `R` is a
+ // controller dispatch that works at every tier and has an on-screen button on the phone. One row
+ // for both meant the map could only mark them together, and marking them together is how the
+ // "Desktop only" note came to cover a key that works (round 4, Medium 1).
+ 'keys.home':      {en: 'Frame the whole body', 'zh-Hans': '全身视图', 'zh-Hant': '全身視圖'},
+ 'keys.reset':     {en: 'Reset the view', 'zh-Hans': '重置视角', 'zh-Hant': '重置視角'},
  'keys.hideClear': {en: 'Hide others / clear the selection', 'zh-Hans': '隐藏其他／清空所选', 'zh-Hant': '隱藏其他／清空所選'},
  'keys.treeMove':  {en: 'Move between rows; expand and collapse', 'zh-Hans': '在行间移动；展开与折叠', 'zh-Hant': '在列間移動；展開與摺疊'},
  'keys.treeTick':  {en: 'Add or remove this structure', 'zh-Hans': '加入或移除此结构', 'zh-Hant': '加入或移除此結構'},

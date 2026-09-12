@@ -300,7 +300,7 @@ test('every held code carries exactly one axis, and the map is the mock keyboard
 
 test('the key map lists every S1 binding and no key nobody bound', () => {
   const keys = KEY_MAP.map((r) => r.keys);
-  for (const k of ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H / R', 'Shift P / Shift S']) {
+  for (const k of ['W A S D', '← →', '↑ ↓', 'Q E', 'O P', '1 2 3 4', 'F / Shift F', 'H', 'R', 'Shift P / Shift S']) {
     assert.ok(keys.includes(k), `${k} is in the map`);
     // NO OWNER means "this works today". `group` is what KIND of command it is and must stay
     // semantic — conflating the two emptied the Camera section (stand-in review S1 M1).
@@ -313,6 +313,14 @@ test('the key map lists every S1 binding and no key nobody bound', () => {
   // `+ −` was inert copy for a zoom command v2 does not have — zoom IS the dolly, on ↑ ↓. A map
   // that lists a key nobody will ever bind is the defect `keys.ts` exists to prevent.
   assert.ok(!keys.includes('+ −'), 'the unbindable zoom row is gone');
+  // `studioOnly` must be EXACTLY the rows guard 7 withholds: the ten held codes collapse to five
+  // rows (W A S D / arrows / Q E), plus the mode pair, Fit and Home. `1 2 3 4` and `R` are
+  // controller dispatches that work at every tier and must NOT be marked (round 4, Medium 1).
+  const studioOnly = KEY_MAP.filter((r) => r.studioOnly).map((r) => r.keys).sort();
+  assert.deepEqual(studioOnly, ['F / Shift F', 'H', 'O P', 'Q E', 'W A S D', '← →', '↑ ↓'].sort());
+  for (const k of ['1 2 3 4', 'R', 'Esc', '?', 'Shift P / Shift S']) {
+    assert.equal(KEY_MAP.find((r) => r.keys === k).studioOnly, undefined, `${k} works at every tier`);
+  }
   // Every row in the "now" group is live by definition, so none of them may name an owner.
   for (const r of KEY_MAP) {
     if (r.group === 'now') assert.equal(r.owner, undefined, `${r.keys}: a "now" row cannot be forthcoming`);
