@@ -667,7 +667,21 @@ export default function V2() {
   // A scene that DECLARES a focus keeps it; one that does not gets the selection.
   if (plate && plate.focus.length) return null;
   const ids = basket.flatMap((p) => p.elements);
-  return ids.length ? {focus: ids, frame: ids} : null;
+  if (!ids.length) return null;
+  /**
+   * ⚠️ IT SUPPLIES `frame` ONLY WHEN THERE IS NO PLATE. The first version returned both and was
+   * spread over the plate, which **clobbered `plate.frame`** — and the comment at the call site
+   * swore it could not. `plate.frame` comes from `sceneFrameIds()`, which excludes GHOSTS by
+   * measured design (L31 D04: a ghost is context to look through, not something the frustum must
+   * contain); `basket` is `sceneSelectIds()`, which includes them. So on a focus-less scene the
+   * ghost was pulled into the containment set — and because this also sets `focus`, `focusActive`
+   * flipped true and the clobbered set was actually consumed. Round 3, High 2, executed against
+   * the real codec.
+   *
+   * When there is no plate at all (a bare `?select=` visit) there is no declared frame to protect
+   * and no roles to respect, so the selection is both.
+   */
+  return plate ? {focus: ids} : {focus: ids, frame: ids};
  }, [shell.studio, plate, basket]);
 
  return <main
@@ -700,6 +714,7 @@ export default function V2() {
    t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}
    keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
+   studio={shell.studio}
   />
   {/* THE HEADER IS PAINTED FROM THE URL, IN THE FIRST FRAME. It never resizes afterwards:
       its height is fixed in CSS, so the title arriving, the name arriving and the model

@@ -100,6 +100,19 @@ const SCENE = normalizeScene(SCENE_INPUT);
 const BLOB = encodeScene(SCENE);
 const PRIMARY_IDS = SCENE.structures.filter((s) => s.role === 'primary').map((s) => s.id);
 const FRAME_IDS = sceneFrameIds(SCENE);
+/**
+ * ── THE FOCUS-LESS SCENE ───────────────────────────────────────────────────────────────────────
+ *
+ * `scene-codec.js` defaults `camera.focus` to `[]` and only serialises it when non-empty, so a blob
+ * naming five structures with no declared focus is legal and round-trips. Until round 3 **no
+ * fixture in this suite was one** — the §9 scene declares a focus — so `studioFrame`'s whole path
+ * was invisible to all 360 green rows, and the round-2 High that lived there (the ghost pulled into
+ * the containment set) had zero coverage. A fixture that cannot reach a branch is not coverage of
+ * that branch.
+ */
+const SCENE_NOFOCUS = normalizeScene({...SCENE_INPUT, camera: {...SCENE_INPUT.camera, focus: []}});
+const BLOB_NOFOCUS = encodeScene(SCENE_NOFOCUS);
+const GHOST_ID = 'FMA16203';
 const FOCUS_ID = sceneFocusId(SCENE);
 /** The names the atlas will show. `sceneFocusId` picks the focused primary. */
 const EXPECTED_EN = 'left semitendinosus';
@@ -1662,6 +1675,39 @@ if (variant === 'v2') {
       check(vp.name, `[${S1_V}] the same A key UNMODIFIED still pans (the control arm)`,
         !!bareKey && bareKey.k !== modAfter.k, `${modAfter?.k} -> ${bareKey?.k}`, 'a different pose');
 
+      /**
+       * ⚠️ AND THE SAME THING WHILE A CAMERA KEY IS HELD — the case the rows above are STRUCTURALLY
+       * BLIND TO, because they fire their synthetic modified events with the held set EMPTY.
+       *
+       * Round 2's Medium 2 added an early "a held code is consumed on every repeat" branch, and for
+       * one commit it ran before the modifier was re-checked — so `Ctrl+S` pressed while `S` was
+       * down was swallowed again: round 1's H1, reopened by the fix for a different finding, and
+       * invisible to round 1's own oracle. A guard added in a corrective round needs a case that
+       * reaches IT, not the previous round's case.
+       */
+      await page.keyboard.down('KeyS');
+      await page.waitForTimeout(200);
+      const heldMod = await page.evaluate(() => {
+        const out = [];
+        for (const [label, init] of [
+          ['Ctrl+S (while S held)', {code: 'KeyS', key: 's', ctrlKey: true}],
+          ['Ctrl+A (while S held)', {code: 'KeyA', key: 'a', ctrlKey: true}],
+          ['Alt+ArrowLeft (while S held)', {code: 'ArrowLeft', key: 'ArrowLeft', altKey: true}],
+        ]) {
+          const ev = new KeyboardEvent('keydown', {...init, bubbles: true, cancelable: true});
+          window.dispatchEvent(ev);
+          out.push({label, prevented: ev.defaultPrevented});
+        }
+        return out;
+      });
+      await page.keyboard.up('KeyS');
+      await page.waitForTimeout(300);
+      const heldSwallowed = heldMod.filter((m) => m.prevented).map((m) => m.label);
+      check(vp.name, `[${S1_V}] a modified key is NOT consumed even while a camera key is HELD`,
+        heldSwallowed.length === 0,
+        heldSwallowed.length ? `swallowed: ${heldSwallowed.join(', ')}` : `${heldMod.length} combinations, none prevented`,
+        'none prevented');
+
       // ── H2: the snapshot does not leave the capture overlay painted over the field ──────────
       // The defect: `__atlasCapture` appends a `.atlas-shot` 2D canvas over the WebGL canvas and
       // only `__atlasCaptureRelease` removes it. Its one caller was v1. In /v2/ a single Shift+P
@@ -1707,16 +1753,35 @@ if (variant === 'v2') {
       // ── M7: a modifier pressed while a camera key is HELD must not fire its discrete twin ────
       // Holding `S` to pan and then pressing Shift used to enter presentation mode mid-pan. No
       // oracle covered it in round 1 (round 2, Low e).
+      /**
+       * ⚠️ THE SHIFTED REPEAT IS SYNTHESISED, because Playwright cannot produce it. Round 3 proved
+       * the first version of this row could not go red: `keyboard.down('Shift')` sends `ShiftLeft`
+       * and nothing else, so no `KeyS`-with-shift keydown ever reached the dispatcher and the row
+       * was green with the guard deleted. A real keyboard sends exactly that event — the auto-repeat
+       * of a held key, now carrying `shiftKey` — so the oracle sends it too.
+       */
       await page.keyboard.down('KeyS');
       await page.waitForTimeout(250);
-      await page.keyboard.down('Shift');
-      await page.waitForTimeout(400);
-      const stagedMidPan = await page.evaluate(() => document.body.classList.contains('v2-stage'));
-      await page.keyboard.up('Shift');
+      const midPan = await page.evaluate(() => {
+        const ev = new KeyboardEvent('keydown', {code: 'KeyS', key: 'S', shiftKey: true, repeat: true, bubbles: true, cancelable: true});
+        window.dispatchEvent(ev);
+        return {staged: document.body.classList.contains('v2-stage'), prevented: ev.defaultPrevented};
+      });
       await page.keyboard.up('KeyS');
-      await page.waitForTimeout(300);
-      check(vp.name, `[${S1_V}] Shift pressed while S is HELD does not enter the stage`,
-        stagedMidPan === false, `body.v2-stage=${stagedMidPan} with KeyS held`, 'false');
+      await page.waitForTimeout(400);
+      const stagedAfter = await page.evaluate(() => document.body.classList.contains('v2-stage'));
+      check(vp.name, `[${S1_V}] Shift arriving while S is HELD does not enter the stage`,
+        midPan.staged === false && stagedAfter === false,
+        `v2-stage mid-hold=${midPan.staged}, after release=${stagedAfter} (prevented=${midPan.prevented})`, 'false');
+      // THE CONTROL ARM: the same Shift+S with NOTHING held does enter the stage, so the row above
+      // is not passing because `stage` is unreachable in general.
+      await page.keyboard.down('Shift'); await page.keyboard.press('KeyS'); await page.keyboard.up('Shift');
+      await page.waitForTimeout(700);
+      const stagedFree = await page.evaluate(() => document.body.classList.contains('v2-stage'));
+      check(vp.name, `[${S1_V}] and Shift+S with nothing held DOES enter it (the control arm)`,
+        stagedFree === true, `v2-stage=${stagedFree}`, 'true');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
 
       // ── M6: Escape leaves the stage ────────────────────────────────────────────────────────
       // ⚠️ THE HELD SET IS CLEARED FIRST, and the clear is ASSERTED. In round 2 this row failed in
@@ -1741,6 +1806,65 @@ if (variant === 'v2') {
         'entered, then left');
     } catch (e) {
       check(vp.name, `[${S1_V}] the round-1 corrective pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ── A SCENE THAT DECLARES NO `camera.focus` ──────────────────────────────────────────────────
+   *
+   * The branch three review rounds kept finding defects in, and which no fixture reached. Two
+   * claims, and the second is the one round 3's High was about.
+   */
+  {
+    const vp = {name: 's1-nofocus', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB_NOFOCUS}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForSelector('html[data-atlas-ready="1"]', {timeout: 300000}).catch(() => {});
+      await page.waitForTimeout(1600);
+      await page.bringToFront();
+      const r = await page.evaluate(() => {
+        const t = window.__atlasTargets([]);
+        return {fitKey: t.fit?.key ?? '', focus: t.fit?.focus ?? 0, frame: t.fit?.frame ?? 0};
+      });
+      // 1. THE SCENE REALLY DECLARES NO FOCUS — the premise. Without it the two rows below would be
+      //    measuring the ordinary focus-bearing path under a different name.
+      const declared = await page.evaluate(() => {
+        const b = new URLSearchParams(location.search).get('scene');
+        if (!b) return null;
+        try { return JSON.parse(atob(b.replace(/-/g, '+').replace(/_/g, '/'))); } catch { return null; }
+      });
+      check(vp.name, `[${S1_V}] the fixture really declares no camera.focus (the premise)`,
+        !!declared && !(declared.camera?.focus ?? []).length,
+        `camera.focus=${JSON.stringify(declared?.camera?.focus ?? null)}`, 'absent or empty');
+      // 2. THE STUDIO STILL ARMS THE FOCUS FIT. Without `studioFrame` covering this case, F fell
+      //    through to Home and the scene opened on the whole body.
+      check(vp.name, `[${S1_V}] a focus-less scene still arms the focus fit in the studio`,
+        !!r.fitKey && r.focus > 0, `fit.key=${r.fitKey ? 'set' : 'empty'} focus=${r.focus} frame=${r.frame}`,
+        'a non-empty key and focus > 0');
+      // 3. AND THE GHOST IS NOT PULLED INTO THE CONTAINMENT SET. `sceneFrameIds` excludes ghosts by
+      //    measured design (L31 D04); `studioFrame` is built from the selection, which includes
+      //    them, and spreading it over the plate clobbered `plate.frame`. Round 3, High 2.
+      /**
+       * The renderer does not expose the frame set BY NAME, so this compares its SIZE against every
+       * part the scene draws. The ghost (`FMA16203`, the lumbar column) is 10 of those parts, so a
+       * clobbered frame set equals the drawn total and a correct one is strictly smaller. Derived
+       * from the page rather than hardcoded, so re-curating the atlas cannot make it lie.
+       */
+      const framed = await page.evaluate((id) => {
+        const t = window.__atlasTargets([id]);
+        return {frame: t.fit?.frame ?? 0, drawn: (t.parts || []).length, ghostDrawn: !!(t.groups || {})[id]};
+      }, GHOST_ID);
+      check(vp.name, `[${S1_V}] the ghost IS drawn (so excluding it from the frame set is meaningful)`,
+        framed.ghostDrawn === true, `ghost drawn=${framed.ghostDrawn}, ${framed.drawn} parts on screen`, 'drawn');
+      check(vp.name, `[${S1_V}] the ghost is NOT pulled into the frame set of a focus-less scene`,
+        framed.frame > 0 && framed.frame < framed.drawn,
+        `${framed.frame} frame members of ${framed.drawn} drawn parts`,
+        'strictly fewer than every drawn part');
+    } catch (e) {
+      check(vp.name, `[${S1_V}] the focus-less scene pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 

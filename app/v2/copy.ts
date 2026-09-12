@@ -213,6 +213,10 @@ export const V2: Record<string, Row> = {
  'keys.camera':    {en: 'Camera — field focused', 'zh-Hans': '视角 — 模型区域聚焦时', 'zh-Hant': '視角 — 模型區域聚焦時'},
  'keys.global':    {en: 'Global', 'zh-Hans': '全局', 'zh-Hant': '全域'},
  'keys.tree':      {en: 'Layers tree', 'zh-Hans': '图层树', 'zh-Hant': '圖層樹'},
+ // GUARD 7 SAYS SO IN THE MAP. The camera keys are withheld below 1180, where there is no pill and
+ // no key pad; a key map that listed them as live at 390x844 would be the leaflet this file exists
+ // to prevent (round 3, Medium).
+ 'keys.cameraOff': {en: 'Desktop only — these need the studio layout (1180px and wider)', 'zh-Hans': '仅限桌面 — 需要 1180 像素以上的工作台布局', 'zh-Hant': '僅限桌面 — 需要 1180 像素以上的工作台佈局'},
  'keys.esc':       {en: 'Close the top overlay, or leave presentation mode', 'zh-Hans': '关闭最上层弹层，或退出展示模式', 'zh-Hant': '關閉最上層彈層，或退出展示模式'},
  'keys.help':      {en: 'This key map', 'zh-Hans': '这张快捷键表', 'zh-Hant': '這張快捷鍵表'},
  'keys.find':      {en: 'Find a structure', 'zh-Hans': '查找结构', 'zh-Hant': '查找結構'},

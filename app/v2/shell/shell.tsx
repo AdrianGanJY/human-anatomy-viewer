@@ -153,6 +153,19 @@ export function StudioField(p: {
 }) {
  const {tr} = p;
  /**
+  * ⚠️ AND EVEN IF THE PAD ITSELF GOES AWAY UNDER THE FINGER.
+  *
+  * `StudioField` unmounts when the studio tier is lost AND when `?stage=1` is entered
+  * (`page.tsx`: `shell.studio && !stage`). Either way a finger holding a pad key never delivers its
+  * `pointerup` to a node that still exists, and none of the dispatcher's window-level clearing
+  * paths fire — so the code sits in `held` for ever: the camera pans indefinitely and the discrete
+  * twin of that code becomes unreachable. `use-shell` clears on a tier change, which covers the
+  * resize; this covers EVERY reason this component can disappear, which is the honest scope
+  * (round 3, Medium: the `[studio]` dependency missed `stage`).
+  */
+ const release = p.release;
+ useEffect(() => () => { for (const k of PAD) if (k) release(k.code); }, [release]);
+ /**
   * ⚠️ A PAD KEY MUST BE RELEASED EVEN IF THE FINGER LEAVES IT. `pointerup` fires on the element
   * the pointer is OVER, so dragging off a key delivers the up somewhere else and the camera pans
   * for ever — the touch twin of the held-key defect guard 6 exists for. `setPointerCapture` binds
@@ -624,6 +637,9 @@ export function StudioOverlays(p: {
  background: 'light' | 'dark'; sheet: boolean;
  keysOpen: boolean; onKeys(v: boolean): void;
  settingsOpen: boolean; onSettings(v: boolean): void;
+ /** Guard 7's tier. The key map is reachable at every width (`?` is not a studio command), so it
+  *  has to say that the CAMERA rows are not — see the note beside `keys.cameraOff`. */
+ studio: boolean;
 }) {
  const {tr, lang} = p;
  const [tab, setTab] = useState<'general' | 'language' | 'about'>('general');
@@ -733,6 +749,11 @@ export function StudioOverlays(p: {
   <p className="v2-note-sm" style={{marginTop: 12}}>{tr('keys.scope')}</p>
   {groups.map(({k, rows}) => <div key={k}>
    <h3 style={{margin: '18px 0 8px', fontSize: 'var(--v2-type-sm)'}}>{tr(`keys.${k}`)}</h3>
+   {/* GUARD 7, IN THE MAP. Below 1180 the camera commands and the held keys are withheld — there
+       is no pill and no key pad there — and a map that went on listing them as live would be the
+       leaflet this file exists to prevent. The `?` overlay itself stays reachable at every width,
+       so the note travels with it (round 3, Medium). */}
+   {k === 'camera' && !p.studio && <p className="v2-note-sm" style={{margin: '0 0 8px'}}>{tr('keys.cameraOff')}</p>}
    <dl className="v2-keys">
     {rows.map((r) => <div key={r.keys + r.cmd} style={{display: 'contents'}}>
      <dt><span className="v2-kbd">{r.keys}</span></dt>

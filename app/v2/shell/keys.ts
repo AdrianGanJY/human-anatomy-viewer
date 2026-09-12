@@ -260,7 +260,19 @@ export function installDispatcher(opts: DispatcherOptions): Dispatcher {
    * first was consumed and every repeat fell through untouched, so the page scrolled underneath a
    * dolly — which is the exact case the comment below says the preventDefault exists for.
    */
-  if (held.has(ev.code)) {
+  /**
+   * ⚠️ `!modified(ev)` HERE TOO, AND ITS ABSENCE REOPENED ROUND 1's H1 FOR ONE COMMIT.
+   *
+   * This branch exists for auto-repeat (round 2, Medium 2) and for the modifier-mid-hold case
+   * (round 1, M7). An auto-repeat is unmodified and `Shift` is not one of the three modifiers this
+   * file guards, so both keep working — but WITHOUT the clause, `Ctrl+S` pressed while `S` was held
+   * was swallowed again, exactly the defect round 1's H1 was about. Round 3, High 1, executed.
+   *
+   * The H1 oracle could not see it: it fires its synthetic modified events with `held` EMPTY, so it
+   * never reaches this branch. A guard added in a corrective round needs its own reachable case,
+   * not the previous round's.
+   */
+  if (!modified(ev) && held.has(ev.code)) {
    if (!editor && !opts.modalOpen()) ev.preventDefault();
    return;
   }
