@@ -170,6 +170,11 @@ export const V2: Record<string, Row> = {
  // work. The note names the system, because that IS the control the reader needs.
  'tree.hiddenWithSystem': {en: 'Hidden with the {name} system', 'zh-Hans': '随{name}系统一并隐藏', 'zh-Hant': '隨{name}系統一併隱藏'},
  'tree.eyeSystemOff': {en: 'Its system is switched off — use the system row above to show it', 'zh-Hans': '所属系统已关闭 — 请用上方的系统行显示', 'zh-Hant': '所屬系統已關閉 — 請用上方的系統列顯示'},
+ // ⚠️ S3c — TWO MORE REASONS AN EYE CAN BE INERT, because "its system is switched off" was being
+ // said over an ENABLED system (codex round 7, Medium 3, third case). An inert control owes an
+ // ACCURATE adjacent reason, which means one string per lane, not one string for the whole class.
+ 'tree.hiddenByIsolate': {en: 'Isolation is drawing only the selection — tick this structure, or turn isolation off', 'zh-Hans': '独显模式只绘制所选内容 — 勾选此结构,或关闭独显', 'zh-Hant': '獨顯模式只繪製所選內容 — 勾選此結構,或關閉獨顯'},
+ 'tree.hiddenByScene': {en: 'This view draws it at zero — the eye cannot change that', 'zh-Hans': '本视图将其绘制为 0 — 此按钮无法改变', 'zh-Hant': '本視圖將其繪製為 0 — 此按鈕無法改變'},
  'tree.hide':      {en: 'hide', 'zh-Hans': '隐藏', 'zh-Hant': '隱藏'},
  'tree.show':      {en: 'show', 'zh-Hans': '显示', 'zh-Hant': '顯示'},
  // ⚠️ EVERY EYE STATES ITS OWN SERIALISATION. RC8 refuses an eye whose tooltip does not: the reader

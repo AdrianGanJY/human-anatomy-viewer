@@ -3393,6 +3393,49 @@ if (variant === 'v2') {
         note.present && note.count === 1 && note.clipped === false && note.rowNotes === 0 && /\d/.test(note.text),
         note.present ? `${note.count} note(s), clipped=${note.clipped}, ${note.rowNotes} per-row notes, text="${note.text.slice(0, 78)}"` : 'no .v2-side-note rendered',
         'exactly 1, not clipped, 0 per-row system notes, and it carries a measured count');
+
+      /**
+       * ⚠️ S3c — THE INERT EYE, IN A BROWSER (codex round 7, Medium 3). The unit rows prove the
+       * GATE against the real chain; this proves the WIRING — that `page.tsx`'s probe reaches
+       * `readEye` with the renderer's own material and that an inert eye carries its reason.
+       *
+       * The state is reached, not stubbed: under a skeletal ghost `render.visible` is `['skeletal']`,
+       * so every UNPICKED structure in any other system is blocked by the lane and its session eye
+       * can do nothing. The row asserts BOTH directions — the blocked system produces inert eyes
+       * with reasons, and the DRAWN system produces none — because "everything is inert" would
+       * satisfy a one-sided assertion just as well as the fix does.
+       */
+      const inert = await page.evaluate(async () => {
+        const expand = async (re) => {
+          const row = [...document.querySelectorAll('.v2-tree-row.is-system')]
+            .find((r) => re.test(r.querySelector('.v2-tree-name b')?.textContent || ''));
+          if (!row) return null;
+          (row.querySelector('.v2-tw[type=button]') ?? row.querySelector('.v2-tree-name'))?.click();
+          await new Promise((r) => setTimeout(r, 600));
+          const eyes = [...document.querySelectorAll('.v2-tree-row.is-concept .v2-eye')];
+          const out = eyes.map((e) => ({
+            inert: e.classList.contains('is-inert'),
+            disabled: e.getAttribute('aria-disabled') === 'true',
+            why: (e.getAttribute('title') || '').trim(),
+          }));
+          (row.querySelector('.v2-tw[type=button]') ?? row.querySelector('.v2-tree-name'))?.click();
+          await new Promise((r) => setTimeout(r, 400));
+          return out;
+        };
+        const blocked = await expand(/Muscles|肌肉/);
+        const drawnSys = await expand(/Skeleton|骨骼/);
+        const bad = (blocked || []).filter((e) => e.inert && (!e.disabled || !e.why));
+        return {
+          blocked: (blocked || []).length, blockedInert: (blocked || []).filter((e) => e.inert).length,
+          drawn: (drawnSys || []).length, drawnInert: (drawnSys || []).filter((e) => e.inert).length,
+          withoutReason: bad.length, sample: (blocked || []).find((e) => e.inert)?.why?.slice(0, 60) ?? '',
+        };
+      });
+      check(vp.name, `[${S3_V}] an eye the LANE blocks is inert AND says why; an eye in the drawn system is not`,
+        inert.blocked > 0 && inert.blockedInert === inert.blocked && inert.withoutReason === 0
+          && inert.drawn > 0 && inert.drawnInert === 0,
+        `blocked system: ${inert.blockedInert}/${inert.blocked} inert, ${inert.withoutReason} without a reason ("${inert.sample}") · drawn system: ${inert.drawnInert}/${inert.drawn} inert`,
+        'every eye in the off system inert with a reason, none in the on system');
     } catch (e) {
       check(vp.name, `[${S3_V}] the systems-ghost pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
@@ -3728,23 +3771,38 @@ if (variant === 'v2') {
       // RC8's first eye. The claim is the SERIALISATION, so it is read off the address bar the
       // reader would copy — not off the button's own aria-pressed.
       await treeHome();
+      /**
+       * ⚠️ S3c — THE SAME DEFECT codex ROUND 7 FOUND IN THE `systems-reload` ROW, FOUND HERE BY
+       * LATERAL CHECK. "Any `system=` key" does not establish that THIS click was serialised: if the
+       * address bar already carries one, a serializer that stopped writing passes. Worse, the wait
+       * loop below exited IMMEDIATELY on a pre-existing key, so the row could read a value written
+       * before the click and never see the debounced write at all.
+       *
+       * Both halves are now pinned to the PRE-CLICK value: the wait is "until the key CHANGES", and
+       * the assertion is "it changed". Proof that this can go red: `.artifacts/L31/v21bc/s3c/
+       * oracle-red-proof.mjs` M6, which evaluates the shipped predicate against a stale key.
+       */
       const sysEye = await page.evaluate(async () => {
+        const keyOf = () => location.search.match(/[?&]system=([^&]*)/)?.[1] ?? null;
         const row = [...document.querySelectorAll('.v2-tree-row.is-system')][0];
         if (!row) return {error: 'no system row'};
         const name = row.querySelector('.v2-tree-name b')?.textContent ?? '';
         const eye = row.querySelector('.v2-eye');
         const title = eye?.getAttribute('title') ?? '';
+        const before = keyOf();
         eye?.click();
-        // The URL write is debounced at 200 ms; wait on the URL, never on a longer sleep.
+        // The URL write is debounced at 200 ms; wait on the URL CHANGING, never on a longer sleep.
         const t0 = Date.now();
-        while (Date.now() - t0 < 4000 && !/[?&]system=/.test(location.search)) await new Promise((r) => setTimeout(r, 60));
-        return {name, title, search: location.search.match(/[?&]system=[^&]*/)?.[0] ?? '(no system= key)',
+        while (Date.now() - t0 < 4000 && keyOf() === before) await new Promise((r) => setTimeout(r, 60));
+        return {name, title, before, after: keyOf(),
+          search: location.search.match(/[?&]system=[^&]*/)?.[0] ?? '(no system= key)',
           pressed: eye?.getAttribute('aria-pressed'),
           visible: window.atlas.state().view};
       });
-      check(vp.name, `[${S3_V}] the SYSTEM eye writes the serialised \`system=\` key the link carries`,
-        !sysEye.error && /system=/.test(sysEye.search),
-        sysEye.error || `${sysEye.name}: ${sysEye.search} (aria-pressed=${sysEye.pressed})`, 'a system= key');
+      check(vp.name, `[${S3_V}] the SYSTEM eye writes the serialised \`system=\` key the link carries — a NEW value, not the one already there`,
+        !sysEye.error && sysEye.after !== null && sysEye.after !== sysEye.before,
+        sysEye.error || `${sysEye.name}: system= ${JSON.stringify(sysEye.before)} -> ${JSON.stringify(sysEye.after)} (aria-pressed=${sysEye.pressed})`,
+        'a system= key whose VALUE differs from the pre-click one');
       // RC8 REFUSES TO SHIP AN EYE WHOSE TOOLTIP DOES NOT NAME ITS SERIALISATION. This is that row.
       check(vp.name, `[${S3_V}] and its tooltip NAMES that serialisation (RC8: an eye that does not is refused)`,
         !sysEye.error && /system=/.test(sysEye.title),

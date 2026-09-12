@@ -42,7 +42,7 @@ import {searchEntries, systemEntries, type Dicts, type T} from '../../i18n/dict'
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
 import {atlasIndex, best, norm} from '../find.ts';
-import {alphaCause, eyeAction, eyeOn as eyeOnOf, resolvedStructureAlpha, type EyeKind} from '../visibility.ts';
+import {eyeAction, eyeOn as eyeOnOf, resolvedStructureAlpha, type EyeKind, type EyeReading} from '../visibility.ts';
 
 /** Fixed heights. `spec.md` A3: "48/60 px rows"; D4 draws a 52 px system row over a 54 px child
  *  row, and the child is the taller one because it carries a second (paired-name) line. Fixed
@@ -100,6 +100,13 @@ export interface TreeProps {
  /** What the RENDERER draws this concept at, 0..1, through the whole chain (`visibility.ts`). The
   *  single reading behind every eye and the Selection slider. */
  effectiveAlpha(conceptId: string): number;
+ /**
+  * ⚠️ WHAT A CONCEPT ROW'S EYE MAY DO AND WHY — `visibility.readEye`, bound in `page.tsx` because
+  * the counterfactual needs the pre-session alpha map and the basket, which live there. It replaces
+  * the cause taxonomy this component used to compute itself (codex round 7, Medium 3): the gate is
+  * now "would this write change the alpha?", measured, and the cause is only the wording.
+  */
+ eyeState(conceptId: string, kind: EyeKind, on: boolean): EyeReading;
  focusedId: string | null;
  onFocus(id: string): void;
  /** The filter box's query. Owned above so the box can live in the sidebar head. */
@@ -313,8 +320,18 @@ export default function Tree(p: TreeProps) {
   */
  const drawnThrough = useCallback((row: TreeRow): string | null => {
   if (row.kind !== 'concept' || !covered) return null;
-  const declaredOff = p.hidden.has(row.id)
-   || (eyeKind(row) === 'member' && (p.scene?.styles.find((s) => s.id === row.id)?.opacity ?? 1) === 0);
+  /**
+   * ⚠️ THE PREREQUISITE READS THE *RESOLVED* ALPHA TOO — codex round 7, Medium 4, and it is the
+   * same defect round 6 fixed one line below. The CONTRIBUTOR test was corrected to
+   * `resolvedStructureAlpha`; the test deciding whether to explain the row at all still read
+   * `styles[id].opacity ?? 1`, so a ghost with `roleOpacity.ghost = 0` and no style entry of its
+   * own resolved to `1`, `declaredOff` was false, and the row drawn through a sharer got no
+   * explanation. codex executed it: ghost *Body of sternum* + primary *Sternum* + `roleOpacity
+   * .ghost: 0` returned `{declared:0, effective:1, note:null}`. `resolvedStructureAlpha` returns
+   * `undefined` for a NON-member, which is why the `eyeKind === 'member'` guard is no longer
+   * needed — a non-member has no declaration to be zero.
+   */
+  const declaredOff = p.hidden.has(row.id) || resolvedStructureAlpha(p.scene, row.id) === 0;
   if (!declaredOff || p.effectiveAlpha(row.id) <= 0) return null;
   const mine = new Set(covered.byId.get(row.id)?.elements ?? []);
   for (const id of p.picks) {
@@ -580,16 +597,22 @@ export default function Tree(p: TreeProps) {
        * NEITHER the system switch — so on that cause it says so and declines, which is the S0 inert
        * convention rather than a control that silently fails.
        */
-      const cause = row.kind === 'concept' ? alphaCause({
-       alpha: p.effectiveAlpha(row.id),
-       inSession: p.hidden.has(row.id),
-       resolvedZero: resolvedStructureAlpha(p.scene, row.id) === 0,
-       // THE RENDERER'S OWN `shown` EXPRESSION, negated: a PICKED concept is drawn even when its
-       // system is off, so `picked` is the exemption that stops the lane being blamed for a role
-       // alpha (codex round 6, Medium 4).
-       laneBlocked: !(p.isolate ? picked.has(row.id) : p.visible.includes(row.system) || picked.has(row.id)),
-      }) : 'drawn';
-      const eyeInert = cause === 'system';
+      /**
+       * ⚠️ S3c — THE GATE IS `actionable`, A MEASUREMENT, NOT `cause`, A PREDICTION (codex round 7,
+       * Medium 3). The lane test here compared `picked`, which holds CONCEPT ids, against a
+       * renderer selection made of MESH ids; it therefore disabled a working Show on a structure a
+       * picked neighbour keeps selected, and left an active Show on a structure whose session set
+       * is empty. `readEye` applies the write to a copy of the renderer's own inputs and compares
+       * the alpha; `cause` survives to say WHY next to an eye that has already been proved inert.
+       */
+      const eye = row.kind === 'concept' ? p.eyeState(row.id, kind, on) : null;
+      const cause = eye?.cause ?? 'drawn';
+      const eyeInert = eye ? !eye.actionable : false;
+      // The one sentence an inert eye owes the reader — the S0 inert convention ("an adjacent
+      // reason"), keyed by cause so isolation is never described as a switched-off system.
+      const inertWhy = cause === 'isolate' ? tr('tree.hiddenByIsolate')
+       : cause === 'system' ? tr('tree.eyeSystemOff')
+       : tr('tree.hiddenByScene');
       // The system row's OTHER fact: the human's own set, which a scene's arrival does not touch.
       const intent = row.kind === 'system' ? p.visibleIntent.includes(row.system) : undefined;
       const openNow = row.kind === 'system' && (q ? !filtered.sysHit.has(row.system) || expanded.has(row.system) : expanded.has(row.system));
@@ -649,15 +672,17 @@ export default function Tree(p: TreeProps) {
             a truthful control looks like a broken one: the reader clicks hide and the eye stays on
             (a shared mesh), or the eye is on for a system they never asked for (a ghost scene). */}
         {via && <s id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</s>}
-        {cause === 'system' && <s>{tr('tree.hiddenWithSystem', {name: t.system(row.system, SYSTEMS.find((x) => x.id === row.system)?.name ?? row.system)})}</s>}
+        {eyeInert && <s>{cause === 'system'
+         ? tr('tree.hiddenWithSystem', {name: t.system(row.system, SYSTEMS.find((x) => x.id === row.system)?.name ?? row.system)})
+         : inertWhy}</s>}
        </button>
        {row.kind === 'system' && <em>{(row.count ?? 0).toLocaleString()}</em>}
        <button type="button" tabIndex={-1}
         className={`v2-eye is-${kind} ${on ? '' : 'is-off'} ${eyeInert ? 'is-inert' : ''}`}
         aria-pressed={!on}
         aria-disabled={eyeInert || undefined}
-        aria-label={`${label} — ${tr(eyeInert ? 'tree.eyeSystemOff' : on ? 'tree.hide' : 'tree.show')}`}
-        title={eyeInert ? tr('tree.eyeSystemOff') : eyeTitle(row)}
+        aria-label={eyeInert ? `${label} — ${inertWhy}` : `${label} — ${tr(on ? 'tree.hide' : 'tree.show')}`}
+        title={eyeInert ? inertWhy : eyeTitle(row)}
         onClick={() => { if (!eyeInert) toggleEye(row); }}>
         <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor"
          strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

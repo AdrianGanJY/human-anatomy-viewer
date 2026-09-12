@@ -79,31 +79,46 @@ export function conceptAlpha(alphaOf: (partId: string) => number, elements: read
 }
 
 /**
- * WHY A STRUCTURE IS NOT DRAWN — because the eye must not offer an action it cannot perform.
- * codex round 5, Medium 4: an ordinary row whose SYSTEM is switched off reads effective 0, so the
- * eye offered "show", and clicking it cleared an empty session set and changed nothing. A truthful
- * reading needs a truthful control, which means naming the cause.
+ * WHY A STRUCTURE IS NOT DRAWN — **WORDING ONLY, SINCE S3c.**
  *
- *   'session'  — a render-only override the eye owns. Actionable.
- *   'declared' — the scene declares alpha 0 for it. Actionable (the member eye / the slider).
- *   'system'   — its system is switched off. NOT actionable by this eye: it is a different control.
+ * ⚠️ THIS NO LONGER GATES ANY CONTROL, and that demotion IS codex round 7, Medium 3. Through S3b
+ * the tree computed a cause and then inferred "the eye is inert" from `cause === 'system'`. Two
+ * things were wrong with that, and only the second is about the taxonomy:
+ *
+ *   1. the lane test compared a CONCEPT id against `state.selected`, which holds MESH ids, so it
+ *      could never be true through the `|| sel` exemption — codex executed a selected *Sternum*
+ *      with a session-hidden *Body of sternum* and got `laneBlocked:true, eyeInert:true` over a
+ *      Show that would have moved the alpha 0 → 1;
+ *   2. a taxonomy is a PREDICTION of what a click would do, and the prediction can be wrong in the
+ *      other direction too — an unpicked structure under `rest.opacity:0` read `'declared'`, kept
+ *      an active eye, and its Show cleared an empty session set and changed nothing.
+ *
+ * So the control's gate is now `eyeActionable` — one recomputation of the chain, which cannot
+ * disagree with the renderer because it IS the renderer's expression. The cause survives to say
+ * WHY in words next to an inert eye, where being approximately right is a legibility question
+ * rather than a correctness one.
+ *
+ *   'session'  — a render-only override the eye owns.
+ *   'declared' — the scene resolves this structure to alpha 0.
+ *   'system'   — its system is switched off. A different control.
+ *   'isolate'  — isolation is drawing only the selection, and this is not in it. A different
+ *                control again, and saying "its system is switched off" there is a lie about an
+ *                ENABLED system (codex round 7, Medium 3, third case).
  *   'drawn'    — it is on screen. Nothing to explain.
  */
+export type AlphaCause = 'drawn' | 'session' | 'declared' | 'system' | 'isolate';
+
 export function alphaCause(args: {
  alpha: number;
  inSession: boolean;
  /** The scene's RESOLVED alpha for this structure — `sceneOpacities`, so `roleOpacity` is already
   *  applied. NOT `styles[id].opacity ?? 1`: a missing style is not a declared 1. */
  resolvedZero: boolean;
- /**
-  * Is the VISIBILITY LANE the blocker? `laneBlocked` must be computed the way the renderer computes
-  * `shown` — `isolate ? selected : visible.has(system) || selected` — because a PICKED concept is
-  * drawn even when its system is switched off (`|| sel`). Reading only "is the system in the
-  * visible set" made a selected ghost with `roleOpacity.ghost = 0` report `'system'`, which sent the
-  * reader to a control that was not the blocker and disabled the one that was (codex round 6).
-  */
+ /** From `laneBlocks` — the renderer's own `shown` expression over MESHES, never a concept id. */
  laneBlocked: boolean;
-}): 'drawn' | 'session' | 'declared' | 'system' {
+ /** Which lane control is the one to name. */
+ isolate: boolean;
+}): AlphaCause {
  if (args.alpha > 0) return 'drawn';
  /**
   * ⚠️ ORDER IS "WHAT WOULD REMOVING THIS CAUSE CHANGE?", NOT A PRIORITY LIST — codex round 6,
@@ -112,9 +127,36 @@ export function alphaCause(args: {
   * stayed active and clearing the override moved the alpha from 0 to 0 (codex executed exactly
   * that). Answering "which control would actually help?" puts the lane ahead of the rest.
   */
- if (args.laneBlocked) return 'system';
+ if (args.laneBlocked) return args.isolate ? 'isolate' : 'system';
  if (args.inSession) return 'session';
  return args.resolvedZero ? 'declared' : 'declared';
+}
+
+/**
+ * IS THE VISIBILITY LANE WHAT BLOCKS THIS CONCEPT — asked of the renderer's own `shown` expression,
+ * **over MESHES**.
+ *
+ * codex round 7, Medium 3: the tree asked `picked.has(row.id)`, where `picked` holds CONCEPT ids
+ * and the renderer's `selected` holds MESH ids. Those are two populations, and the renderer's
+ * `|| sel` exemption lives in the second — a concept nobody picked can still have every mesh
+ * selected, because a picked NEIGHBOUR names the same meshes. codex measured exactly that on
+ * *Body of sternum* under a selected *Sternum*: `actualSelectedMeshes:["FJ3153","FJ3178","FJ3290"]`.
+ *
+ * One drawn mesh is enough to clear the lane, for the same reason `conceptAlpha` takes the MAX.
+ * A concept with no meshes is not blocked by the lane — there is nothing of it to block.
+ */
+export function laneBlocks(
+ state: AlphaState, partSystem: ReadonlyMap<string, SystemId>, elements: readonly string[],
+): boolean {
+ if (!elements.length) return false;
+ const selected = new Set(state.selected);
+ const visible = new Set(state.visible);
+ for (const el of elements) {
+  const sel = selected.has(el);
+  const sys = partSystem.get(el);
+  if (state.isolate ? sel : (sys !== undefined && visible.has(sys)) || sel) return false;
+ }
+ return true;
 }
 
 /**
@@ -268,5 +310,93 @@ export function eyeAction(args: {
  }
  if (args.kind === 'member') return args.on ? {opacity: 0, session: 'none'} : {opacity: 1, session: 'clear'};
  return args.on ? {session: 'hide'} : {session: 'clear'};
+}
+
+// ── WOULD THE CLICK CHANGE THE PICTURE? ───────────────────────────────────────────────────────
+
+/**
+ * Everything the counterfactual needs, and nothing else. It is deliberately the SAME material
+ * `page.tsx` hands the renderer, so the recomputation below is the renderer's own arithmetic on a
+ * hypothetical input rather than a second model of it.
+ */
+export interface EyeProbe {
+ /** `renderState` — the exact object handed to `AnatomyScene`. Read for the lane and the rest. */
+ base: AlphaState & {opacity?: Record<string, number>};
+ /** The alpha map **before** the session set — `plate.opacity`. The session set is re-applied here
+  *  under the hypothetical, so it must not already be baked in. */
+ sceneOpacity: Record<string, number> | undefined;
+ partSystem: ReadonlyMap<string, SystemId>;
+ elementsOf(conceptId: string): readonly string[];
+ /** The session-only hidden set, BEFORE the click. */
+ hidden: ReadonlySet<string>;
+ /** Needed for a MEMBER write, which lands in `styles` and has to re-resolve through the codec. */
+ scene: Scene | null;
+ basket: readonly {id: string; elements: readonly string[]}[];
+}
+
+/** The alpha the renderer would compute for one concept under a hypothetical session set + scene. */
+function alphaUnder(
+ probe: EyeProbe, conceptId: string, sceneOpacity: Record<string, number> | undefined, hidden: ReadonlySet<string>,
+): number {
+ const opacity = withSessionHidden(sceneOpacity, hidden, probe.elementsOf);
+ return conceptAlpha(partAlphas({...probe.base, opacity}, probe.partSystem), probe.elementsOf(conceptId));
+}
+
+/**
+ * ⚠️ THE EYE'S GATE, AND IT IS A MEASUREMENT RATHER THAN A CLASSIFICATION — codex round 7, Medium 3.
+ *
+ * The question a control has to answer before it offers itself is not "why is this hidden?" but
+ * **"would my write change what is drawn?"**. Those are different questions, and S3b answered the
+ * first and used the answer for the second. Both directions of error were executed by codex:
+ *
+ *   · *Body of sternum*, session-hidden, under a selected *Sternum*, `visible:[]` — reported cause
+ *     `'system'` and **disabled a Show that works** (clearing the override reaches alpha 1 through
+ *     the shared mesh);
+ *   · an unpicked femur under `rest:{opacity:0}` with Skeleton enabled — reported `'declared'` and
+ *     **offered a Show that changes nothing** (its session set is empty; clearing it is a no-op).
+ *
+ * So this applies the write to a COPY of the inputs and asks the chain again. It is one extra
+ * `partAlphas` over one concept's meshes per drawn row — the same handful of map lookups the eye
+ * already costs. A SYSTEM row is exempt: `set-visible` moves the lane itself, so it always acts.
+ */
+export function eyeActionable(probe: EyeProbe, conceptId: string, kind: EyeKind, on: boolean): boolean {
+ if (kind === 'system') return true;
+ const act = eyeAction({kind, on, visible: probe.base.visible});
+ const before = alphaUnder(probe, conceptId, probe.sceneOpacity, probe.hidden);
+
+ const hidden = new Set(probe.hidden);
+ if (act.session === 'hide') hidden.add(conceptId);
+ if (act.session === 'clear') hidden.delete(conceptId);
+
+ let sceneOpacity = probe.sceneOpacity;
+ if (act.opacity !== undefined && probe.scene) {
+  // The member write, re-resolved through `sceneOpacities` — NOT written straight into the map,
+  // because the mode rule and `roleOpacity` both live in the codec and explore mode ignores styles
+  // entirely. Re-encoding is what makes this agree with what the click would actually produce.
+  const prev = probe.scene.styles.find((s) => s.id === conceptId);
+  const styles = [...probe.scene.styles.filter((s) => s.id !== conceptId), {...(prev ?? {id: conceptId}), opacity: act.opacity}];
+  sceneOpacity = sceneAlphaMap({...probe.scene, styles}, probe.basket);
+ }
+ return alphaUnder(probe, conceptId, sceneOpacity, hidden) !== before;
+}
+
+/** What a concept row's eye must SAY and whether it may ACT — one call, one chain, so the two
+ *  cannot drift apart the way they did in S3b. */
+export interface EyeReading { actionable: boolean; cause: AlphaCause }
+
+export function readEye(probe: EyeProbe, conceptId: string, kind: EyeKind, on: boolean): EyeReading {
+ const elements = probe.elementsOf(conceptId);
+ const opacity = withSessionHidden(probe.sceneOpacity, probe.hidden, probe.elementsOf);
+ const state = {...probe.base, opacity};
+ return {
+  actionable: eyeActionable(probe, conceptId, kind, on),
+  cause: alphaCause({
+   alpha: conceptAlpha(partAlphas(state, probe.partSystem), elements),
+   inSession: probe.hidden.has(conceptId),
+   resolvedZero: resolvedStructureAlpha(probe.scene, conceptId) === 0,
+   laneBlocked: laneBlocks(state, probe.partSystem, elements),
+   isolate: state.isolate,
+  }),
+ };
 }
 

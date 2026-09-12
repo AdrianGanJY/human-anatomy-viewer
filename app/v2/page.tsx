@@ -36,7 +36,7 @@ import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,re
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type V2State} from './controller';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
-import {conceptAlpha,partAlphas,sceneAlphaMap,withSessionHidden} from './visibility.ts';
+import {conceptAlpha,partAlphas,readEye,sceneAlphaMap,withSessionHidden,type EyeKind} from './visibility.ts';
 import {sceneDeclaresLang} from './scene-lang.ts';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
 import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
@@ -830,11 +830,19 @@ export default function V2() {
  }, [refused, shell.studio]);
 
  const elementsOf = useCallback((id: string): readonly string[] => conceptsById.get(id)?.elements ?? [id], [conceptsById]);
+ /**
+  * ⚠️ THE PRE-SESSION MAP IS ITS OWN MEMO SINCE S3c, because the eye's counterfactual needs it.
+  * `renderState` has the session set already baked in, and asking "what would clearing this
+  * override draw?" off a map that has already had it applied cannot be answered. Splitting the two
+  * is the whole change: `renderState` is byte-for-byte what it was.
+  */
+ const renderBase = useMemo(
+  () => ({...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET}),
+  [state, plate, studioFrame]);
  const renderState = useMemo(() => {
-  const base = {...state, ...(plate ?? {}), ...(studioFrame ?? {}), insets: FIELD_INSET};
-  const opacity = withSessionHidden(base.opacity, hidden, elementsOf);
-  return opacity === base.opacity ? base : {...base, opacity};
- }, [state, plate, studioFrame, hidden, elementsOf]);
+  const opacity = withSessionHidden(renderBase.opacity, hidden, elementsOf);
+  return opacity === renderBase.opacity ? renderBase : {...renderBase, opacity};
+ }, [renderBase, hidden, elementsOf]);
 
  /**
   * ⚠️ S3b — THE ONE READING EVERY VISIBILITY CONTROL USES, and it is taken off `renderState`, the
@@ -849,6 +857,20 @@ export default function V2() {
  const partSystem = useMemo(() => new Map((atlas?.parts ?? []).map((p) => [p.id, p.system])), [atlas]);
  const meshAlpha = useMemo(() => partAlphas(renderState, partSystem), [renderState, partSystem]);
  const effectiveAlpha = useCallback((id: string) => conceptAlpha(meshAlpha, elementsOf(id)), [meshAlpha, elementsOf]);
+
+ /**
+  * ⚠️ WHAT A CONCEPT ROW'S EYE MAY DO, MEASURED — codex round 7, Medium 3. The tree used to predict
+  * it from a cause taxonomy computed over CONCEPT ids against a renderer selection made of MESH
+  * ids, which disabled a working Show and offered a Show that did nothing. `readEye` applies the
+  * write to a copy of this exact material and asks the chain again, so the control's gate and the
+  * picture cannot disagree. The cause survives only as the wording next to an inert eye.
+  */
+ const eyeProbe = useMemo(() => ({
+  base: renderBase, sceneOpacity: renderBase.opacity, partSystem, elementsOf, hidden,
+  scene, basket,
+ }), [renderBase, partSystem, elementsOf, hidden, scene, basket]);
+ const eyeState = useCallback(
+  (id: string, kind: EyeKind, on: boolean) => readEye(eyeProbe, id, kind, on), [eyeProbe]);
 
  return <main
   className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
@@ -873,7 +895,7 @@ export default function V2() {
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
    findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
-   dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha}
+   dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
@@ -1124,7 +1146,7 @@ export default function V2() {
      <Tree
       t={t} tr={tr} atlas={atlas} dicts={dicts} picks={picks} scene={scene}
       visible={state.visible} visibleIntent={visibleIntent} isolate={state.isolate} dispatch={dispatch}
-      hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha}
+      hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
       focusedId={focused?.id ?? null} onFocus={focusPick}
       query={treeQuery} phone coarse={shell.coarse}
      />

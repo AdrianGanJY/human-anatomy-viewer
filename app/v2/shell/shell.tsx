@@ -38,7 +38,7 @@ import {useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type P
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
 import type {Dicts, T} from '../../i18n/dict';
 import {atlasIndex} from '../find.ts';
-import Tree from './tree.tsx';
+import Tree, {type TreeProps} from './tree.tsx';
 import {LANGS, LANG_LABELS, type Lang} from '../../i18n/ui';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
@@ -130,6 +130,8 @@ export interface ShellProps {
  onHide(id: string, on: boolean): void;
  /** What the RENDERER draws a concept at, through the whole chain. `app/v2/visibility.ts`. */
  effectiveAlpha(conceptId: string): number;
+ /** Passed straight through to the tree — see TreeProps.eyeState (codex round 7, Medium 3). */
+ eyeState: TreeProps['eyeState'];
  /** The sidebar's filter box. Lifted here so the head can render it and the tree can read it. */
  treeQuery: string; onTreeQuery(q: string): void;
  /** Sheet presentation below 768 — the phone path for the `?` map. */
@@ -458,7 +460,7 @@ export default function Shell(p: ShellProps) {
   {!p.sideStub && <Tree
    t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
    visible={p.state.visible} visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
-   hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha}
+   hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha} eyeState={p.eyeState}
    focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
    query={p.treeQuery} coarse={p.coarse}
   />}

@@ -20,9 +20,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readFileSync} from 'node:fs';
 import {decodeScene, encodeScene, normalizeScene} from '../app/scene-codec.js';
+import {sceneOpacities} from '../app/scene-model.ts';
 import {sceneDeclaresLang} from '../app/v2/scene-lang.ts';
 import {initialState, reduce} from '../app/v2/controller.ts';
-import {alphaCause, conceptAlpha, eyeAction, eyeOn, partAlphas, resolvedStructureAlpha, sceneAlphaMap, withSessionHidden} from '../app/v2/visibility.ts';
+import {alphaCause, conceptAlpha, eyeAction, eyeActionable, eyeOn, laneBlocks, partAlphas, readEye, resolvedStructureAlpha, sceneAlphaMap, withSessionHidden} from '../app/v2/visibility.ts';
 
 const FILE = ['dist/models/atlas.json', 'public/models/atlas.json'].find((f) => existsSync(f));
 const atlas = FILE ? JSON.parse(readFileSync(FILE, 'utf8')) : null;
@@ -366,16 +367,16 @@ test('round 5, Medium 4 — an off-system row names its cause instead of offerin
    * because it is the one cause this eye cannot touch.
    */
   // No scene, no picks, femur's system switched off: the lane blocks, and the eye cannot fix it.
-  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: false, laneBlocked: true}), 'system');
+  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: false, laneBlocked: true, isolate: false}), 'system');
   // codex round 6: BOTH causes at once. The lane wins, because clearing the override changes nothing.
-  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: true}), 'system',
+  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: true, isolate: false}), 'system',
     'a session override the lane would override anyway is not the blocker');
   // A session override with the lane open IS the eye's own business.
-  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: false}), 'session');
+  assert.equal(alphaCause({alpha: 0, inSession: true, resolvedZero: false, laneBlocked: false, isolate: false}), 'session');
   // codex round 6: a SELECTED ghost at roleOpacity 0 — the lane is open (it is selected), so the
   // blocker is the declared alpha and the member eye must stay ACTIVE.
-  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: true, laneBlocked: false}), 'declared');
-  assert.equal(alphaCause({alpha: 0.55, inSession: false, resolvedZero: false, laneBlocked: false}), 'drawn');
+  assert.equal(alphaCause({alpha: 0, inSession: false, resolvedZero: true, laneBlocked: false, isolate: false}), 'declared');
+  assert.equal(alphaCause({alpha: 0.55, inSession: false, resolvedZero: false, laneBlocked: false, isolate: false}), 'drawn');
   // And the resolved reading is what feeds it: a ghost with roleOpacity 0 resolves to 0, which
   // `styles.opacity ?? 1` reported as 1.
   const ghostScene = normalizeScene({mode: 'render', structures: [{id: 'FMA9611', role: 'ghost'}],
@@ -465,4 +466,126 @@ test('round 7 — a warm arrival carries the SET without carrying AUTHORITY, in 
   const quiet = reduce(st0, {type: 'set-visible', visible: ['muscular'], explicit: false}).state;
   assert.equal(quiet.intentExplicit ?? false, false);
   assert.deepEqual(quiet.render.visible, ['muscular'], 'while still doing the visible half');
+});
+
+
+// == S3c - codex ROUND 7's THREE OPEN FINDINGS, as executable rows ==============================
+// Same discipline as the round-4 block above: each row runs codex's OWN counterexample and also
+// asserts that the SUPERSEDED reading disagrees, so the fix cannot rot into a comment.
+
+/** `page.tsx`'s probe, assembled exactly as the component does: the PRE-session alpha map plus the
+ *  renderer's own state. Nothing here re-implements a step - that is the point of the probe. */
+function probeOf({scene, picks, hidden = new Set(), visible = ['skeletal', 'muscular'], isolate = false}) {
+  const basket = basketOf(picks);
+  const selected = [...new Set(basket.flatMap((b) => b.elements))];
+  const sceneOpacity = scene ? sceneAlphaMap(scene, basket) : undefined;
+  // ⚠️ restOpacity COMES OFF THE SCENE, as page.tsx's plate takes it (`restOpacity: rest`).
+  // Hardcoding 1 here would have silently drawn codex's `rest:{opacity:0}` case at full alpha and
+  // the row would have measured a picture the renderer never paints.
+  const rest = scene ? sceneOpacities(scene).rest : 1;
+  return {
+    base: {opacity: sceneOpacity, restOpacity: rest, visible, selected, isolate},
+    sceneOpacity, partSystem, elementsOf, hidden, scene, basket,
+  };
+}
+/** The alpha the page would draw, off a probe, under a hypothetical session set. */
+const alphaOn = (probe, id, hidden) => conceptAlpha(
+  partAlphas({...probe.base, opacity: withSessionHidden(probe.sceneOpacity, hidden, elementsOf)}, partSystem),
+  elementsOf(id));
+/** The SUPERSEDED lane test, transcribed verbatim from tree.tsx on the round-7 tree (`6364468`).
+ *  `picked` held CONCEPT ids; `state.selected` holds MESH ids. That is the whole defect. */
+const oldLaneBlocked = ({picked, isolate, visible, system, id}) =>
+  !(isolate ? picked.has(id) : visible.includes(system) || picked.has(id));
+
+test('round 7, M3 (a) - a session-hidden structure a SELECTED neighbour keeps in the lane must keep a working Show', () => {
+  // codex's case: selected Sternum (FMA7485), session-hidden Body of sternum (FMA7487), visible:[],
+  // isolation off. It measured {alpha:0, laneBlocked:true, cause:'system', eyeInert:true,
+  // actualSelectedMeshes:['FJ3153','FJ3178','FJ3290'], afterClearOwnSession:1}.
+  const hidden = new Set(['FMA7487']);
+  const probe = probeOf({scene: null, picks: ['FMA7485'], hidden, visible: [], isolate: false});
+
+  // THE PREMISE, measured rather than assumed: the neighbour really does select the shared mesh.
+  assert.ok(probe.base.selected.includes('FJ3178'), 'Sternum selects the mesh Body of sternum is');
+  assert.equal(alphaOn(probe, 'FMA7487', hidden), 0,
+    'so the eye reads OFF, correctly - the session override blanks it');
+
+  // THE DEFECT: the old lane test compared a CONCEPT id against `picked` and reported the lane.
+  assert.equal(oldLaneBlocked({picked: new Set(['FMA7485']), isolate: false, visible: [], system: 'skeletal', id: 'FMA7487'}), true,
+    'the superseded reading: laneBlocked=true, which made the eye inert');
+  // THE RENDERER'S OWN EXPRESSION, over meshes, disagrees - and it is the one that draws.
+  assert.equal(laneBlocks(probe.base, partSystem, elementsOf('FMA7487')), false,
+    'the lane is NOT the blocker: FJ3178 is selected, so `|| sel` exempts it');
+
+  // AND THE MEASUREMENT THAT REPLACES THE TAXONOMY: the Show would move the alpha 0 -> 1.
+  assert.equal(readEye(probe, 'FMA7487', 'session', false).actionable, true,
+    'so the eye must OFFER the Show it can actually perform');
+  assert.equal(alphaOn(probe, 'FMA7487', new Set()), 1,
+    'codex measured afterClearOwnSession:1 - the click is not a no-op');
+});
+
+test('round 7, M3 (b) - an unpicked structure the SCENE draws at zero must NOT offer a Show that does nothing', () => {
+  // codex's second case: render scene, primary FMA22359, rest {include:'skeletal', opacity:0},
+  // Skeleton enabled. It measured {alpha:0, laneBlocked:false, cause:'declared', eyeInert:false,
+  // afterClearOwnSession:0} - an active Show whose click changes nothing.
+  const scene = normalizeScene({mode: 'render', structures: [{id: 'FMA22359', role: 'primary'}],
+    rest: {include: 'skeletal', opacity: 0}});
+  const probe = probeOf({scene, picks: ['FMA22359'], hidden: new Set(), visible: ['skeletal'], isolate: false});
+
+  assert.equal(alphaOn(probe, 'FMA9611', new Set()), 0, 'the premise: it is not drawn');
+  assert.equal(laneBlocks(probe.base, partSystem, elementsOf('FMA9611')), false,
+    'and the lane is not why - Skeleton is on. codex measured laneBlocked:false');
+  assert.equal(readEye(probe, 'FMA9611', 'session', true).cause, 'declared',
+    'the WORDING is unchanged - the scene is what draws it at zero');
+  assert.equal(readEye(probe, 'FMA9611', 'session', false).actionable, false,
+    'but the eye is INERT, because clearing an empty session set cannot move the alpha');
+});
+
+test('round 7, M3 (c) - ISOLATION must not be reported as a switched-off system', () => {
+  const probe = probeOf({scene: null, picks: ['FMA7485'], visible: ['skeletal'], isolate: true});
+  // Skeleton is ENABLED. The blocker is isolation, and saying "its system is switched off" over an
+  // enabled system is a false statement about a control the reader can see is on.
+  assert.ok(probe.base.visible.includes('skeletal'), 'the premise: the system really is enabled');
+  assert.equal(readEye(probe, 'FMA9611', 'session', true).cause, 'isolate',
+    'the lane is isolation, and the note must say so');
+  assert.notEqual(readEye(probe, 'FMA9611', 'session', true).cause, 'system',
+    'the superseded wording, pinned as wrong');
+  assert.equal(readEye(probe, 'FMA9611', 'session', false).actionable, false,
+    'and the eye stays inert: the session set is not the control that would help');
+});
+
+test('round 7, M4 - a role-zero ghost drawn through a sharer gets its explanation', () => {
+  // codex: ghost Body of sternum + primary Sternum + roleOpacity.ghost 0, NO styles. It executed
+  // the extracted `drawnThrough` and measured {declared:0, effective:1, note:null}.
+  const scene = normalizeScene({mode: 'render',
+    structures: [{id: 'FMA7485', role: 'primary'}, {id: 'FMA7487', role: 'ghost'}],
+    roleOpacity: {ghost: 0}});
+  // THE DEFECT, measured: the prerequisite read the explicit style and there is none.
+  assert.equal(declaredAlpha(scene, 'FMA7487'), 1,
+    'the superseded prerequisite: `styles.opacity ?? 1` reads 1, so the row was never explained');
+  // THE FIX reads what the codec resolves, which is what the plate consumes.
+  assert.equal(resolvedStructureAlpha(scene, 'FMA7487'), 0, 'roleOpacity.ghost = 0 is the declaration');
+  // And the row IS drawn, through the sharer - so the discrepancy is real and needs the note.
+  const d = drawn({scene, picks: ['FMA7485', 'FMA7487'], visible: ['skeletal']});
+  assert.equal(d.concept('FMA7487'), 1, 'codex measured effective:1 - the primary keeps FJ3178 alive');
+});
+
+test('round 7, M3 - a SYSTEM eye is always actionable, because it moves the lane itself', () => {
+  const probe = probeOf({scene: null, picks: [], visible: [], isolate: false});
+  assert.equal(eyeActionable(probe, 'FMA9611', 'system', false), true);
+});
+
+test('round 7, M3 - a MEMBER eye re-resolves the write through the codec, not into the map', () => {
+  // A member row whose scene declares it at 0: the Show writes styles[id].opacity = 1, which has
+  // to go back through `sceneOpacities` (the mode rule and roleOpacity both live there).
+  const scene = normalizeScene({mode: 'render',
+    structures: [{id: 'FMA7485', role: 'primary'}, {id: 'FMA9611', role: 'context'}],
+    styles: [{id: 'FMA9611', opacity: 0}]});
+  const probe = probeOf({scene, picks: ['FMA7485', 'FMA9611'], visible: ['skeletal']});
+  assert.equal(alphaOn(probe, 'FMA9611', new Set()), 0, 'the premise: declared 0, drawn 0');
+  assert.equal(readEye(probe, 'FMA9611', 'member', false).actionable, true,
+    'the Show reaches a nonzero alpha, so the eye acts');
+  // ...and with the lane closed it does NOT, which is the same measurement answering both ways.
+  const blocked = probeOf({scene, picks: [], visible: [], isolate: false});
+  assert.equal(readEye(blocked, 'FMA9611', 'member', false).actionable, false,
+    'nothing the member eye writes can survive a closed lane');
 });

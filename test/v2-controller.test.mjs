@@ -562,20 +562,34 @@ test('system= in a legacy URL IS the human speaking, and survives a later ghost'
 // five-step sequence, with the UI handler reproduced as the page performs it.
 
 test('the human\u2019s system set survives a ghost scene THROUGH THE UI, not only in the reducer', () => {
+  /**
+   * ⚠️ S3c — NO PRELIMINARY CLICK, AND THAT IS THE WHOLE ROW (codex round 7, the Low).
+   *
+   * This test used to open with `reduce(..., {type:'set-visible', visible:['muscular','nervous']})`
+   * — a CLICK, which since round 5 marks the intent explicit, so the ghost no longer overrode
+   * `render.visible` and the two sources this row exists to tell apart held the SAME value. codex
+   * executed it: swapping `st.visibleIntent ?? st.render.visible` for `st.render.visible` left the
+   * row PASSING. It could not go red for the defect it names.
+   *
+   * The set is now SEEDED from the render seed, which is the state a page actually reaches when
+   * nobody has clicked. The ghost then does drive the render value, the two sources DIVERGE, and a
+   * control reading the wrong one is measurably wrong. The divergence is asserted FIRST, so a
+   * future change that removes it makes this row go red rather than go hollow again.
+   */
   const seeded = initialState({}, {...render, visible: ['muscular', 'nervous']});
-  const chosen = reduce(seeded.state, {type: 'set-visible', visible: ['muscular', 'nervous']}).state;
+  assert.equal(seeded.state.intentExplicit ?? false, false, 'the premise: nobody has clicked yet');
 
   const ghost = normalizeScene({...SCENE, rest: {include: 'skeletal', opacity: 0.08}});
-  const afterGhost = reduce(chosen, {type: 'apply-scene', scene: ghost}).state;
-  // ⚠️ RE-POINTED AT ROUND 5, same inversion as the row above: `chosen` came from a CLICK, which is
-  // now a statement, so the ghost does not override it. The claim this row exists for — one click
-  // must not write the ghost into the intent — is downstream and unchanged.
-  assert.deepEqual(afterGhost.render.visible, ['muscular', 'nervous'],
-    'a statement beats the ghost (S3b round 5); the ghost-wins case is its own row above');
+  const afterGhost = reduce(seeded.state, {type: 'apply-scene', scene: ghost}).state;
+  assert.deepEqual(afterGhost.render.visible, ['skeletal'],
+    'with no statement the ghost drives the render value — the divergence this row needs');
 
   // WHAT THE CHECKBOX SHOWS. `app/v2/page.tsx` reads `visibleIntent`, never `render.visible` — so
-  // the human sees the boxes they ticked, not the scene's ghost.
+  // the human sees the boxes they ticked, not the scene's ghost. Reading the wrong source now
+  // returns ['skeletal'] and this assertion fails, which is the protection that was missing.
   const shown = (st) => st.visibleIntent ?? st.render.visible;
+  assert.notDeepEqual(shown(afterGhost), afterGhost.render.visible,
+    'the two sources must actually differ, or this row is measuring nothing');
   assert.deepEqual(shown(afterGhost), ['muscular', 'nervous'],
     'the control shows the human their own choice, still ticked');
 
