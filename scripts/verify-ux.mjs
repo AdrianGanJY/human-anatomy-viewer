@@ -1620,6 +1620,7 @@ if (variant === 'v2') {
         if (bb) {
           await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
           await page.waitForTimeout(150);
+          const total = await page.evaluate(() => document.querySelectorAll('.v2-find-list .v2-result').length);
           const seq = [];
           for (let i = 0; i < 14; i++) {
             await page.keyboard.press('ArrowDown');
@@ -1627,15 +1628,31 @@ if (variant === 'v2') {
             seq.push(await page.evaluate(() => [...document.querySelectorAll('.v2-find-list .v2-result')]
               .findIndex((el) => el.classList.contains('is-at'))));
           }
-          // STRICTLY INCREASING BY ONE. A single backwards step is the defect.
-          const backwards = seq.filter((v, i) => i > 0 && v <= seq[i - 1]).length;
-          hoverWalk = {seq, backwards};
+          /**
+           * ⚠️ "STALLED AT THE LAST ROW" IS NOT A DEFECT, AND THE FIRST VERSION OF THIS COUNTED IT
+           * AS ONE. It scored every `v <= seq[i-1]` as backwards, so a walk that legitimately
+           * reached the END of the list and stayed there — `13,14,15,16,16,16,…` on the studio
+           * pass's 17-row 胸骨 query — was reported as 10 backwards steps at five viewports. An
+           * instrument that reds correct output is the same failure as one that greens a defect,
+           * and this one would have been read as HIGH-1 reopening.
+           *
+           * The claim is precise: each press advances by one UNTIL the last row, and then holds.
+           * So a violation is a step BACKWARDS, or a stall while there is still somewhere to go.
+           */
+          const last = total - 1;
+          const backwards = seq.filter((v, i) => {
+            if (i === 0) return false;
+            if (v < seq[i - 1]) return true;                    // moved backwards: the defect
+            return v === seq[i - 1] && v < last;                // stalled before the end: also wrong
+          }).length;
+          hoverWalk = {seq, backwards, total};
         }
       }
       check(vp.name, `[${STUDIO_V}] ArrowDown still advances with the POINTER RESTING on the list`,
         Array.isArray(hoverWalk.seq) && hoverWalk.seq.length > 0 && hoverWalk.backwards === 0,
-        hoverWalk.error ?? `positions: ${hoverWalk.seq.join(',')} (${hoverWalk.backwards} backwards steps)`,
-        'strictly increasing — no backwards step');
+        hoverWalk.error ?? `positions: ${hoverWalk.seq.join(',')} of ${hoverWalk.total} rows `
+          + `(${hoverWalk.backwards} backwards-or-stalled steps)`,
+        'advances one per press until the last row, then holds');
 
       /**
        * ⚠️ THE LIST IS THE SCROLLER, NOT THE BODY — asserted AFTER scrolling, which is the only
