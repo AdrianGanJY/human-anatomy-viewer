@@ -703,9 +703,37 @@ export function reduce(state: V2State, cmd: Command): Outcome {
     */
    const prior = state.scene.styles.find((s) => s.id === cmd.id);
    const styles = state.scene.styles.filter((s) => s.id !== cmd.id);
-   if (cmd.opacity !== null) {
-    styles.push({...(prior ?? {}), id: cmd.id, opacity: Math.min(1, Math.max(0, cmd.opacity))});
+   /**
+    * ── THE RESIDUE, AND WHY IT IS NOT "DELETE EVERY OPACITY 1" (S5a; S4 inherit 5, codex r12 L6) ──
+    *
+    * A member Hide→Show left `{opacity: 1}` where there had been NO entry at all: the eye's Show
+    * writes an explicit 1 (`visibility.ts eyeAction`, and codex r4's second High is why it must),
+    * and nothing ever took it back out. Measured on the §9 scene: the blob grew 168 → 223
+    * characters and STAYED grown, against a hard 1,400-character bound whose overflow is an atomic
+    * refusal. Ten hide/show pairs on ten structures is a scene that cannot be shared.
+    *
+    * ⚠️ THE OBVIOUS CLEANUP IS WRONG, and codex's caveat is the whole reason this is six lines
+    * instead of one. "Drop any style whose opacity is 1" changes the PICTURE for a context or ghost
+    * structure: an absent opacity does not mean 100%, it falls back to `roleOpacity[role]`
+    * (scene-codec.js:403) — 0.55 for context, 0.25 for a ghost, and whatever a teaching link
+    * declares, which codex once executed as `roleOpacity.ghost = 0`. Deleting an explicit 1 there
+    * would make a structure the reader had just SHOWN disappear.
+    *
+    * So the entry is dropped only when the written value equals THAT structure's own resolved
+    * default — the scene's `roleOpacity` for its role, read from this scene, not a constant. Then
+    * "written" and "absent" are the same picture by construction, and the smaller one is kept. The
+    * rule generalises past 1 on purpose: an explicit 0.55 on a context structure is equally
+    * redundant, and equally safe to drop.
+    */
+   const roleOf = state.scene.structures.find((s) => s.id === cmd.id)?.role;
+   const roleDefault = roleOf ? state.scene.roleOpacity[roleOf] : undefined;
+   const wanted = cmd.opacity === null ? null : Math.min(1, Math.max(0, cmd.opacity));
+   const redundant = wanted !== null && roleDefault !== undefined && wanted === roleDefault;
+   if (wanted !== null && !redundant) {
+    styles.push({...(prior ?? {}), id: cmd.id, opacity: wanted});
    } else if (prior) {
+    // Both the `null` ("back to normal") and the redundant-value cases land here, and they are the
+    // same operation: take the opacity off, keep every field this command does not own.
     const {opacity: _dropped, ...rest} = prior;
     if (Object.keys(rest).length > 1) styles.push(rest);
    }

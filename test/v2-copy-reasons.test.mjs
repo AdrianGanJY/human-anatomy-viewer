@@ -34,10 +34,12 @@
  */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync, readdirSync} from 'node:fs';
+import ts from 'typescript';
 import {REFUSAL_KEYS} from '../app/v2/controller.ts';
 import {V2, v2t, reasonText} from '../app/v2/copy.ts';
 
+const CONTROLLER = new URL('../app/v2/controller.ts', import.meta.url);
 const LANGS = ['en', 'zh-Hans', 'zh-Hant'];
 const CJK = /[㐀-鿿]/;
 /** A Latin WORD, not a Latin character: "MB", "JSON" and "CC BY" are legitimate in Chinese copy,
@@ -50,60 +52,136 @@ const missingRow = (table, key) => !table[key] || LANGS.some((l) => !table[key][
 const untranslated = (table, key) =>
  ['zh-Hans', 'zh-Hant'].some((l) => !CJK.test(table[key]?.[l] ?? '') || LATIN_WORD.test(table[key]?.[l] ?? ''));
 
+/**
+ * -- THE SCANNER IS AN AST WALK NOW, NOT A REGEX -- codex round 12, Low 3 -----------------------
+ *
+ * Rounds 10 and 11 each found a spelling the regex could not see (`key : "..."` with whitespace
+ * before the colon; `{vars:{}, key: someVar}` with the property in second position; `{key}`
+ * shorthand). Each was patched, and codex's verdict on the third patch was the right one: a regex
+ * over source cannot support a COMPLETENESS claim at all -- there is always another spelling, and a
+ * green from a scanner that did not look is worse than a red.
+ *
+ * So the emission set is read from the TypeScript compiler's own parse of `controller.ts`. Every
+ * object literal in the file is visited; every property named `key` is classified as a quoted
+ * `refusal.*` literal (collected) or as anything else (refused by name and position). There is no
+ * spelling of an object-literal property that this misses, because it is not reading text.
+ *
+ * WARNING -- THE OTHER HALF OF THE CONTRACT: a `Reason` may only ever be built as an object literal
+ * in this file. A helper elsewhere that returned one would be invisible here exactly as the three
+ * escapes were. The last test in this group is that half, and the `REFUSAL_KEYS` round trip is what
+ * makes both meet: a key nothing emits is a dead row, an emission nothing declares is a missing
+ * translation.
+ */
+const scanReasons = (src, filename = 'controller.ts') => {
+ const sf = ts.createSourceFile(filename, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+ const emitted = new Set(), nonLiteral = [];
+ const at = (n) => `line ${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}`;
+ const visit = (node) => {
+  if (ts.isObjectLiteralExpression(node)) {
+   for (const prop of node.properties) {
+    const named = prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.text : null;
+    if (named !== 'key') continue;
+    if (ts.isShorthandPropertyAssignment(prop)) { nonLiteral.push(`shorthand key at ${at(prop)}`); continue; }
+    if (!ts.isPropertyAssignment(prop)) { nonLiteral.push(`non-assignment key at ${at(prop)}`); continue; }
+    const init = prop.initializer;
+    const lit = (ts.isStringLiteral(init) || ts.isNoSubstitutionTemplateLiteral(init)) ? init.text : null;
+    if (lit && /^refusal\.[A-Za-z.]+$/.test(lit)) emitted.add(lit);
+    else nonLiteral.push(`${init.getText(sf).slice(0, 40)} at ${at(prop)}`);
+   }
+  }
+  ts.forEachChild(node, visit);
+ };
+ visit(sf);
+ return {emitted, nonLiteral};
+};
+
 test('REFUSAL_KEYS is exactly the set of refusal keys the controller emits', () => {
- const src = readFileSync(new URL('../app/v2/controller.ts', import.meta.url), 'utf8');
- // Only the EMITTING form — `key: 'refusal.x'` — so the declaration list itself and the prose do
- // not feed the set they are meant to be checked against.
- /**
-  * ⚠️ BOTH QUOTE STYLES, AND NON-LITERAL FORMS ARE REFUSED — codex round 10's Low.
-  *
-  * It executed the narrow version: appending an emission written `key: "refusal.tamperProof"` left
-  * the scanned set UNCHANGED, and rendering that reason echoed the key. A scanner that understands
-  * only one spelling yields a green meaning "I did not look", which is worse than a red.
-  *
-  * So single, double and backtick quotes are all scanned — and a SECOND pass FAILS on any `key:`
-  * whose value is not a quoted `refusal.*` literal (computed, a variable, an interpolated template,
-  * shorthand). Rather than try to evaluate those forms, the test refuses them: the contract is that
-  * every refusal key is a visible literal, and that contract is what makes this file able to check
-  * them at all.
-  */
- const emitted = new Set([...src.matchAll(/\bkey\s*:\s*['"`](refusal\.[A-Za-z.]+)['"`]/g)].map((m) => m[1]));
- /**
-  * ⚠️ THREE MORE ESCAPES, CLOSED — codex round 11's third Low. It executed these against the
-  * round-10 scans and every one left the emitted set unchanged with no non-literal finding:
-  *
-  *   {key : "refusal.tamperProof"}   whitespace BEFORE the colon defeated both passes
-  *   {vars: {}, key: someVar}        property ORDER defeated the `{`-anchored non-literal pass
-  *   {key}                           SHORTHAND defeated it too
-  *
-  * The non-literal pass no longer anchors on `{`: it inspects every `key` PROPERTY position
-  * wherever it sits in the object, plus shorthand. The `Reason` interface's own `key: string` — the
-  * false positive the `{` anchor was covering for — is excluded by rejecting bare TypeScript types
-  * instead, which is what it actually is.
-  *
-  * ⚠️ AND THE HONEST LIMIT, because codex is right that a regex over source is the wrong tool for a
-  * completeness claim: it can always be escaped by a spelling nobody has thought of. The durable
-  * fix is an AST check, or a constructor that is the ONLY way to build a `Reason` — recorded for
-  * S5a. What this buys today is that the three known escapes fail loudly rather than silently
-  * widening the surface.
-  */
- const TYPE_POS = /^(string|number|boolean|any|unknown)\b/;
- const nonLiteral = [
-  ...[...src.matchAll(/[,{]\s*key\s*:\s*([^,}\n]+)/g)].map((m) => m[1].trim()),
-  ...[...src.matchAll(/[,{]\s*key\s*[,}]/g)].map(() => 'shorthand `key`'),
- ].filter((v) => !/^['"`]refusal\.[A-Za-z.]+['"`]$/.test(v) && !TYPE_POS.test(v));
+ const src = readFileSync(CONTROLLER, 'utf8');
+ const {emitted, nonLiteral} = scanReasons(src);
  assert.deepEqual(nonLiteral, [],
-  'a refusal key must be a QUOTED LITERAL — a computed or interpolated key cannot be scanned, so it cannot be covered');
+  'a refusal key must be a QUOTED LITERAL -- a computed key cannot be covered by the copy check, so it is refused at the source');
  assert.ok(emitted.size >= 10, `the scan must FIND the emissions, not silently match nothing (found ${emitted.size})`);
  const declared = new Set(REFUSAL_KEYS);
  assert.deepEqual(
   [...emitted].filter((k) => !declared.has(k)), [],
-  'a refusal is emitted that REFUSAL_KEYS does not declare — declare it, so the copy check covers it',
+  'a refusal is emitted that REFUSAL_KEYS does not declare -- declare it, so the copy check covers it',
  );
  assert.deepEqual(
   [...declared].filter((k) => !emitted.has(k)), [],
-  'REFUSAL_KEYS declares a key nothing emits — a dead row, or a renamed emission',
+  'REFUSAL_KEYS declares a key nothing emits -- a dead row, or a renamed emission',
  );
+});
+
+/**
+ * THE RED PROOF FOR THE SCANNER, and it runs codex's OWN three escapes plus the ones an AST walk
+ * makes newly reachable. A guard that cannot fire is not tested; these fire it.
+ *
+ * Note what changed with the parser: `{key : "..."}` and `{vars:{}, key: '...'}` are now simply
+ * SEEN -- they are legal object literals and the walk collects them, so they land in `emitted` and
+ * are caught one layer up by the `REFUSAL_KEYS` round trip. The regex had to special-case both.
+ * Only the genuinely uncheckable forms are refused by name.
+ */
+test('the AST scanner catches every escape the regex missed, and refuses the uncheckable forms', () => {
+ const base = readFileSync(CONTROLLER, 'utf8');
+ const seen = (extra) => scanReasons(`${base}\nconst __probe = ${extra};\n`);
+
+ assert.ok(seen('{key : "refusal.tamperProof"}').emitted.has('refusal.tamperProof'),
+  'whitespace before the colon must not hide an emission');
+ assert.ok(seen("{vars: {}, key: 'refusal.tamperProof'}").emitted.has('refusal.tamperProof'),
+  'property ORDER must not hide an emission');
+
+ for (const form of ['{key}', '{key: someVar}', '{key: cond ? a : b}']) {
+  const {nonLiteral} = seen(form);
+  assert.equal(nonLiteral.length, 1, `${form} must be refused as non-literal, got ${JSON.stringify(nonLiteral)}`);
+  assert.match(nonLiteral[0], /line \d+/, 'and the refusal must name where it is');
+ }
+ // An INTERPOLATED template is the fourth form, written out here rather than in the list above so
+ // the backtick nesting stays readable.
+ const interp = seen('{key: ' + String.fromCharCode(96) + 'refusal.${x}' + String.fromCharCode(96) + '}');
+ assert.equal(interp.nonLiteral.length, 1, 'an interpolated template key must be refused');
+ assert.equal(interp.emitted.size >= 10, true, 'and the real emissions are still found beside it');
+
+ // The `Reason` INTERFACE's own `key: string` is a TYPE, not an emission. The regex needed an
+ // explicit type-position exclusion for it; the walk never visits a `PropertySignature`, so the
+ // exclusion is structural rather than a special case that could be forgotten.
+ assert.equal(scanReasons('export interface R { key: string; vars?: object }').nonLiteral.length, 0);
+ assert.equal(scanReasons('export interface R { key: string }').emitted.size, 0);
+});
+
+/**
+ * THE OTHER HALF: a `Reason` is only ever built where the scanner can see it.
+ *
+ * The AST walk is complete over `controller.ts`, which leaves one hole -- a `Reason` built
+ * SOMEWHERE ELSE, a helper in `visibility.ts` or a shortcut in the shell. This walks the whole v2
+ * tree for `refusal.` string LITERALS outside the two files allowed to carry them (the controller
+ * emits, `copy.ts` translates) and fails on any third.
+ */
+test('no Reason object is BUILT outside controller.ts', () => {
+ const root = new URL('../app/v2/', import.meta.url);
+ const files = [];
+ const walk = (dir) => {
+  for (const e of readdirSync(dir, {withFileTypes: true})) {
+   const u = new URL(e.name + (e.isDirectory() ? '/' : ''), dir);
+   if (e.isDirectory()) walk(u);
+   else if (/\.tsx?$/.test(e.name)) files.push(u);
+  }
+ };
+ walk(root);
+ const strays = [];
+ for (const f of files) {
+  const name = decodeURIComponent(f.pathname).split('/').pop();
+  if (name === 'controller.ts') continue;
+  // LITERALS ONLY out here, and the limit is stated rather than papered over: `scanReasons`
+  // recognises an object literal by its `key` PROPERTY, and plenty of non-`Reason` objects have
+  // one (`store.ts` returns `{v:1, key, model}` for the S5b OpenAI prefs). So outside the
+  // controller this can assert "nobody writes a refusal key here", which is the escape that
+  // actually happened, but NOT "nobody builds a Reason here by some other spelling" -- that would
+  // need the type checker, and claiming it from this scan would be the false completeness codex
+  // objected to in the first place.
+  for (const k of scanReasons(readFileSync(f, 'utf8'), name).emitted) strays.push(`${name} builds {key: '${k}'}`);
+ }
+ assert.deepEqual(strays, [],
+  'a Reason built outside controller.ts is invisible to the scanner above -- route it through the controller');
 });
 
 test('every refusal key has a row in all three languages', () => {

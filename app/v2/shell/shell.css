@@ -81,8 +81,16 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
 .v2-bar-text b{display:block;font-size:var(--v2-type-title);font-weight:600;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .v2-bar-text i{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .v2-chip{display:inline-flex;align-items:center;gap:8px;flex-shrink:0;height:32px;padding:0 14px;border-radius:999px;background:var(--v2-surface-2);font-size:var(--v2-type-xs);color:var(--v2-ink-2);white-space:nowrap}
-.v2-chip s{width:7px;height:7px;border-radius:50%;background:var(--v2-accent);text-decoration:none;flex-shrink:0}
-.v2-chip.is-loading s{background:var(--v2-ink-3);animation:v2pulse 1.4s ease-in-out infinite}
+/* `.v2-sub` -- A SUPPORTING LINE, AND NOTHING ELSE. It is a bare `<span>`, and every rule that
+   shapes one is CONTEXTUAL (`.v2-tree-name .v2-sub`, `.v2-cap .v2-sub`, `.v2-chip .v2-sub`,
+   `.v2-keys dd .v2-sub`), which is why there is no base rule here to find.
+
+   ⚠️ DELIBERATELY NO `text-decoration:none` ON THE CLASS ITSELF. That would be a FALSE guard:
+   decoration painted by an ANCESTOR cannot be cancelled from a descendant, so the rule would look
+   like protection and provide none. The protection is the ELEMENT (a `<span>` draws no line) plus
+   the `[s5a-strike]` rows, which read the resolved paint rather than the markup. */
+.v2-chip .v2-sub{width:7px;height:7px;border-radius:50%;background:var(--v2-accent);text-decoration:none;flex-shrink:0}
+.v2-chip.is-loading .v2-sub{background:var(--v2-ink-3);animation:v2pulse 1.4s ease-in-out infinite}
 
 /* ── the tools row ───────────────────────────────────────────────────────────────────────────── */
 .v2-tools{grid-area:tools;display:flex;align-items:center;gap:6px;padding:0 12px 0 16px;border-bottom:1px solid var(--v2-line-2);background:var(--v2-surface);min-width:0;overflow:hidden}
@@ -181,10 +189,10 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
    the "Included through …" coverage note. Each line has an explicit `line-height` so the row's
    fixed height holds whichever of them are present, and the CJK stack resolving cannot change it. */
 .v2-tree-name{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start;text-align:left;overflow:hidden}
-.v2-tree-name b,.v2-tree-name i,.v2-tree-name s{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.v2-tree-name b,.v2-tree-name i,.v2-tree-name .v2-sub{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
 .v2-tree-name b{font-size:var(--v2-type-body);line-height:20px;color:var(--v2-ink);font-weight:500}
 .v2-tree-name i{font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-2);font-style:normal}
-.v2-tree-name s{font-size:var(--v2-type-xs);line-height:15px;color:var(--v2-ink-3);text-decoration:none}
+.v2-tree-name .v2-sub{font-size:var(--v2-type-xs);line-height:15px;color:var(--v2-ink-3);text-decoration:none}
 /* `min-width` RESERVES the count's column before the atlas supplies it, so the number arriving
    cannot push the name. Tabular numerals keep it steady as the value changes. */
 .v2-tree-row>em{flex-shrink:0;min-width:4ch;text-align:right;font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
@@ -266,8 +274,8 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
 
 /* ── the field overlays: caption, pill, key pad, legend ──────────────────────────────────────── */
 .v2-cap{position:absolute;left:16px;top:78px;width:min(360px,calc(100% - 32px));padding:12px 16px 14px;background:var(--v2-surface);border:1px solid var(--v2-line-2);border-radius:var(--v2-radius);box-shadow:var(--v2-shadow)}
-.v2-cap s{display:block;text-decoration:none;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--v2-accent);margin-bottom:3px}
-html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;text-transform:none;font-size:var(--v2-type-xs)}
+.v2-cap .v2-sub{display:block;text-decoration:none;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--v2-accent);margin-bottom:3px}
+html:lang(zh-Hans) .v2-cap .v2-sub,html:lang(zh-Hant) .v2-cap .v2-sub{letter-spacing:.02em;text-transform:none;font-size:var(--v2-type-xs)}
 .v2-cap b{display:block;font-size:var(--v2-type-term);font-weight:600;line-height:1.25}
 .v2-cap p{margin:6px 0 0;font-size:var(--v2-type-sm);line-height:1.6;color:var(--v2-ink-2)}
 
@@ -355,15 +363,24 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
    the tone marks come from the same installed faces as everything else: no webfont is downloaded
    for this, which is the claim `about.fontList` already makes for the whole page. */
 /* ⚠️ `text-decoration:none` IS ON THE SHARED CLASS, and codex round 10's M2 is why.
-   The reading is drawn inside `<s>` on three surfaces, because `<s>` is the element the tree
-   already uses for its supporting lines. `<s>` is STRUCK THROUGH by default. The reset used to sit
-   on `.v2-tree-name .v2-py`, which covered the tree and left the Find palette (find.tsx) and the
+   The reading used to be drawn inside `<s>`, because `<s>` was the element the tree used for its
+   supporting lines. `<s>` is STRUCK THROUGH by default. The reset used to sit on
+   `.v2-tree-name .v2-py`, which covered the tree and left the Find palette (find.tsx) and the
    phone's Selection rows (page.tsx) rendering every romanisation as DELETED TEXT.
 
    I would have caught it by LOOKING: I read the tree and About screenshots and never opened the
    palette's or the phone's. The oracle could not catch it either — it asserts the reading's TEXT,
    and struck-through text has the same textContent. Fixed on the shared class so no future surface
-   can inherit the defect by choosing the same element. */
+   can inherit the defect by choosing the same element.
+
+   ── S5a FINISHED THE JOB AT THE SOURCE ─────────────────────────────────────────────────────────
+   S4 removed `<s>` from the four READINGS, one call site at a time, and left it wherever else the
+   shell used it as a short supporting line — including `.v2-note-sm` in the Selection card, which
+   had NO reset and shipped to production struck through. Patching decorations is a treatment for a
+   symptom whose cause is the element. `<s>` now appears nowhere in `app/v2`; every supporting line
+   is `<span class="v2-sub">`, and the resets below name that class. The guard is `[s5a-strike]` in
+   verify-ux.mjs, which reads the computed `text-decoration-line` of every text node in the reading
+   surfaces across six viewports — the paint, which is what a reader sees, not the text. */
 .v2-py{display:block;font-style:normal;font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-accent);letter-spacing:.01em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none}
 /* The Settings preview reserves its 18 px line from S0, so it keeps that line-height exactly. */
 .v2-srow .v2-py{line-height:18px}
@@ -375,7 +392,7 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
 .v2-keys{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;align-items:baseline;margin:0 0 4px}
 .v2-keys dt{font-size:var(--v2-type-xs)}
 .v2-keys dd{margin:0;font-size:var(--v2-type-sm);color:var(--v2-ink-2)}
-.v2-keys dd s{text-decoration:none;color:var(--v2-ink-3);font-size:11px;margin-left:6px}
+.v2-keys dd .v2-sub{text-decoration:none;color:var(--v2-ink-3);font-size:11px;margin-left:6px}
 
 /* ══ COARSE POINTERS IN THE STUDIO TIER ════════════════════════════════════════════════════════
    `spec.md`: ">=1180 coarse — desktop column structure, same rows; all controls at least 44. Large
@@ -439,7 +456,7 @@ html:lang(zh-Hans) .v2-cap s,html:lang(zh-Hant) .v2-cap s{letter-spacing:.02em;t
  .v2-studio .v2-tab{height:28px}
 }
 @media (prefers-reduced-motion:reduce){
- .v2-chip.is-loading s{animation:none}
+ .v2-chip.is-loading .v2-sub{animation:none}
 }
 
 /* ══ THE FIND PALETTE (L31 v2.1b+c, S2) ═════════════════════════════════════════════════════════

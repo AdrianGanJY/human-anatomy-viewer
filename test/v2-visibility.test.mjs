@@ -417,14 +417,22 @@ test('round 5, Medium 1 — the controller refusal really is atomic, which is wh
     const blob = encodeScene(sc);
     if (blob.length > 1400) break;
     // The biggest scene that still fits, so ONE added style crosses the bound.
-    const withStyle = encodeScene(normalizeScene({...sc, styles: [{id: 'FMA22359', opacity: 1}]}));
+    //
+    // ⚠️ 0.5, AND IT WAS 1 UNTIL S5a. The residue fix means an explicit value EQUAL to the
+    // structure's role default is no longer STORED (a primary's default is 1), so
+    // `set-opacity(1)` on a primary now writes nothing, grows nothing and is not refused — this
+    // row's PRECONDITION silently stopped holding. It failed loudly rather than passing
+    // vacuously, because `assert.ok(out.rejected)` is the precondition (codex round 6, Low 2 —
+    // the conditional-assertion fix is what made this visible at all). 0.5 is a real instruction
+    // at every role, so the fixture asks for something the scene must actually carry.
+    const withStyle = encodeScene(normalizeScene({...sc, styles: [{id: 'FMA22359', opacity: 0.5}]}));
     if (withStyle.length > 1400) { big = sc; before = blob; break; }
   }
   assert.ok(big, 'the fixture search must FIND a scene where one added style crosses SCENE_MAX_B64');
   assert.ok(before.length <= 1400, `the base scene itself is legal (${before.length} chars)`);
   const st = initialState({scene: big, sceneBlob: before}, SEED()).state;
   assert.ok(st.scene, 'and it really was published, so the command has something to refuse');
-  const out = reduce(st, {type: 'set-opacity', id: 'FMA22359', opacity: 1});
+  const out = reduce(st, {type: 'set-opacity', id: 'FMA22359', opacity: 0.5});
   assert.ok(out.rejected, 'THE PRECONDITION: this command must be refused');
   assert.equal(out.rejected.key, 'refusal.encoded', 'and refused for the encoded-length reason');
   assert.match(reasonText('en', out.rejected).text, /1400|characters/);

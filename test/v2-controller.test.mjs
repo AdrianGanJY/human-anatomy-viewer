@@ -12,7 +12,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {initialState, reduce} from '../app/v2/controller.ts';
 import {reasonText} from '../app/v2/copy.ts';
-import {decodeScene, encodeScene, normalizeScene, LIMITS} from '../app/scene-codec.js';
+import {decodeScene, encodeScene, normalizeScene, structureOpacity, LIMITS} from '../app/scene-codec.js';
 
 /**
  * ── L31 v2.1b+c, S4 — A REFUSAL IS A KEY NOW, SO THE ASSERTIONS RESOLVE IT ──────────────────────
@@ -710,6 +710,84 @@ test('set-opacity(null) REMOVES the entry rather than writing 1', () => {
   const entry = decoded.styles.find((s) => s.id === 'FMA9611');
   // The structure keeps its other style fields; only the alpha is gone.
   assert.equal(entry?.opacity, undefined, 'no opacity is carried');
+});
+
+/**
+ * ══ S5a — THE OPACITY RESIDUE, AND THE HALF OF THE CLEANUP THAT MUST NOT HAPPEN ═══════════════
+ *
+ * S4 measured it and handed it on: a member Hide -> Show left `{opacity: 1}` where there had been
+ * no style entry at all, because the eye's Show writes an explicit 1 and nothing took it back out.
+ * The §9 blob grew 168 -> 223 characters and STAYED grown, against a 1,400-character bound whose
+ * overflow is an atomic refusal -- so enough hide/show pairs produce a scene that cannot be shared.
+ *
+ * codex's caveat is the load-bearing half and it has its own test below: "blanket removal can
+ * restore a ghost's zero default". An absent opacity is NOT 100%; it falls back to
+ * `roleOpacity[role]`. So the rule is narrower than "drop opacity 1" -- drop the entry only when
+ * the written value equals THAT structure's own resolved default, which makes "written" and
+ * "absent" the same picture by construction.
+ *
+ * The fixture is built for exactly this: FMA22449 is a primary with NO style entry (default 1),
+ * FMA16203 is a ghost with no entry (default 0.25), FMA9611 is a context carrying
+ * `emphasis:'secondary'` (default 0.55).
+ */
+test('S5a — a PRIMARY hide/show round trip leaves the blob byte-identical (the residue is gone)', () => {
+  const start = withScene();
+  const before = start.blob;
+  const hidden = reduce(start, {type: 'set-opacity', id: 'FMA22449', opacity: 0}).state;
+  assert.notEqual(hidden.blob, before, 'hiding must actually change the scene, or this proves nothing');
+  const shown = reduce(hidden, {type: 'set-opacity', id: 'FMA22449', opacity: 1}).state;
+  assert.equal(shown.blob, before,
+    'Show on a structure whose role default IS 1 must leave no trace -- that trace was the residue');
+  assert.equal(decodeScene(shown.blob).styles.some((x) => x.id === 'FMA22449'), false,
+    'and no empty style entry is left behind either');
+  // THE MEASUREMENT S4 REPORTED, as an assertion rather than a note.
+  assert.ok(before.length < LIMITS.SCENE_MAX_B64 && shown.blob.length === before.length,
+    `blob ${before.length} -> ${shown.blob.length} characters, against LIMITS.SCENE_MAX_B64 ${LIMITS.SCENE_MAX_B64}`);
+});
+
+test('S5a — a GHOST keeps its explicit 1, because dropping it would HIDE what the reader just showed', () => {
+  const start = withScene();
+  const hidden = reduce(start, {type: 'set-opacity', id: 'FMA16203', opacity: 0}).state;
+  const shown = reduce(hidden, {type: 'set-opacity', id: 'FMA16203', opacity: 1}).state;
+  const entry = decodeScene(shown.blob).styles.find((x) => x.id === 'FMA16203');
+  assert.equal(entry?.opacity, 1,
+    'a ghost default is 0.25 -- an absent opacity is a ghost again, so the explicit 1 is the reader\'s instruction');
+  // THE EFFECTIVE-VISIBILITY PROOF, through the codec's own resolution rather than by inspection.
+  const drawn = structureOpacity(decodeScene(shown.blob));
+  assert.equal(drawn.FMA16203, 1, 'the ghost is drawn SOLID after Show');
+  const ifDropped = structureOpacity(normalizeScene({
+    ...decodeScene(shown.blob),
+    styles: decodeScene(shown.blob).styles.filter((x) => x.id !== 'FMA16203'),
+  }));
+  assert.equal(ifDropped.FMA16203, 0.25,
+    'and the naive cleanup would have put it back to 0.25 -- this is the counterexample, executed');
+});
+
+test('S5a — the rule generalises: an explicit value EQUAL to the role default is dropped, other fields survive', () => {
+  // FMA9611 is `context` (default 0.55) and carries `emphasis: 'secondary'`, which this command
+  // does not own and may not touch (codex round 3, Medium 2).
+  const {state} = reduce(withScene(), {type: 'set-opacity', id: 'FMA9611', opacity: 0.55});
+  const entry = decodeScene(state.blob).styles.find((x) => x.id === 'FMA9611');
+  assert.equal(entry?.opacity, undefined, 'a redundant 0.55 on a context structure is not stored');
+  assert.equal(entry?.emphasis, 'secondary', 'and the emphasis it arrived with is untouched');
+  assert.equal(structureOpacity(decodeScene(state.blob)).FMA9611, 0.55, 'the drawn alpha is unchanged');
+});
+
+test('S5a — the default is read from THIS SCENE, not from a constant', () => {
+  // A teaching link may declare its own roleOpacity. codex executed `roleOpacity.ghost = 0`, where
+  // a naive "drop opacity 1" made Show leave the structure completely invisible.
+  const declared = normalizeScene({...SCENE, roleOpacity: {primary: 0.9, context: 0.55, ghost: 0}});
+  const st = {scene: declared, blob: encodeScene(declared), picks: declared.structures.map((x) => x.id).sort(),
+    focusId: 'FMA22359', render: {...render}};
+  const one = reduce(st, {type: 'set-opacity', id: 'FMA22449', opacity: 1}).state;
+  assert.equal(decodeScene(one.blob).styles.find((x) => x.id === 'FMA22449')?.opacity, 1,
+    'primary default is 0.9 in THIS scene, so an explicit 1 is a real instruction and is kept');
+  const nine = reduce(st, {type: 'set-opacity', id: 'FMA22449', opacity: 0.9}).state;
+  assert.equal(decodeScene(nine.blob).styles.find((x) => x.id === 'FMA22449')?.opacity, undefined,
+    'and 0.9 -- this scene\'s own default -- is the redundant one');
+  const ghostShown = reduce(st, {type: 'set-opacity', id: 'FMA16203', opacity: 1}).state;
+  assert.equal(structureOpacity(decodeScene(ghostShown.blob)).FMA16203, 1,
+    'with roleOpacity.ghost = 0, Show must still draw it -- the case codex executed');
 });
 
 test('set-opacity on a NON-MEMBER is refused with a reason, and on a scene-less page too', () => {

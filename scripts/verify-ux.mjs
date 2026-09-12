@@ -71,7 +71,7 @@ import {fileURLToPath} from 'node:url';
 /** The repo root, for the one `git` call this suite makes (the About commit assertion, S4). */
 const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 import {join} from 'node:path';
-import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneFrameIds} from '../app/scene-codec.js';
+import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneFrameIds, structureOpacity} from '../app/scene-codec.js';
 import {POPULATION, attachRequestLedger, populationCheck, rowsByBarrier} from './request-ledger.mjs';
 
 const base = process.argv[2];
@@ -1508,11 +1508,11 @@ if (variant === 'v2') {
           // A row whose description still carries the strikethrough "arrives in S<n>" marker is a
           // key the map declares FORTHCOMING. Counting them is how "S1's keys stopped being
           // promises" becomes a measurement instead of a claim.
-          // `owner` markers ONLY. The per-row "desktop only" mark is also an `<s>`, and counting
+          // `owner` markers ONLY. The per-row "desktop only" mark is also a `.v2-sub`, and counting
           // them together would have made the forthcoming-count drift with the tier (round 4).
-          pending: [...document.querySelectorAll('.v2-keys dd s')].filter((e) => !e.hasAttribute('data-studio-only')).length,
+          pending: [...document.querySelectorAll('.v2-keys dd .v2-sub')].filter((e) => !e.hasAttribute('data-studio-only')).length,
           // The rows guard 7 withholds, as the map ADVERTISES them.
-          desktopOnly: [...document.querySelectorAll('.v2-keys dd s[data-studio-only]')].length,
+          desktopOnly: [...document.querySelectorAll('.v2-keys dd .v2-sub[data-studio-only]')].length,
         };
       });
       /**
@@ -2050,8 +2050,35 @@ if (variant === 'v2') {
     }
     return {released: false, note: ` [${code} did not release within 8 s and the final direct read is aria-pressed=${finalRead} — ${finalRead === 'absent' ? 'the pad key is GONE from the DOM, so this instrument is measuring nothing' : 'a stuck key'}; every row after it in this page is suspect]`};
   }
+  /**
+   * RECORD, AND FAIL IMMEDIATELY ON A STUCK KEY — codex round 12, Low 1.
+   *
+   * The aggregate row at the end of the S1 pass is a COMPLETENESS claim ("no hold anywhere left a
+   * key down"), and codex executed its ordering hole: it ran the summary first, then a failed
+   * release, and the summary stayed PASS. Every caller today precedes the summary, so today's gate
+   * is sound — but that is a property of the current call order, not of the instrument, and a
+   * thirteenth hold added below the summary would be silently uncovered.
+   *
+   * So a failed release is now its own FAILING assertion at the moment it is measured. The row
+   * cannot be ordered around, because it is emitted by the recorder rather than read from a list
+   * afterwards. The aggregate stays: immediate reporting cannot make the "and the ledger is not
+   * empty" claim, which is the half that stops a vacuous green.
+   */
+  const recordHold = (entry) => {
+    holdLedger.push(entry);
+    if (entry.released !== true) {
+      check('s1-holds', `[${S1_V}] the release of ${entry.code} was observed (hold #${holdLedger.length})`,
+        false,
+        `released=${entry.released}${entry.note || ''}`,
+        'immediate failure at the point of measurement — an aggregate row can be outrun by a later hold');
+    }
+    return entry;
+  };
   /** Record and return, so no path can skip the ledger. */
-  const holdResult = (code, r) => { holdLedger.push({code, moved: r.moved, padHeld: r.padHeld, released: r.released, note: r.note}); return r; };
+  const holdResult = (code, r) => {
+    recordHold({code, moved: r.moved, padHeld: r.padHeld, released: r.released, note: r.note});
+    return r;
+  };
   /**
    * Hold `code` until the camera pose LEAVES `baseline`, then release and wait for the release to be
    * observed too. Returns `{moved, attempts, pose, note}` — never throws, because a timeout here is
@@ -2344,7 +2371,7 @@ if (variant === 'v2') {
    */
   async function releaseKey(page, code) {
     const rel = await releaseAndObserve(page, code);
-    holdLedger.push({code, moved: null, padHeld: null, released: rel.released, note: `releaseKey${rel.note}`});
+    recordHold({code, moved: null, padHeld: null, released: rel.released, note: `releaseKey${rel.note}`});
     return rel.released;
   }
 
@@ -3009,6 +3036,11 @@ if (variant === 'v2') {
    * ⚠️ AN EMPTY LEDGER IS A FAILURE, NOT A PASS. A guard that cannot fire is not tested: if the S1
    * blocks above were skipped, reordered or rewritten to stop holding keys, `every()` over `[]` is
    * vacuously true and this row would go green having watched nothing.
+   *
+   * ⚠️ AND IT IS NO LONGER THE ONLY REPORTER (codex round 12, Low 1). `recordHold` emits a failing
+   * row at the moment a release is measured unsuccessful, so a hold added BELOW this summary still
+   * fails the suite. What remains uniquely this row's is the completeness half above: only a list
+   * read at the end can say the list was not empty.
    */
   {
     const stuck = holdLedger.filter((h) => h.released !== true);
@@ -3549,7 +3581,7 @@ if (variant === 'v2') {
           name: (r.querySelector('.v2-tree-name b')?.textContent || '').trim(),
           intent: r.getAttribute('data-intent'),
           eye: r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false',
-          note: (r.querySelector('s')?.textContent || '').trim(),
+          note: (r.querySelector('.v2-sub')?.textContent || '').trim(),
         }));
         return {rows, count: rows.length};
       });
@@ -3590,7 +3622,7 @@ if (variant === 'v2') {
         // clipped by its own box, and it must be exactly ONE of them.
         return {present: true, text: (el.textContent || '').trim(), count: document.querySelectorAll('.v2-side-note').length,
           clipped: el.scrollWidth > Math.ceil(r.width) + 1 || el.scrollHeight > Math.ceil(r.height) + 1,
-          rowNotes: [...document.querySelectorAll('.v2-tree-row.is-system s')].length};
+          rowNotes: [...document.querySelectorAll('.v2-tree-row.is-system .v2-sub')].length};
       });
       check(vp.name, `[${S3_V}] the divergence is stated ONCE, in full, and not repeated per row`,
         note.present && note.count === 1 && note.clipped === false && note.rowNotes === 0 && /\d/.test(note.text),
@@ -3878,13 +3910,23 @@ if (variant === 'v2') {
        * that is what is asserted. Byte-identity was my invention and would have been asserting the
        * absence of a feature the slider deliberately has.
        *
-       * ⚠️ RESIDUE, ESCALATED RATHER THAN FIXED HERE (S5a): the blob grows 168 → 223 characters and
-       * STAYS grown, because an explicit 1 is written where there had been no entry at all. The
-       * scene budget is a hard 1,400-character bound with an atomic refusal, so a reader who toggles
-       * eyes and toggles them back has spent budget on no-op styles and can meet a refusal they
-       * cannot account for. Changing `{opacity: 1}` to a removal is a product change in S3 code on a
-       * round whose job is confirming two blockers are closed, so it is measured, recorded and
-       * handed on — not slipped in.
+       * ⚠️ THE RESIDUE IS FIXED IN S5a, AND THIS ROW IS WHERE IT SHOWS. S4 measured the blob growing
+       * 168 → 223 characters and STAYING grown, and handed it on rather than changing S3 code on a
+       * round whose job was confirming two blockers closed. `set-opacity` now drops an entry whose
+       * value equals THAT structure's own role default — so on this fixture, where the clicked
+       * structure is a `primary` (default 1), Show writes nothing and the blob returns byte-
+       * identical. The assertion I originally wrote and had to withdraw is the correct one after all,
+       * and it is asserted below as a THIRD half, separately from the contract.
+       *
+       * ⚠️ IT IS NOT A GENERAL "SHOW RESTORES THE BLOB" CLAIM. On a context or ghost structure the
+       * explicit 1 is a real instruction and must survive (an absent opacity falls back to
+       * `roleOpacity`, 0.55 / 0.25) — the unit tests carry that counterexample with a ghost. Here the
+       * role is stated in the measured string so the claim cannot be read wider than it is.
+       *
+       * ⚠️ AND THE VALUE IS EXACT — codex round 12, Low 2. The predicate asserted "not zero", which
+       * codex executed as accepting `0 → 0.5`. What the eye promises is Show, and Show means the
+       * structure is drawn at its full declared alpha, so the reading is the codec's OWN resolution
+       * (`structureOpacity`) compared to exactly 1 — a number, not the absence of a number.
        */
       const persisted = (() => {
         if (probe.error || !probe.blob0 || !probe.blob1) return {ok: false, why: 'no blob recorded'};
@@ -3895,6 +3937,12 @@ if (variant === 'v2') {
           const zeroed = (hidden.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
           const stillZero = (shown.styles ?? []).filter((st) => st.opacity === 0).map((st) => st.id);
           const grew = probe.blob2.length - probe.blob0.length;
+          // THE EXACT VALUES, through the codec's own resolution rather than through the presence
+          // of a style entry — which is what makes the claim independent of whether S5a's residue
+          // cleanup kept the entry or dropped it.
+          const alphaHidden = structureOpacity(hidden)[probe.id];
+          const alphaShown = structureOpacity(shown)[probe.id];
+          const role = shown.structures?.find((x) => x.id === probe.id)?.role;
           /**
            * ⚠️ THE CLICKED STRUCTURE, NOT "SOMETHING" — codex round 11's second Low. The predicate
            * accepted ANY opacity-zero style, and `probe.id` was collected and never used. codex
@@ -3903,8 +3951,14 @@ if (variant === 'v2') {
            * erroneous scene write somewhere else satisfied both halves.
            */
           return {
-            ok: !!probe.id && zeroed.includes(probe.id) && !stillZero.includes(probe.id),
-            why: `clicked ${probe.id || '(no id)'} · Hide -> styles at opacity 0: [${zeroed.join(',')}] · Show -> [${stillZero.join(',')}] · blob ${probe.blob0.length} -> ${probe.blob1.length} -> ${probe.blob2.length} chars (residue +${grew}, S5a)`,
+            ok: !!probe.id && zeroed.includes(probe.id) && !stillZero.includes(probe.id)
+              && alphaHidden === 0 && alphaShown === 1,
+            // THE RESIDUE, as a number in the row rather than as a note for a later session. On this
+            // fixture `+0` is the fix having landed; it is reported either way so a regression is
+            // visible without reading the source.
+            why: `clicked ${probe.id || '(no id)'} (role=${role}) · resolved alpha Hide=${alphaHidden} Show=${alphaShown} (want 0 then exactly 1)`
+              + ` · styles at 0: Hide [${zeroed.join(',')}] Show [${stillZero.join(',')}]`
+              + ` · blob ${probe.blob0.length} -> ${probe.blob1.length} -> ${probe.blob2.length} chars (residue ${grew >= 0 ? '+' : ''}${grew})`,
           };
         } catch (e) { return {ok: false, why: `the blob did not decode: ${String(e).slice(0, 80)}`}; }
       })();
@@ -4755,9 +4809,16 @@ if (variant === 'v2') {
         const text = (panel?.textContent || '').replace(/\s+/g, ' ');
         // The BUILD paragraph ALONE. `about.build` is the last `<p>` in the panel; reading it
         // separately is what stops a sha from elsewhere in About satisfying the commit assertion.
-        const ps = [...(panel?.querySelectorAll('p') ?? [])];
-        const buildLine = (ps[ps.length - 1]?.textContent || '').replace(/\s+/g, ' ').trim();
-        return {focusedTab, autofocus, text, len: text.length, buildLine};
+        // THE BUILD FIELD BY NAME, not by position — codex round 12, Low 5. `data-commit` carries
+        // the value itself, so the comparison below is a field equality rather than a substring
+        // search over a sentence. The element's absence is reported as `(no .v2-about-build)` and
+        // fails, because a row that cannot find its subject must not pass.
+        const el = panel?.querySelector('.v2-about-build');
+        const buildLine = (el?.textContent || '').replace(/\s+/g, ' ').trim();
+        return {focusedTab, autofocus, text, len: text.length, buildLine,
+          buildAttr: el?.getAttribute('data-build') ?? null,
+          commitAttr: el?.getAttribute('data-commit') ?? null,
+          found: !!el};
       });
       check(py.name, `[${S4_V}] the Settings overlay focuses its SELECTED TAB, not the close button`,
         !about.error && about.autofocus === 1 && /v2-mtab/.test(about.focusedTab),
@@ -4790,12 +4851,16 @@ if (variant === 'v2') {
         expectCommit = execSync('git rev-parse --short HEAD', {cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
       } catch { expectCommit = ''; }
       check(py.name, `[${S4_V}] About names the deployed build and THIS commit (not the upstream sha)`,
-        !about.error && !!expectCommit && /l31v21bc/.test(about.buildLine)
-          && about.buildLine.includes(expectCommit) && !/7a383d3/.test(about.buildLine),
+        !about.error && !!expectCommit && about.found
+          && about.buildAttr === 'l31v21bc' && about.commitAttr === expectCommit
+          // The RENDERED sentence still has to carry them, or the fields would be right and the
+          // reader would be looking at something else.
+          && about.buildLine.includes('l31v21bc') && about.buildLine.includes(expectCommit),
         about.error || (expectCommit
-          ? `build line: "${about.buildLine.slice(0, 95)}" · expected commit ${expectCommit}`
+          ? `${about.found ? `data-build=${about.buildAttr} data-commit=${about.commitAttr}` : '(no .v2-about-build element)'}`
+            + ` · expected commit ${expectCommit} · rendered: "${about.buildLine.slice(0, 80)}"`
           : 'git rev-parse failed, so the expected commit is unknown — this row must not be satisfiable by a pattern'),
-        `SITE_BUILD l31v21bc and commit ${expectCommit || '(unknown)'}, read from the build paragraph alone`);
+        `data-build=l31v21bc and data-commit=${expectCommit || '(unknown)'} compared EXACTLY, on a named element`);
     } finally { await ctx.close(); }
   }
 
@@ -4961,6 +5026,163 @@ if (variant === 'v2') {
         await page.screenshot({path: join(outDir, `${label}-s4-about-${lang}.png`), timeout: SHOT_MS}).catch(() => {});
       } catch { /* a screenshot is evidence, never a gate */ } finally { await ctx.close(); }
     }
+  }
+}
+
+/**
+ * ═══ S5a — NOTHING A READER READS IS PAINTED WITH A LINE THROUGH IT ═════════════════════════════
+ *
+ * WHY THIS ROW EXISTS, and it is the most instructive failure of the increment. S4 removed
+ * `<s>`-as-a-layout-element from the four PINYIN surfaces, one call site at a time, after codex
+ * found the readings rendering as deleted text. The identical mistake survived in a fifth place —
+ * the Selection card's explore-mode note, `<s className="v2-note-sm">` — and SHIPPED. The planner
+ * found it by LOOKING at a screenshot of the deployed build.
+ *
+ * No existing row could have caught it. Every one of the 567 asserts `textContent`, and struck-
+ * through text has exactly the same `textContent` as unstruck text. A fix applied at four call
+ * sites is a fix applied to four call sites; this suite had no assertion about the FIFTH, or about
+ * any sixth a later group might add.
+ *
+ * So this asserts the PAINT. For every non-empty text node inside the reading surfaces, it walks
+ * the ancestor chain and requires that nothing between the text and its surface root resolves
+ * `text-decoration-line` to a `line-through`.
+ *
+ * ⚠️ THE ANCESTOR WALK IS THE LOAD-BEARING HALF. `text-decoration` is not inherited, but it IS
+ * painted onto descendants: `getComputedStyle(textNode.parentElement).textDecorationLine` on the
+ * `<b>` inside a struck `<s>` returns `none`. A one-level read would have passed on the live defect.
+ *
+ * ⚠️ AND EVERY STATE IS SCANNED WHERE IT EXISTS (codex r12, Low 4). Below 1180 the margin shows
+ * EITHER the selection rows OR the systems tree in one region, and above 1180 expanding a system
+ * pushes the other system rows out of the virtualised window. A driver that clicked first and
+ * scanned last measured `selection 0` / no refusal card and reported a clean scan of nothing. The
+ * required surfaces per tier are asserted by name, so an unreached surface FAILS rather than
+ * quietly shrinking the denominator.
+ */
+{
+  const STRIKE_SURFACES = [
+    ['selection', '.v2-pane .v2-card, .v2-pane .v2-card-row, .v2-row, .v2-margin .v2-set'],
+    ['info', '.v2-kv, .v2-acc'],
+    ['tree', '.v2-tree-row'],
+    ['palette', '.v2-find li, .v2-find .v2-find-foot, .v2-sheet li'],
+    ['refusal', '.v2-refusal, .v2-refusal-line'],
+  ];
+  /** Measured against this build with `inventory.mjs`, never assumed: below 1180 there is no
+   *  Selection dock, no Info dock and no left tree — the margin's rows ARE the selection surface. */
+  const STRIKE_REQUIRED = {
+    '390x844': ['selection', 'palette'],
+    '768x1024': ['selection', 'palette'],
+    '1024x768': ['selection', 'palette'],
+    '1440x900': ['selection', 'info', 'tree', 'palette', 'refusal'],
+    '1920x860': ['selection', 'info', 'tree', 'palette', 'refusal'],
+    '1366x1024': ['selection', 'info', 'tree', 'palette', 'refusal'],
+  };
+
+  for (const vp of VIEWPORTS) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+
+      const pops = {}, struck = [], drove = [];
+      /** Drive one state, then scan it. `false` from the driver means "this state does not exist at
+       *  this tier" and is not an error — the REQUIRED table decides what counts as missing. */
+      const step = async (name, driver) => {
+        const landed = await page.evaluate(driver);
+        if (landed === false) return;
+        await page.waitForTimeout(520);
+        const r = await page.evaluate(([surfaces]) => {
+          const out = [], pop = {};
+          for (const [surface, sel] of surfaces) {
+            const roots = [...document.querySelectorAll(sel)];
+            let readings = 0;
+            for (const root of roots) {
+              const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+              let n;
+              while ((n = w.nextNode())) {
+                const text = (n.nodeValue || '').trim();
+                if (!text) continue;
+                readings++;
+                let el = n.parentElement, by = '';
+                while (el) {
+                  if ((getComputedStyle(el).textDecorationLine || '').includes('line-through')) {
+                    by = `${el.tagName.toLowerCase()}.${el.className || '(no class)'}`; break;
+                  }
+                  if (el === root) break;
+                  el = el.parentElement;
+                }
+                if (by) out.push({surface, text: text.slice(0, 48), by});
+              }
+              if (out.length > 24) break;
+            }
+            pop[surface] = readings;
+          }
+          return {struck: out, pop};
+        }, [STRIKE_SURFACES]);
+        for (const [k, v] of Object.entries(r.pop)) pops[k] = Math.max(pops[k] ?? 0, v);
+        struck.push(...r.struck);
+        drove.push(`${name}${typeof landed === 'string' ? `(${landed})` : ''}`);
+      };
+
+      const studio = await page.evaluate(() => !!document.querySelector('.v2-studio'));
+      await step('rest', () => true);
+      if (studio) {
+        // The refusal card FIRST, while every system row is still inside the virtualised window.
+        await step('refusal', () => {
+          const offs = [...document.querySelectorAll('.v2-tree-row.is-system')]
+            .map((r) => ({n: parseInt((r.querySelector('em')?.textContent || '0').replace(/[^0-9]/g, ''), 10) || 0,
+              tick: r.querySelector('.v2-tick.is-off')}))
+            .filter((x) => x.tick).sort((a, b) => b.n - a.n);
+          if (!offs[0]) return false;
+          offs[0].tick.click();
+          return String(offs[0].n);
+        });
+        // Info: READ THE TOGGLE FIRST. At >=1600 it is open by default and a blind click closes it.
+        await step('info', () => {
+          const b = [...document.querySelectorAll('button')].find((x) => /^(Info|信息|資訊)$/.test((x.textContent || '').trim()));
+          if (!b) return false;
+          if (b.className.includes('is-on')) return 'already-open';
+          b.click(); return 'opened';
+        });
+        await step('tree', () => {
+          const tw = document.querySelector('.v2-tree-row.is-system .v2-tw');
+          if (!tw) return false;
+          tw.click(); return true;
+        });
+      } else {
+        await step('detent-high', () => {
+          const h = document.querySelector('button.v2-handle');
+          if (!h) return false;
+          h.click(); return true;
+        });
+        await step('systems', () => {
+          const b = [...document.querySelectorAll('button')].find((x) => /^(Systems|系统|系統)$/.test((x.textContent || '').trim()));
+          if (!b) return false;
+          b.click(); return true;
+        });
+      }
+      // The palette through the REAL chord, not by calling a handler.
+      await page.keyboard.press('Control+KeyK').catch(() => {});
+      await page.waitForTimeout(500);
+      if (await page.evaluate(() => !!document.querySelector('.v2-find, .v2-sheet .v2-findbox'))) {
+        await page.keyboard.type('semi', {delay: 30});
+        await page.waitForTimeout(700);
+        await step('palette', () => true);
+      }
+
+      const missing = STRIKE_REQUIRED[vp.name].filter((s) => !(pops[s] > 0));
+      const read = Object.values(pops).reduce((a, b) => a + b, 0);
+      check(vp.name, '[s5a-strike] no text a reader reads is painted with line-through',
+        struck.length === 0 && missing.length === 0,
+        `${read} text nodes over {${Object.entries(pops).map(([k, v]) => `${k} ${v}`).join(' · ')}}`
+          + ` · states=[${drove.join(',')}]`
+          + (missing.length ? ` · UNREACHED ${missing.join(',')}` : '')
+          + (struck.length ? ` · STRUCK ${struck.length} :: ${struck.slice(0, 3).map((s) => `${s.surface}:"${s.text}" by ${s.by}`).join(' | ')}` : ' · STRUCK 0'),
+        `zero struck over a non-empty ${STRIKE_REQUIRED[vp.name].join('+')} — the population is what stops a vacuous pass`);
+    } catch (e) {
+      check(vp.name, '[s5a-strike] the strike scan ran', false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
   }
 }
 

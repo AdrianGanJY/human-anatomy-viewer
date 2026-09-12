@@ -744,14 +744,18 @@ export default function Tree(p: TreeProps) {
             feature rather than as a scope boundary (recorded in build-pinyin.mjs). */}
         {pyRead && <span className="v2-py">{pyRead}</span>}
         {second && <i lang={second === row.name ? 'en' : undefined}>{second}</i>}
-        {cover && <s id={`v2-cov-${row.id}`}>{tr('tree.covered', {name: cover})}</s>}
+        {/* ⚠️ `.v2-sub` SPANS, NOT `<s>` — S5a. These three supporting lines were `<s>` because the
+            element happened to be short; `<s>` is struck through by default AND means "no longer
+            accurate or relevant" to a screen reader, so the CSS reset on `.v2-tree-name s` was
+            hiding a semantic defect behind a visual patch. `<s>` is gone from `app/v2` entirely. */}
+        {cover && <span className="v2-sub" id={`v2-cov-${row.id}`}>{tr('tree.covered', {name: cover})}</span>}
         {/* ⚠️ THE TWO NOTES THAT MAKE AN HONEST EYE LEGIBLE (S3b, codex r4 H3 + H4). Without them
             a truthful control looks like a broken one: the reader clicks hide and the eye stays on
             (a shared mesh), or the eye is on for a system they never asked for (a ghost scene). */}
-        {via && <s id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</s>}
-        {eyeInert && <s>{cause === 'system'
+        {via && <span className="v2-sub" id={`v2-via-${row.id}`}>{tr('tree.drawnThrough', {name: via})}</span>}
+        {eyeInert && <span className="v2-sub">{cause === 'system'
          ? tr('tree.hiddenWithSystem', {name: t.system(row.system, SYSTEMS.find((x) => x.id === row.system)?.name ?? row.system)})
-         : inertWhy}</s>}
+         : inertWhy}</span>}
        </button>
        {row.kind === 'system' && <em>{(row.count ?? 0).toLocaleString()}</em>}
        <button type="button" tabIndex={-1}

@@ -234,7 +234,7 @@ export function StudioField(p: {
  });
  return <>
   {p.caption.title && <div className="v2-cap">
-   <s>{tr('view.this')}</s>
+   <span className="v2-sub">{tr('view.this')}</span>
    <b>{p.caption.title}</b>
    {p.caption.note && <p>{p.caption.note}</p>}
   </div>}
@@ -588,8 +588,18 @@ export default function Shell(p: ShellProps) {
          }}/>
         <em>{alphaOf(b.id) === 0 ? tr('tree.hiddenWord') : `${Math.round(alphaOf(b.id) * 100)}%`}</em>
        </div>}
+       {/* ⚠️ A `<p>`, AND IT WAS AN `<s>` UNTIL S5a — THE DEFECT ADRIAN WOULD HAVE READ.
+           `.v2-note-sm` is prose, drawn as a `<p>` at every one of its six other call sites; here
+           alone it was `<s>`, which is STRUCK THROUGH by default. S4 fixed exactly this mistake for
+           the four pinyin readings and this fifth site survived, because every oracle in the suite
+           asserts `textContent` and struck text has the identical `textContent`. The planner found
+           it by LOOKING at a deployed screenshot.
+
+           The durable fix is not this line — it is that `<s>` is gone from `app/v2` entirely (the
+           supporting lines are `.v2-sub` spans now) and that `[s5a-strike]` asserts the computed
+           `text-decoration-line` of every text node in the reading surfaces, on six viewports. */}
        {on && p.scene?.mode !== 'render' && <div className="v2-card-row">
-        <s className="v2-note-sm">{tr(p.scene ? 'panel.opacityExplore' : 'json.none')}</s>
+        <p className="v2-note-sm">{tr(p.scene ? 'panel.opacityExplore' : 'json.none')}</p>
        </div>}
       </div>;
      })}
@@ -846,7 +856,14 @@ export function StudioOverlays(p: {
    {/* DERIVED AT BUILD TIME (vite.config.ts `define`), never typed here. The literals that used to
        sit in this line said `l31v21a` / `07e76ee` two increments after both had moved — on the one
        panel whose whole job is to say what the reader is looking at (stand-in review S1 L1). */}
-   <p style={{marginTop: 12, color: 'var(--v2-ink-3)'}}>{tr('about.build', {build: ATLAS_BUILD, commit: ATLAS_COMMIT})}</p>
+   {/* ⚠️ A STABLE SELECTOR AND THE COMMIT ON ITS OWN ATTRIBUTE — codex round 12, Low 5.
+       The oracle used to find this line as "the last `<p>` in `.v2-about`" and search its text for
+       a seven-hex substring. Round 10 had already broken the substring half (the UPSTREAM sha
+       satisfied it); the positional half is the same shape of defect waiting for the day somebody
+       adds a paragraph after this one. `data-commit` is the value itself, so the row compares
+       `git rev-parse --short HEAD` to a field rather than to a sentence it happens to appear in. */}
+   <p className="v2-about-build" data-build={ATLAS_BUILD} data-commit={ATLAS_COMMIT}
+    style={{marginTop: 12, color: 'var(--v2-ink-3)'}}>{tr('about.build', {build: ATLAS_BUILD, commit: ATLAS_COMMIT})}</p>
   </div>}
  </Overlay>;
 
@@ -880,10 +897,10 @@ export function StudioOverlays(p: {
          without saying so. */}
      <dd>
       {tr(r.cmd)}
-      {r.owner && <s> · {tr('inert.pending', {s: r.owner})}</s>}
+      {r.owner && <span className="v2-sub"> · {tr('inert.pending', {s: r.owner})}</span>}
       {/* PER ROW, so a reader at 390×844 can see that `1 2 3 4` works and `W A S D` does not,
           rather than being told the whole section is unavailable. */}
-      {!r.owner && r.studioOnly && !p.studio && <s data-studio-only="1"> · {tr('keys.desktopOnly')}</s>}
+      {!r.owner && r.studioOnly && !p.studio && <span className="v2-sub" data-studio-only="1"> · {tr('keys.desktopOnly')}</span>}
      </dd>
     </div>)}
    </dl>
