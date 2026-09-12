@@ -747,23 +747,56 @@ for (const vp of SWEEP) {
          * So the walk stops at the first ancestor that cannot contain this element. `sticky` is
          * deliberately NOT exempt: it is laid out in flow and IS clipped by its scroller.
          */
-        const contains = (p) => {
+        /**
+         * ⚠️ S3b — TWO CORRECTIONS, BOTH OF WHICH MADE THE GATE DROP VISIBLE CONTROLS (codex round
+         * 4, Medium 1). A predicate that over-reports "clipped" is a FALSE GREEN: the element
+         * disappears from the 44 px gate AND the overlap gate, so the two rows pass by measuring
+         * fewer things.
+         *
+         * 1. THE FIXED-CONTAINING-BLOCK LIST WAS TOO WIDE. `will-change` and `contain` create one
+         *    only for SPECIFIC values. `will-change: opacity` does not; `contain: size` and
+         *    `contain: style` do not (only `layout`, `paint`, `strict`, `content` do). The round-3
+         *    version accepted `willChange !== 'auto'` and `contain !== 'none'`, so any of those
+         *    three made the predicate resume clipping a control that is laid out against the
+         *    viewport. codex executed all three: `CLIPPED=true` where the truth is false.
+         * 2. AN ANCESTOR'S POSITIONING LIFTS THE WHOLE SUBTREE, not just the element itself. The
+         *    walk read only `el`'s own `position`, so a STATIC button inside a `position:fixed`
+         *    wrapper — the commonest shape in this app, since every panel is a fixed wrapper full of
+         *    static buttons — was treated as in-flow and reported clipped by a scroller it escapes.
+         *
+         * The walk therefore tracks the LAYOUT MODE of the subtree it is climbing out of, and
+         * updates it at each ancestor. `sticky` is still deliberately not exempt: it is laid out in
+         * flow and IS clipped by its scroller.
+         */
+        const FIXED_CB_WILLCHANGE = /(^|,|\s)(transform|perspective|filter|backdrop-filter|contain)(\s|,|$)/;
+        const FIXED_CB_CONTAIN = /(^|\s)(layout|paint|strict|content)(\s|$)/;
+        const fixedCB = (p) => {
           const pcs = getComputedStyle(p);
           return pcs.transform !== 'none' || pcs.perspective !== 'none' || pcs.filter !== 'none'
-            || pcs.backdropFilter !== 'none' || pcs.willChange !== 'auto' || pcs.contain !== 'none';
+            || pcs.backdropFilter !== 'none'
+            || FIXED_CB_WILLCHANGE.test(pcs.willChange || '')
+            || FIXED_CB_CONTAIN.test(pcs.contain || '');
         };
-        const pos = getComputedStyle(el).position;
-        let escaping = pos === 'fixed';
+        /** An absolutely positioned box is contained by the nearest POSITIONED ancestor — or by
+         *  anything that would contain a fixed one. */
+        const absCB = (p) => getComputedStyle(p).position !== 'static' || fixedCB(p);
+        let mode = getComputedStyle(el).position;   // 'fixed' | 'absolute' | anything in-flow
         for (let p = el.parentElement; p; p = p.parentElement) {
-          if (escaping) {
-            if (!contains(p)) continue;   // still laid out against the viewport: this one cannot clip it
-            escaping = false;             // this ancestor IS its containing block; clipping resumes
+          if (mode === 'fixed') {
+            if (!fixedCB(p)) continue;              // laid out against the viewport: p cannot clip it
+            mode = 'static';                        // p IS its containing block; clipping resumes
+          } else if (mode === 'absolute') {
+            if (!absCB(p)) continue;
+            mode = 'static';
           }
           const pcs = getComputedStyle(p);
-          if (pos === 'absolute' && pcs.position === 'static' && !contains(p)) continue;
-          if (!/(auto|scroll|hidden)/.test(pcs.overflowY + pcs.overflowX)) continue;
-          const pr = p.getBoundingClientRect();
-          if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return true;
+          if (/(auto|scroll|hidden)/.test(pcs.overflowY + pcs.overflowX)) {
+            const pr = p.getBoundingClientRect();
+            if (r.bottom <= pr.top || r.top >= pr.bottom || r.right <= pr.left || r.left >= pr.right) return true;
+          }
+          // p's OWN positioning decides how the subtree is laid out relative to everything above p.
+          if (pcs.position === 'fixed') mode = 'fixed';
+          else if (pcs.position === 'absolute') mode = 'absolute';
         }
         return false;
       };
@@ -1998,10 +2031,19 @@ if (variant === 'v2') {
       }, [padSel(code), baseline], {timeout, polling: 60}).then((h) => h.jsonValue()).catch(() => 'timeout');
       await page.keyboard.up(code).catch(() => {});
       // 3. AND IT LET GO. A row that leaves a key down poisons every row after it in the same page.
-      await page.waitForFunction(
+      // ⚠️ S3b — THE RELEASE IS NO LONGER SWALLOWED (codex round 4, Medium 2). This was
+      // `.catch(() => {})`: a key that never came back up produced a clean pass and then poisoned
+      // every subsequent row in the same page with an invisible cause. codex executed it — "movement
+      // reported but timed out waiting for release: moved=true, attempts=1, note '1 attempt'".
+      const released = await page.waitForFunction(
         (s) => document.querySelector(s)?.getAttribute('aria-pressed') === 'false', padSel(code),
         {timeout: 3000, polling: 60},
-      ).catch(() => {});
+      ).then(() => true).catch(() => false);
+      if (!released) {
+        const pose = await page.evaluate(POSE);
+        return {moved: false, released: false, attempts: n, pose,
+          note: `${code} was still held 3 s after keyup — the measurement is unsound and every row after it in this page is suspect`};
+      }
       if (outcome === 'moved') {
         const pose = await page.evaluate(POSE);
         /**
@@ -2017,16 +2059,29 @@ if (variant === 'v2') {
          * up. The outcomes are now carried verbatim.
          */
         const detail = n > 1 ? ` (attempt ${n} of ${attempts}; earlier: ${history.join(', ')})` : '';
-        return {moved: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}`};
+        return {moved: true, released: true, attempts: n, pose, note: `${n} attempt${n > 1 ? 's' : ''}${detail}`};
       }
       const why = outcome === 'lost'
         ? 'the hold was cleared before the camera moved (blur)'
         : outcome === 'timeout' ? 'the camera did not move within 6 s' : String(outcome);
       history.push(`#${n} ${why}`);
       note = `attempt ${n}: ${why}`;
+      /**
+       * ⚠️ S3b — ONLY A LOST HOLD IS RETRIED (codex round 4, Medium 2).
+       *
+       * The retry exists for ONE cause: a `blur` clearing the dispatcher's held set, which is an
+       * environment fact (another browser context opening mid-sweep) and not a claim about the
+       * product. A `timeout` is the opposite — the key WAS held, the dispatcher said so, and the
+       * camera did not move in six seconds. That is a product finding, and retrying it until one
+       * attempt happens to move laundered it into a deploy-gating pass. codex executed exactly that
+       * sequence (attempt 1 held-then-timeout, attempt 2 held-then-moved, ZERO blurs) and got
+       * `moved=true`. So a camera timeout ends the loop where it happens.
+       */
+      if (outcome === 'timeout') break;
     }
     const pose = await page.evaluate(POSE);
-    return {moved: false, attempts, pose, note: `${attempts} attempts — ${history.join(' · ') || note}`};
+    return {moved: false, released: true, attempts: history.length || attempts, pose,
+      note: `${history.length || attempts} attempt${(history.length || attempts) > 1 ? 's' : ''} — ${history.join(' · ') || note}`};
   }
   /** The same discipline for a hold whose POINT is to be held while something else is measured:
    *  wait until the dispatcher reports it, rather than assuming 200 ms was enough. */
@@ -2826,8 +2881,22 @@ if (variant === 'v2') {
         }));
         const tree = [...document.querySelectorAll('.v2-tree-row.is-system')].map((r) => ({
           name: (r.querySelector('.v2-tree-name b')?.textContent || '').trim(),
-          // eye aria-pressed === 'true' means HIDDEN, so "in the human's set" is its inverse.
-          checked: r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false',
+          /**
+           * ⚠️ RE-POINTED AGAIN AT S3b, AND THE FACT MOVED OFF THE EYE — codex round 4, High 4.
+           *
+           * S3 read the eye's `aria-pressed`, which was `visibleIntent`. Round 4 proved that
+           * WRONG AS AN EYE: the renderer draws `render.visible`, a ghost scene's arrival rewrites
+           * it to `['skeletal']`, and `system=` serialises the render value — so the eye reported
+           * "skeletal hidden" over a drawn skeleton and produced a link that said `system=skeletal`.
+           * The eye now reads what is drawn.
+           *
+           * The INTENT did not disappear; it moved to the row's `data-intent`, which is the fact
+           * this pass has always been about. Reading it here is not a weakening — it is STRONGER,
+           * because `eye` is captured beside it and the row below asserts the two DIVERGE, which is
+           * the divergence the whole pass exists to prove and which S3's spelling could only infer.
+           */
+          checked: r.getAttribute('data-intent') === 'on',
+          eye: r.querySelector('.v2-eye')?.getAttribute('aria-pressed') === 'false',
         }));
         const rows = legacy.length ? legacy : tree;
         return {rows, count: rows.length, surface: legacy.length ? 'v2-systems (tablet)' : 'the tree (phone, S3)',
@@ -2858,6 +2927,16 @@ if (variant === 'v2') {
       // and asserts it declares the skeletal rest. That is the fact `apply-scene` turns into
       // `render.visible = ['skeletal']` (controller.ts), so proving it present proves there was
       // something for the intent to diverge FROM.
+      // ⚠️ S3b — THE DIVERGENCE ITSELF, asserted directly for the first time. The two rows above say
+      // what the INTENT shows; this says the EYE shows the other thing, on the same rows, in the
+      // same reading. It is the row that would go red if a future change re-pointed the eye back at
+      // the intent (the round-4 High) or the intent at the render value (the row above would pass
+      // vacuously if both collapsed onto one fact — this one would not).
+      const eyed = seen.rows.filter((r) => r.eye).map((r) => r.name).sort();
+      check(vp.name, `[${STUDIO_V}] H4: the EYE shows what the ghost DRAWS (skeleton), not the human's set`,
+        seen.count > 0 && eyed.some((n) => /Skeleton|骨骼/.test(n)) && !eyed.some(isMuscle),
+        `eyes on: [${eyed.join(', ')}] · intent: [${ticked.join(', ')}]`,
+        'Skeleton eye on, Muscles eye off — the inverse of the intent');
       const held = seen.blob ? decodeScene(seen.blob) : null;
       check(vp.name, `[${STUDIO_V}] H3 control arm: the scene on screen really does declare the skeletal ghost`,
         held?.rest?.include === 'skeletal',
@@ -3011,6 +3090,79 @@ if (variant === 'v2') {
         'the TC stack on every row');
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the CJK pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ S3b — `?lang=` SURVIVES A SCENE THAT NEVER DECLARED ONE ════════════════════════════════════
+   *
+   * The defect, reproduced on the LIVE S2 deploy before it was touched: a link carrying BOTH a valid
+   * `scene=` and an explicit `?lang=` reverted to English ~900 ms after entry and then dropped
+   * `lang=` from the address bar. Root cause is one line — `page.tsx applySceneState` did
+   * `if (sc.lang) applyLang(sc.lang)` while `scene-codec.js normalizeScene` DEFAULTS `lang` to
+   * `'en'`, so the guard was always true and a scene that said nothing about language asserted
+   * English over the reader's explicit choice.
+   *
+   * FOUR CASES, and three of them were already green — which is exactly why the fourth survived:
+   * every obvious spelling of "does `?lang=` work" passed.
+   *
+   *   `?lang=`                  ✅ before and after
+   *   `?select=…&lang=`         ✅ before and after
+   *   `?scene=<garbage>&lang=`  ✅ before and after (no scene arrives, so nothing overrides)
+   *   `?scene=<valid>&lang=`    ❌ before · ✅ after   ← the row that bites
+   *
+   * ⚠️ AND THE CONTROL ARM, which is what stops this passing for the wrong reason: a scene that DOES
+   * declare a language must still win. Without that row, "never apply a scene's language" would pass
+   * all four above and silently break every teaching plate authored in Chinese.
+   *
+   * ⚠️ ON THE S2 SUITE: the S3 worklog predicted this fix would flip named palette rows, because
+   * they "rely on the fixture scene forcing zh-Hans". MEASURED, and the prediction was WRONG: the §9
+   * fixture DECLARES `lang: 'zh-Hans'` (verify-ux.mjs:88), so it is on the winning side of the new
+   * rule and every one of those rows keeps its expectation and its value. The declaring-scene row
+   * below pins that, so the claim is a measurement and not a memory.
+   */
+  {
+    const vp = {name: 'lang-vs-scene', width: 1440, height: 900, dpr: 1, coarse: false};
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      // A scene with NO `lang` key at all — the case the whole defect is about. `?select=` ids so it
+      // is a real, applicable view rather than a curiosity.
+      const mute = encodeScene(normalizeScene({mode: 'render', structures: SCENE.structures.map((s) => ({id: s.id, role: s.role}))}));
+      const declaring = encodeScene(normalizeScene({...SCENE, lang: 'zh-Hant'}));
+      const cases = [
+        ['?lang= alone', `?lang=zh-Hans`, 'zh-Hans'],
+        ['?select= + ?lang=', `?select=FMA22359&lang=zh-Hans`, 'zh-Hans'],
+        ['a GARBAGE scene + ?lang=', `?scene=not-a-real-blob&lang=zh-Hans`, 'zh-Hans'],
+        ['a VALID scene that declares NOTHING + ?lang=', `?scene=${mute}&lang=zh-Hans`, 'zh-Hans'],
+        ['a scene that DOES declare, + a different ?lang=', `?scene=${declaring}&lang=zh-Hans`, 'zh-Hant'],
+      ];
+      for (const [label, query, want] of cases) {
+        await page.goto(`${base}${path}${query}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        // ⚠️ WAIT PAST THE REVERT, don't race it. The old behaviour was zh-Hans at 400 ms and English
+        // at 3 s — a probe that read early would have reported the defect as fixed.
+        await page.waitForTimeout(2600);
+        const seen = await page.evaluate(() => ({
+          lang: document.documentElement.lang,
+          stored: (() => { try { return localStorage.getItem('atlas.lang'); } catch { return null; } })(),
+          url: location.search + location.hash,
+        }));
+        check(vp.name, `[${STUDIO_V}] ${label} -> ${want}`,
+          seen.lang === want,
+          `document.lang=${seen.lang} · localStorage=${seen.stored} · url=${String(seen.url).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(0, 90)}`,
+          want);
+        // The second half of the same defect: the serializer dropped `lang=` once the scene had
+        // overridden it, so the link could not be re-read even by hand.
+        if (want !== 'en') {
+          check(vp.name, `[${STUDIO_V}] ${label} -> the URL still carries lang=${want} after the debounced write`,
+            new RegExp(`lang=${want}`).test(String(seen.url)),
+            String(seen.url).replace(/scene=[^&]{12}[^&]*/, 'scene=<blob>').slice(0, 120),
+            `lang=${want} present`);
+        }
+      }
+    } catch (e) {
+      check(vp.name, `[${STUDIO_V}] the lang-vs-scene pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 
@@ -3386,24 +3538,59 @@ if (variant === 'v2') {
 
       // ── M1: the BOTTOM of an expanded system must not be blank. The defect returned an empty
       //    window because `firstAt` answered 0 past the end.
+      /**
+       * ⚠️ S3b — THIS ROW WAS A FALSE GREEN AND MEASURED NOTHING (codex round 4, Medium 3).
+       *
+       * It ran straight after the H1 probe, which leaves its NAME FILTER active — so the collection
+       * it scrolled was two rows in a box nothing overflows. The retained evidence says so in its
+       * own measured string: `scrollTop 0 of 544: 2 mounted, 2 inside the box`, desktop AND phone.
+       * codex executed the DEFECTIVE `firstAt` against exactly those two rows: `from=0, to=2,
+       * mounted=2, wouldPass=true`. The row guarding M1 could not have gone red for M1.
+       *
+       * Three things are now REQUIRED rather than incidentally true, and each is asserted:
+       *   · the filter is CLEARED first (the probe owns its own preconditions);
+       *   · the system expanded is the LARGEST one, so the collection is hundreds of rows;
+       *   · the box must actually OVERFLOW and the scroll must actually MOVE — `scrollTop > 0` and
+       *     `scrollHeight > clientHeight`. Under the defective `firstAt` this lands `from` past `to`
+       *     and mounts the pinned row alone, which the `inView` count then sees as blank.
+       */
       const bottom = await page.evaluate(async () => {
-        const row = document.querySelector('.v2-tree-row.is-system');
-        (row?.querySelector('.v2-tw[type=button]') ?? row?.querySelector('.v2-tree-name'))?.click();
-        await new Promise((r) => setTimeout(r, 400));
+        const box0 = document.querySelector('.v2-side-filter input') ?? document.querySelector('.v2-find-filter input');
+        if (box0 && box0.value) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(box0, '');
+          box0.dispatchEvent(new Event('input', {bubbles: true}));
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        // THE BIGGEST SYSTEM, read off the row's own count — never the first row, whose size is an
+        // accident of atlas order.
+        const systems = [...document.querySelectorAll('.v2-tree-row.is-system')];
+        const sized = systems.map((r) => ({r, n: Number((r.querySelector('em')?.textContent ?? '0').replace(/[^\d]/g, '')) || 0}))
+          .sort((a, b) => b.n - a.n);
+        const pick = sized[0];
+        if (!pick || pick.n < 50) return {error: `the largest system has ${pick?.n ?? 0} children — not enough to overflow`, filterValue: box0?.value ?? ''};
+        (pick.r.querySelector('.v2-tw[type=button]') ?? pick.r.querySelector('.v2-tree-name'))?.click();
+        await new Promise((r) => setTimeout(r, 500));
         const box = document.querySelector('.v2-tree-box');
         box.scrollTop = box.scrollHeight;            // all the way down, not halfway
-        await new Promise((r) => setTimeout(r, 450));
+        await new Promise((r) => setTimeout(r, 500));
         const rows = [...document.querySelectorAll('.v2-tree-row')];
         const inView = rows.filter((r) => {
           const a = r.getBoundingClientRect(), b = box.getBoundingClientRect();
           return a.bottom > b.top && a.top < b.bottom;
         });
         return {scrollTop: Math.round(box.scrollTop), scrollH: Math.round(box.scrollHeight),
+          clientH: Math.round(box.clientHeight), kids: pick.n, filterValue: box0?.value ?? '',
           mounted: rows.length, inView: inView.length};
       });
+      check(vp.name, `[${S3_V}] the bottom probe reaches a REAL scrolling boundary (its own precondition, not the previous probe's leftovers)`,
+        !bottom.error && bottom.filterValue === '' && bottom.kids >= 50
+          && bottom.scrollH > bottom.clientH && bottom.scrollTop > 0,
+        bottom.error || `filter="${bottom.filterValue}" largest system=${bottom.kids} children · scrollTop ${bottom.scrollTop} of ${bottom.scrollH} in a ${bottom.clientH} px box`,
+        'no filter, >=50 children, scrollHeight > clientHeight, scrollTop > 0');
       check(vp.name, `[${S3_V}] the BOTTOM of an expanded system is not blank (the window boundary, not its middle)`,
-        bottom.mounted > 0 && bottom.inView > 0,
-        `scrollTop ${bottom.scrollTop} of ${bottom.scrollH}: ${bottom.mounted} mounted, ${bottom.inView} inside the box`,
+        !bottom.error && bottom.mounted > 0 && bottom.inView > 0,
+        bottom.error || `scrollTop ${bottom.scrollTop} of ${bottom.scrollH}: ${bottom.mounted} mounted, ${bottom.inView} inside the box`,
         '> 0 rows visible');
 
       // ── M3: the eye has a keyboard path of its own, and Space on a focused eye is left alone.
