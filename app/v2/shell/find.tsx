@@ -433,8 +433,15 @@ export default function FindPalette(p: FindProps) {
        ENGLISH query showed no empty state at all, only a Chinese banner (r3, Medium). An English
        query's result does not depend on a Chinese dictionary, so its "no results" is TRUE and must
        still be said. `hasCjk` is the discriminator: only a CJK query is the one whose emptiness the
-       missing dictionaries explain. */}
-   {q.trim() && !res.all.length && !loading && !(hasCjk && zhPartial() && !loadedLanes().length) &&
+       missing dictionaries explain.
+       ⚠️ AND ANY MISSING LANE COUNTS, NOT ONLY ALL OF THEM (stand-in review S2 r4, M1). Gated on
+       `!loadedLanes().length`, a PARTIAL failure still produced the false claim: with zh-Hant down,
+       頸椎 returned 0 rows and "No structures match." against 28 real matches — the traditional
+       spellings live in exactly the lane that failed. r3's "one lane failed" control used an
+       ENGLISH query, which is the case that works, so the gap sat under a green control arm. The
+       partial banner already renders in that state and carries the retry, so suppressing the empty
+       row leaves the reader with the true explanation instead of a false one. */}
+   {q.trim() && !res.all.length && !loading && !(hasCjk && zhPartial()) &&
     <li className="v2-empty">{p.tr('search.empty')}</li>}
    </ul>
 

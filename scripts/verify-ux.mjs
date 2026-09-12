@@ -1623,10 +1623,16 @@ if (variant === 'v2') {
        * could not go red on the defect it exists to prevent — a FALSE GREEN at five viewports, in
        * the guard written to stop HIGH-1 coming back (stand-in review S2 r3, HIGH-2).
        *
-       * So: the query is re-seeded (which returns the active index to 0 and the list to the top),
-       * the pointer is parked at the centre of the LIST's rect — which is on screen by construction
-       * — and the row now ASSERTS that hover events actually fired. An arm that cannot be armed is
-       * not a control arm.
+       * THE LOAD-BEARING HALF IS PARKING ON THE LIST'S RECT rather than on a row that may have
+       * scrolled away. The re-seed below is belt-and-braces and was MEASURED to be a no-op here
+       * (list `scrollTop` 409 before and after; an A/B with it removed is byte-identical) — it is
+       * kept so the walk starts from a defined query rather than inheriting the previous one, and
+       * it is described as what it is rather than as a scroll reset it does not perform (stand-in
+       * review S2 r4, L2).
+       *
+       * The row also ASSERTS that the pointer really is over the list and that hover events fired
+       * during the walk. An arm that cannot be armed is not a control arm — and round 4 proved this
+       * one can, by injecting a 1 px pointer move mid-walk and watching it go red.
        */
       await page.keyboard.press('Backspace');           // re-seed: shortens then restores the query,
       await page.waitForTimeout(250);                   // which resets active to 0 and scrolls to top
@@ -1644,6 +1650,11 @@ if (variant === 'v2') {
           });
           await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
           await page.waitForTimeout(150);
+          // ⚠️ ZEROED AFTER PARKING. The listener is installed before the move, so the park itself
+          // fires one `mouseover` — which satisfied `hoverN >= 1` on its own while the row's message
+          // claimed the hovers happened DURING the walk (stand-in review S2 r4, L1). Measured
+          // `park=1` at all seven tiers. Now the count is exactly what the message says it is.
+          await page.evaluate(() => { window.__hoverN = 0; });
           const total = await page.evaluate(() => document.querySelectorAll('.v2-find-list .v2-result').length);
           const seq = [];
           for (let i = 0; i < 14; i++) {
