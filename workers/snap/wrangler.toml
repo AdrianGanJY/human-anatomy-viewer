@@ -193,4 +193,15 @@ bucket_name = "human-anatomy-snaps"
 # `plate-goldens.mjs compare` runs against the S4 baseline above and must report every control scene
 # IDENTICAL. (Per the caveat further up, the forward-bend plate's PNG hash is stochastic — its camera
 # and projected rect are the evidence there.) The first render after this bump is COLD.
-SITE_BUILD = "l31v21bc2"
+# ⚠️ S5a-2 MOVED IT AGAIN, to `l31v21bc3`, and the SECOND bump is not a mistake. `app/scene.tsx` is on
+# the `renderPaths` list, and S5a-2 touched it again: OrbitControls' `start` handler now re-emits a
+# window event (`atlas-nav-gesture`) so a tab's pending pose restore can yield to a reader's hand.
+# `bc2` was committed and NEVER DEPLOYED, so nothing is being retired twice — the guard compares the
+# last commit that touched a render path against the last commit that touched THIS file, and the only
+# honest way to clear it is to move the id in a commit of its own, after the one it is about.
+#
+# THE RENDER-PATH CLAIM, again checked rather than asserted: the dispatch fires only from
+# OrbitControls' `start`, which is a pointer / touch / wheel gesture. `workers/snap` renders from the
+# scene and never touches the controls, so it cannot fire during a plate — and a `dispatchEvent` with
+# no listener is a no-op. The goldens after the deploy are what proves it.
+SITE_BUILD = "l31v21bc3"
