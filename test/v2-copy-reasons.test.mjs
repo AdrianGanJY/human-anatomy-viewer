@@ -79,6 +79,25 @@ const scanReasons = (src, filename = 'controller.ts') => {
  const visit = (node) => {
   if (ts.isObjectLiteralExpression(node)) {
    for (const prop of node.properties) {
+    /**
+     * ⚠️ A COMPUTED NAME IS REFUSED, NOT SKIPPED — codex round 13, Low 1.
+     *
+     * The first walk classified only identifier and string-literal names and `continue`d past
+     * everything else, so `{['key']: 'refusal.tamperProof'}` was neither collected NOR rejected —
+     * an escape INSIDE controller.ts, which is precisely the file the walk claims completeness
+     * over. `{['k' + 'ey']: …}` likewise.
+     *
+     * A computed name cannot be resolved without evaluating it, so it is refused by position, the
+     * same way a computed VALUE already is. That keeps the completeness claim true: every property
+     * in this file is either classified or reported.
+     */
+    // `prop.name` is ABSENT on a spread (`{...x}`), so the existence check comes first — a
+    // property with no name is not a `key` property, and the spread's own object literal is
+    // visited separately by the walk.
+    if (prop.name && ts.isComputedPropertyName(prop.name)) {
+     nonLiteral.push(`computed property name ${prop.name.getText(sf).slice(0, 30)} at ${at(prop)}`);
+     continue;
+    }
     const named = prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.text : null;
     if (named !== 'key') continue;
     if (ts.isShorthandPropertyAssignment(prop)) { nonLiteral.push(`shorthand key at ${at(prop)}`); continue; }
@@ -130,7 +149,9 @@ test('the AST scanner catches every escape the regex missed, and refuses the unc
  assert.ok(seen("{vars: {}, key: 'refusal.tamperProof'}").emitted.has('refusal.tamperProof'),
   'property ORDER must not hide an emission');
 
- for (const form of ['{key}', '{key: someVar}', '{key: cond ? a : b}']) {
+ // codex round 13's two computed-name escapes join the list, red-proved the same way.
+ for (const form of ['{key}', '{key: someVar}', '{key: cond ? a : b}',
+  "{['key']: 'refusal.tamperProof'}", "{['k' + 'ey']: 'refusal.tamperProof'}"]) {
   const {nonLiteral} = seen(form);
   assert.equal(nonLiteral.length, 1, `${form} must be refused as non-literal, got ${JSON.stringify(nonLiteral)}`);
   assert.match(nonLiteral[0], /line \d+/, 'and the refusal must name where it is');

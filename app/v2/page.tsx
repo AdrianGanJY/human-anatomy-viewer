@@ -760,12 +760,51 @@ export default function V2() {
  }, []);
 
  /**
+  * ── THE PENDING-RESTORE GENERATION — codex round 13's M1, and it was a real one ────────────────
+  *
+  * Every tab click used to start its own animation-frame loop and NOTHING cancelled the previous
+  * one. codex executed the consequence against the real reducer: apply tab A (which carries a
+  * pose), let one frame run, apply tab B (a valid tab with NO pose), then let A's outstanding frame
+  * run — and A's pose was written while B's scene was live. `setPose` also sets `manual=true`, so
+  * the stale write additionally suppresses B's own fit. Its measured output:
+  *
+  *     apply A · setPose x=1 while scene=A · apply B · setPose x=1 while scene=B
+  *     final {"scene":"B","pose":{"x":1,…,"manual":true}}
+  *
+  * ⚠️ THE INVALIDATION HAPPENS EVEN WHEN THE NEW TAB HAS NO POSE, which is exactly the case that
+  * made the defect reachable: the early `return` for a pose-less tab skipped every cleanup that
+  * lived below it. So the generation is bumped at the TOP of `applyTab`, before the decode and
+  * before the dispatch — a click supersedes a pending restore whether or not it arms a new one, and
+  * whether or not the controller accepts it. A refused tab leaves the camera where it is, which is
+  * the same thing a refusal does to everything else.
+  *
+  * It is also bumped by anything else that is a statement about the camera: a keyboard or pill
+  * command (Home, Fit, a named view, Reset, Stage), a pointer landing in the field, and unmount.
+  * A reader who grabs the camera has said something more recent than a tab click 800 ms ago.
+  */
+ const poseJob = useRef(0);
+ const cancelPoseRestore = useCallback(() => { poseJob.current += 1; }, []);
+ useEffect(() => {
+  // A pointer in the FIELD is the reader taking the camera. Capture phase, because OrbitControls
+  // stops propagation on its own canvas.
+  const onDown = () => cancelPoseRestore();
+  window.addEventListener('pointerdown', onDown, true);
+  // UNMOUNT invalidates too: the loop closes over `navOf()`, which after unmount is a renderer that
+  // no longer exists.
+  return () => { window.removeEventListener('pointerdown', onDown, true); cancelPoseRestore(); };
+ }, [cancelPoseRestore]);
+
+ /**
   * THE KEYBOARD'S SCENE COMMANDS. The camera ones (`home`, `fit`, the drag mode) are answered
   * inside `useShell`, because the renderer's navigation surface is a global; the ones that change
   * the SCENE go through the controller here, so a named view pressed on the keyboard and one
   * clicked on the pill are literally the same dispatch and cannot drift apart.
   */
  const shell = useShell(useCallback((cmd: string) => {
+  // ANY of these is a more recent statement about the camera than a tab click, so a restore still
+  // in flight is stale (codex round 13, M1). `escape` is included: leaving the stage re-lays out
+  // the field, and a pose written across that is a pose written about a different viewport.
+  cancelPoseRestore();
   const view = ({'view-three-quarter': 'three-quarter', 'view-front': 'front', 'view-side': 'side', 'view-back': 'back'} as Record<string, View>)[cmd];
   if (view) return dispatch({type: 'set-view', view});
   if (cmd === 'reset') return dispatch({type: 'reset-view'});
@@ -776,7 +815,7 @@ export default function V2() {
   // Shift+S was a one-way door with a single small button back (stand-in review S1 M6).
   if (cmd === 'escape') { if (!stageRef.current) return false; setStage(false); return true; }
   return false;
- }, [dispatch, snapshot]));
+ }, [dispatch, snapshot, cancelPoseRestore]));
  /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
   *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
   *  callbacks would put a hook after a conditional return path in a file this size. */
@@ -823,6 +862,7 @@ export default function V2() {
   });
  }, []);
 
+
  /**
   * APPLYING A TAB — the transaction first, the pose second, and the order is not a preference.
   *
@@ -832,11 +872,18 @@ export default function V2() {
   *
   * ⚠️ SO THE POSE IS RE-APPLIED ACROSS FRAMES UNTIL IT STICKS, rather than once after a guessed
   * delay. Each application sets `manual=true`, and the studio branch absorbs the focus key without
-  * fitting while `manual` holds — so the retry does not fight the fit, it outlives it. The loop
-  * stops the moment a read-back agrees to within a millimetre, and gives up after ~1.2 s rather
-  * than spinning: a pose that cannot be restored is a finding, not something to retry forever.
+  * fitting while `manual` holds — so the retry does not fight the fit, it outlives it.
+  *
+  * ⚠️ AND "IT STUCK" MEANS IT SURVIVED A FRAME IT WAS NOT WRITTEN IN — codex round 13. The old loop
+  * read the pose back IMMEDIATELY after writing it, which proves the setter works and nothing else:
+  * of course the value is there, it was just put there. The loop now reads FIRST. A frame that
+  * finds the pose already correct is a frame in which nothing overwrote it, and two of those in a
+  * row is the evidence. Only then does it stop.
   */
  const applyTab = useCallback((tab: {blob: string; cam: number[] | null}) => {
+  // FIRST LINE, unconditionally: this click supersedes any restore still in flight.
+  cancelPoseRestore();
+  const job = poseJob.current;
   const sc = decodeScene(tab.blob);
   // A stored blob can be from an older build, hand-edited, or truncated by a full disk. `null` here
   // is the honest answer and the tab simply does nothing rather than throwing inside a click.
@@ -846,19 +893,29 @@ export default function V2() {
   if (!cam || cam.length !== 6) return;
   const want = {x: cam[0], y: cam[1], z: cam[2], tx: cam[3], ty: cam[4], tz: cam[5]};
   const until = performance.now() + 1200;
+  const near = (got: {x: number; y: number; z: number; tx: number; ty: number; tz: number}) =>
+   Math.abs(got.x - want.x) < 1e-3 && Math.abs(got.y - want.y) < 1e-3
+   && Math.abs(got.z - want.z) < 1e-3 && Math.abs(got.tx - want.tx) < 1e-3
+   && Math.abs(got.ty - want.ty) < 1e-3 && Math.abs(got.tz - want.tz) < 1e-3;
+  let held = 0;
   const tick = () => {
+   // THE GENERATION GUARD. A newer tab, a camera command, a pointer in the field or an unmount has
+   // moved the counter on, and this loop is writing about a scene nobody is looking at any more.
+   if (poseJob.current !== job) return;
    const nav = navOf();
-   if (nav?.setPose(want)) {
-    const got = nav.pose();
-    const near = Math.abs(got.x - want.x) < 1e-3 && Math.abs(got.y - want.y) < 1e-3
-      && Math.abs(got.z - want.z) < 1e-3 && Math.abs(got.tx - want.tx) < 1e-3
-      && Math.abs(got.ty - want.ty) < 1e-3 && Math.abs(got.tz - want.tz) < 1e-3;
-    if (near && performance.now() > until - 1000) return;
+   if (!nav) { if (performance.now() < until) requestAnimationFrame(tick); return; }
+   // READ BEFORE WRITE: a frame that finds the pose already right is a frame that did not overwrite
+   // it. Two consecutive such frames is survival; the write's own read-back never was.
+   if (near(nav.pose())) {
+    if (++held >= 2) return;
+   } else {
+    held = 0;
+    nav.setPose(want);
    }
    if (performance.now() < until) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
- }, [dispatch]);
+ }, [dispatch, cancelPoseRestore]);
 
  /**
   * ── S1 / RC3: A STUDIO `?select=` LINK OPENS FRAMED ON ITS STRUCTURE ──────────────────────────

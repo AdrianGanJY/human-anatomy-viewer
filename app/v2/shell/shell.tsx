@@ -666,13 +666,25 @@ export default function Shell(p: ShellProps) {
  const [jsonErr, setJsonErr] = useState<{text: string; detail?: string} | null>(null);
  const [jsonFlash, setJsonFlash] = useState<'' | 'applied' | 'copied'>('');
  const sceneText = p.scene ? JSON.stringify(p.scene, null, 1) : '';
- /** `JSON.parse`'s message names a character POSITION; a reader needs a line. Derived from the
-  *  draft rather than from the message, because the message's wording is engine-specific and its
-  *  position is not. */
+ /**
+  * `JSON.parse`'s message names a character POSITION; a reader needs a line. Derived from the draft
+  * rather than from the message, because the message's wording is engine-specific and its position
+  * is not.
+  *
+  * ⚠️ THE FALLBACK IS THE **LAST** LINE, NOT THE FIRST — codex round 13, Low 3. Some failures carry
+  * no position at all: `JSON.parse('{\n "a":')` throws `Unexpected end of JSON input`, and the old
+  * fallback sent the reader to line 1 when the problem is at the end of what they typed. Truncation
+  * IS the no-position case, and the end of the text is where it is. Pointing at the wrong line is
+  * worse than pointing at no line, because it is a claim.
+  */
  const lineOf = (text: string, e: unknown) => {
-  const m = /position (\d+)/.exec(String((e as Error)?.message ?? ''));
-  if (!m) return 1;
-  return text.slice(0, Number(m[1])).split('\n').length;
+  const msg = String((e as Error)?.message ?? '');
+  const pos = /position (\d+)/.exec(msg);
+  if (pos) return text.slice(0, Number(pos[1])).split('\n').length;
+  // Some engines say "line X column Y" instead of a position; take it when it is offered.
+  const line = /line (\d+)/i.exec(msg);
+  if (line) return Number(line[1]);
+  return Math.max(1, text.split('\n').length);
  };
  const applyDraft = () => {
   if (draft === null) return;

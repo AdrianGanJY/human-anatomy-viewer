@@ -5062,16 +5062,25 @@ if (variant === 'v2') {
   const STRIKE_SURFACES = [
     ['selection', '.v2-pane .v2-card, .v2-pane .v2-card-row, .v2-row, .v2-margin .v2-set'],
     ['info', '.v2-kv, .v2-acc'],
-    ['tree', '.v2-tree-row'],
+    // The tablet draws its systems list as `.v2-systems` labels rather than `.v2-tree-row`, and
+    // that surface was outside every selector here (codex round 13, Low 2) — so the tablet's
+    // systems text was never scanned at all.
+    ['tree', '.v2-tree-row, .v2-systems label, .v2-systems li'],
     ['palette', '.v2-find li, .v2-find .v2-find-foot, .v2-sheet li'],
     ['refusal', '.v2-refusal, .v2-refusal-line'],
   ];
   /** Measured against this build with `inventory.mjs`, never assumed: below 1180 there is no
    *  Selection dock, no Info dock and no left tree — the margin's rows ARE the selection surface. */
+  //
+  // ⚠️ EVERY TIER THAT HAS A SYSTEMS SURFACE MUST REACH IT (codex round 13, Low 2). The phone's
+  // requirement accepted `tree: 0` — so a driver that opened the Systems sheet and found nothing
+  // passed while measuring an empty region. The tablets are listed with `tree` for the same reason;
+  // if one of them genuinely has no systems surface the row now FAILS and says which, instead of
+  // silently shrinking its own denominator.
   const STRIKE_REQUIRED = {
-    '390x844': ['selection', 'palette'],
-    '768x1024': ['selection', 'palette'],
-    '1024x768': ['selection', 'palette'],
+    '390x844': ['selection', 'tree', 'palette'],
+    '768x1024': ['selection', 'tree', 'palette'],
+    '1024x768': ['selection', 'tree', 'palette'],
     '1440x900': ['selection', 'info', 'tree', 'palette', 'refusal'],
     '1920x860': ['selection', 'info', 'tree', 'palette', 'refusal'],
     '1366x1024': ['selection', 'info', 'tree', 'palette', 'refusal'],
@@ -5104,12 +5113,20 @@ if (variant === 'v2') {
                 const text = (n.nodeValue || '').trim();
                 if (!text) continue;
                 readings++;
+                /**
+                 * ⚠️ CLIMB PAST THE SURFACE ROOT, ALL THE WAY TO <body> — codex round 13, Low 2.
+                 *
+                 * The first walk stopped AT the root, and codex executed the hole: a struck
+                 * `.v2-pane` with a `.v2-card` inside it scanned clean, because the decoration was
+                 * painted by an ancestor the walk refused to look at. Decoration is painted DOWN
+                 * the tree without limit, so the only correct stopping point is the point past
+                 * which nothing can be painting — `<body>`.
+                 */
                 let el = n.parentElement, by = '';
-                while (el) {
+                while (el && el !== document.body && el !== document.documentElement) {
                   if ((getComputedStyle(el).textDecorationLine || '').includes('line-through')) {
                     by = `${el.tagName.toLowerCase()}.${el.className || '(no class)'}`; break;
                   }
-                  if (el === root) break;
                   el = el.parentElement;
                 }
                 if (by) out.push({surface, text: text.slice(0, 48), by});
