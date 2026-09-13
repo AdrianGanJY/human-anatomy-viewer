@@ -311,6 +311,12 @@ html:lang(zh-Hans) .v2-cap .v2-sub,html:lang(zh-Hant) .v2-cap .v2-sub{letter-spa
 .v2-cap-key.is-gap{border:0;background:none}
 .v2-legend{position:absolute;right:16px;bottom:16px;padding:8px 12px;border-radius:10px;background:var(--v2-surface);border:1px solid var(--v2-line-2);box-shadow:var(--v2-shadow);font-size:var(--v2-type-xs);color:var(--v2-ink-2)}
 .v2-legend div{display:flex;gap:14px;justify-content:space-between}
+/* ⚠️ THE NUMERAL SLOT IS RESERVED, AND THAT IS A CLS FIX. The legend is anchored bottom-RIGHT, so a
+   width change moves its left edge and counts as a shift — and its width is two counts that go from
+   0 to three or four digits as the scene lands. MEASURED at 1024x768: `div.v2-legend` 0.0168 of a
+   0.001 budget, the largest source in the tablet's entry once the pill was anchored. Reserving five
+   tabular characters means the box is the width it will end up being from the first paint. */
+.v2-legend b{min-width:5ch;text-align:right}
 .v2-legend b{font-weight:600;color:var(--v2-ink);font-variant-numeric:tabular-nums}
 
 /* ── the status strip ────────────────────────────────────────────────────────────────────────── */
@@ -691,6 +697,27 @@ body.v2-stage .v2.v2-studio.v2-tablet{grid-template-columns:1fr;grid-template-ro
 .v2-tools.is-compact .v2-findbtn{flex:1 1 140px;min-width:100px}
 .v2-count{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
 .v2-tbtn.is-on .v2-count{color:var(--v2-accent)}
+
+/* ⚠️ THE TABLET'S PILL IS LEFT-ANCHORED, AND THAT IS A CLS FIX BEFORE IT IS A STYLE CHOICE.
+   The pill is centred with `left:50%; transform:translateX(-50%)`, so ANY width change moves both
+   of its edges — and its width is a function of text that changes after the first paint (the CJK
+   stack resolves when `document.documentElement.lang` is set in an effect, and the coarse pointer
+   makes every button wider). At 1024x768 that is a 738x56 box moving inside a 1024x640 field:
+   MEASURED 0.0158 of a 0.001 budget, the largest single source in the tablet's entry.
+
+   Anchored left, a width change grows the box to the RIGHT and its start position does not move,
+   so there is no shift to count. It also reads correctly on a compact tier, where the row of
+   controls should start where every other row starts rather than float in the middle. */
+.v2-tablet .v2-pill{left:16px;transform:none}
+/* ⚠️ AND THE STATUS CHIP RESERVES ITS WIDEST STATE, for the same reason and with the same evidence.
+   The chip is right-anchored in the bar's flex row, so its text growing moves its LEFT edge: three
+   shifts through entry as it goes "Loading this view" (135) -> "this view is ready · N MB · k
+   chunks" (196) -> "Whole body loaded · 15 chunks" (158), MEASURED in all three languages at both
+   tablet boards. At 1024 px those three shifts were the whole remaining budget. Scoped to the
+   tablet: at >=1180 the same movement is a smaller fraction of a bigger viewport and the row has
+   always passed there, and a 200 px floor in a 1440 px bar would be reserving space that tier does
+   not need. */
+.v2-tablet .v2-chip{min-width:200px;justify-content:center}
 
 /* ── THE RIGHT OVERLAY SHEET (portrait) ────────────────────────────────────────────────────────
    The same `Overlay` primitive, anchored right and full height instead of centred. It keeps the
