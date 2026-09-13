@@ -6204,18 +6204,50 @@ if (variant === 'v2') {
         await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
         const ready = await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).then(() => true).catch(() => false);
         await page.waitForTimeout(2000);
-        const live = await page.evaluate(() => ({
-          csp: window.__csp || [],
-          systems: document.querySelectorAll('.v2-tree-row[data-kind=system], .v2-sysrow').length,
-          text: (document.body.innerText || '').length,
-          sent: (document.querySelector('meta[http-equiv]') || {}).outerHTML || '',
-        }));
+        /**
+         * ⚠️ THE ROW MEASURES THE THING IT IS DEFENDING, NOT A CHARACTER COUNT.
+         *
+         * The first version asserted `body.innerText.length > 200` as a proxy for "nothing broke",
+         * and it went red at 390×844 with `violations=[none]` and 97 characters — because the phone
+         * at entry simply HAS 97 characters of text. The CSP was fine; the proxy was wrong, and a
+         * proxy that is viewport-dependent cannot carry a site-wide claim.
+         *
+         * What this row exists to defend is one specific decision: `style-src 'self'` WITHOUT
+         * `unsafe-inline`, on the reasoning that React writes styles through the CSSOM
+         * (`node.style.prop = …`), which CSP does not govern — as opposed to a style ATTRIBUTE,
+         * which `style-src-attr` does. So it measures exactly that: find an element React gave an
+         * inline style, and assert the COMPUTED value really took it under the policy. If the
+         * reasoning is wrong, that value comes back empty and this goes red for the right reason.
+         *
+         * Plus a stylesheet-sourced computed value, which is what would vanish if the policy were
+         * also blocking the linked stylesheet.
+         */
+        const live = await page.evaluate(() => {
+          const inline = [...document.querySelectorAll('*')].filter((el) => el.style && el.style.length > 0);
+          const first = inline[0];
+          const prop = first ? first.style[0] : '';
+          const surface = document.querySelector('.v2-head, .v2-bar, .v2-field') || document.body;
+          return {
+            csp: window.__csp || [],
+            inlineCount: inline.length,
+            inlineProp: prop,
+            // The computed value of the property React set through the CSSOM. Empty => blocked.
+            inlineApplied: first && prop ? getComputedStyle(first).getPropertyValue(prop).trim() : '',
+            sheetBg: getComputedStyle(surface).backgroundColor,
+            text: (document.body.innerText || '').length,
+          };
+        });
         violations.push(...live.csp);
-        check(vp.name, `[${S5B}] the app runs clean under its own CSP — zero violations, nothing unstyled`,
-          ready && live.csp.length === 0 && live.text > 200,
-          `readiness=${ready} · violations=[${live.csp.join(' ; ') || 'none'}] · rendered text=${live.text} chars`,
-          'no securitypolicyviolation of any directive — in particular none for style-src, which is'
-          + ' the directive whose omission of \'unsafe-inline\' this measurement is defending');
+        const styled = live.inlineCount > 0 && live.inlineApplied !== ''
+          && live.sheetBg !== '' && live.sheetBg !== 'rgba(0, 0, 0, 0)';
+        check(vp.name, `[${S5B}] the app runs clean under its own CSP — zero violations, and BOTH style paths still apply`,
+          ready && live.csp.length === 0 && styled,
+          `readiness=${ready} · violations=[${live.csp.join(' ; ') || 'none'}]`
+          + ` · elements carrying a React inline style=${live.inlineCount}`
+          + ` · its computed value under the policy: ${live.inlineProp}=${live.inlineApplied || 'EMPTY (blocked)'}`
+          + ` · a stylesheet-sourced background=${live.sheetBg} · rendered text=${live.text} chars`,
+          'zero violations, a CSSOM-written inline style that still computes, and a stylesheet that'
+          + ' still paints — the two halves of omitting unsafe-inline from style-src');
         // AND THE POLICY REALLY BITES. A guard that cannot fire is not tested: this injects a script
         // from another origin and asserts the browser refuses it.
         const blocked = await page.evaluate(() => new Promise((done) => {
@@ -6235,7 +6267,16 @@ if (variant === 'v2') {
           'exactly one script-src violation, and the script never ran');
       } catch (e) {
         check(vp.name, `[${S5B}] the CSP pass ran`, false, String(e).slice(0, 200), 'no throw');
-      } finally { await ctx.close(); }
+      } finally {
+        // ⚠️ UNROUTE BEFORE CLOSING. This is the only block whose route handler itself AWAITS the
+        // network (`route.fetch`), so a handler can still be in flight when the context closes —
+        // and Playwright then raises `TargetClosedError` as an UNHANDLED REJECTION, which kills the
+        // node process. Measured on the first full S5b sweep: all 597 rows printed, then the
+        // process died before the SUITE line, taking the summary AND `oracles-*.json` with it. The
+        // rows were fine; the evidence was lost.
+        await page.unrouteAll({behavior: 'ignoreErrors'}).catch(() => {});
+        await ctx.close();
+      }
     }
   }
 
