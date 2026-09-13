@@ -677,14 +677,19 @@ export default function Shell(p: ShellProps) {
   * IS the no-position case, and the end of the text is where it is. Pointing at the wrong line is
   * worse than pointing at no line, because it is a claim.
   */
- const lineOf = (text: string, e: unknown) => {
+ const lineOf = (text: string, e: unknown): number | null => {
   const msg = String((e as Error)?.message ?? '');
   const pos = /position (\d+)/.exec(msg);
   if (pos) return text.slice(0, Number(pos[1])).split('\n').length;
   // Some engines say "line X column Y" instead of a position; take it when it is offered.
   const line = /line (\d+)/i.exec(msg);
   if (line) return Number(line[1]);
-  return Math.max(1, text.split('\n').length);
+  // NO CLAIM. Round 13 returned the LAST line here, on the theory that a position-less error means
+  // truncation. codex round 14 executed `bad\n\n` and `NaN\n\n`, whose invalid token is on
+  // line 1, and got line 3. A line number is a claim about where to look, and a wrong one is worse
+  // than none — the engine's own message is still shown beside it as a labelled quotation, so the
+  // reader is not left with nothing, only without a wrong pointer.
+  return null;
  };
  const applyDraft = () => {
   if (draft === null) return;
@@ -692,8 +697,9 @@ export default function Shell(p: ShellProps) {
   try { parsed = JSON.parse(draft); } catch (e) {
    // NOT A REFUSAL FROM THE CONTROLLER — the controller never saw this. Said in the dock, beside
    // the box, so the two kinds of "no" do not get confused with one another.
+   const at = lineOf(draft, e);
    setJsonErr({
-    text: tr('json.invalid', {line: lineOf(draft, e)}),
+    text: at === null ? tr('json.invalidNoLine') : tr('json.invalid', {line: at}),
     detail: String((e as Error)?.message ?? '').slice(0, 120),
    });
    return;

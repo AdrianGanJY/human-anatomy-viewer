@@ -545,7 +545,55 @@ export default function V2() {
   * `'en'`, so a scene that declared English is indistinguishable from one that said nothing — and in
   * that tie the reader's explicit `?lang=` wins, which is the side that cannot surprise anybody.
   */
+ /**
+  * ── THE PENDING-RESTORE GENERATION — codex round 13's M1, and it was a real one ────────────────
+  *
+  * Every tab click used to start its own animation-frame loop and NOTHING cancelled the previous
+  * one. codex executed the consequence against the real reducer: apply tab A (which carries a
+  * pose), let one frame run, apply tab B (a valid tab with NO pose), then let A's outstanding frame
+  * run — and A's pose was written while B's scene was live. `setPose` also sets `manual=true`, so
+  * the stale write additionally suppresses B's own fit. Its measured output:
+  *
+  *     apply A · setPose x=1 while scene=A · apply B · setPose x=1 while scene=B
+  *     final {"scene":"B","pose":{"x":1,…,"manual":true}}
+  *
+  * ⚠️ THE INVALIDATION HAPPENS EVEN WHEN THE NEW TAB HAS NO POSE, which is exactly the case that
+  * made the defect reachable: the early `return` for a pose-less tab skipped every cleanup that
+  * lived below it. So the generation is bumped at the TOP of `applyTab`, before the decode and
+  * before the dispatch — a click supersedes a pending restore whether or not it arms a new one, and
+  * whether or not the controller accepts it. A refused tab leaves the camera where it is, which is
+  * the same thing a refusal does to everything else.
+  *
+  * It is also bumped by anything else that is a statement about the camera: a keyboard or pill
+  * command (Home, Fit, a named view, Reset, Stage), a pointer landing in the field, and unmount.
+  * A reader who grabs the camera has said something more recent than a tab click 800 ms ago.
+  */
+ const poseJob = useRef(0);
+ const cancelPoseRestore = useCallback(() => { poseJob.current += 1; }, []);
+ useEffect(() => {
+  // A pointer in the FIELD is the reader taking the camera. Capture phase, because OrbitControls
+  // stops propagation on its own canvas.
+  const onDown = () => cancelPoseRestore();
+  window.addEventListener('pointerdown', onDown, true);
+  // UNMOUNT invalidates too: the loop closes over `navOf()`, which after unmount is a renderer that
+  // no longer exists.
+  return () => { window.removeEventListener('pointerdown', onDown, true); cancelPoseRestore(); };
+ }, [cancelPoseRestore]);
+
  const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null, urlVisible?: SystemId[]) => {
+  /**
+   * ⚠️ AN INCOMING SCENE CANCELS A PENDING RESTORE — codex round 14's M1, second entry point.
+   *
+   * This is the URL / hash / mount path, and it dispatches `apply-scene` directly, so nothing on
+   * the tab lane could see it. codex executed it: a hash navigation to scene B, then the old tab's
+   * outstanding frame writing A's pose under B.
+   *
+   * ⚠️ AND IT IS DELIBERATELY **NOT** IN `dispatch`. `applyTab` dispatches its own `apply-scene`
+   * and would invalidate the very job it is about to arm — the ordering trap codex named ("a tab's
+   * own dispatch must complete before its replacement restore captures the current generation").
+   * The cancel belongs on the ENTRY POINTS that represent a new intent, not on the shared verb.
+   */
+  cancelPoseRestore();
   /**
    * ⚠️ AND WHEN THE SCENE LOSES, THE LINK MUST STILL WIN — codex round 5, Medium 3, and it is a
    * REGRESSION THIS FIX INTRODUCED. The first version merely DECLINED to apply the scene's language,
@@ -570,7 +618,7 @@ export default function V2() {
   else if (sc.lang) applyLang(sc.lang);
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [dispatch]);
+ }, [dispatch, cancelPoseRestore]);
 
  /**
   * LEAVING A SCENE, on purpose. `#scene=` with an empty value is how the snapshot renderer gets a
@@ -759,40 +807,6 @@ export default function V2() {
   return true;
  }, []);
 
- /**
-  * ── THE PENDING-RESTORE GENERATION — codex round 13's M1, and it was a real one ────────────────
-  *
-  * Every tab click used to start its own animation-frame loop and NOTHING cancelled the previous
-  * one. codex executed the consequence against the real reducer: apply tab A (which carries a
-  * pose), let one frame run, apply tab B (a valid tab with NO pose), then let A's outstanding frame
-  * run — and A's pose was written while B's scene was live. `setPose` also sets `manual=true`, so
-  * the stale write additionally suppresses B's own fit. Its measured output:
-  *
-  *     apply A · setPose x=1 while scene=A · apply B · setPose x=1 while scene=B
-  *     final {"scene":"B","pose":{"x":1,…,"manual":true}}
-  *
-  * ⚠️ THE INVALIDATION HAPPENS EVEN WHEN THE NEW TAB HAS NO POSE, which is exactly the case that
-  * made the defect reachable: the early `return` for a pose-less tab skipped every cleanup that
-  * lived below it. So the generation is bumped at the TOP of `applyTab`, before the decode and
-  * before the dispatch — a click supersedes a pending restore whether or not it arms a new one, and
-  * whether or not the controller accepts it. A refused tab leaves the camera where it is, which is
-  * the same thing a refusal does to everything else.
-  *
-  * It is also bumped by anything else that is a statement about the camera: a keyboard or pill
-  * command (Home, Fit, a named view, Reset, Stage), a pointer landing in the field, and unmount.
-  * A reader who grabs the camera has said something more recent than a tab click 800 ms ago.
-  */
- const poseJob = useRef(0);
- const cancelPoseRestore = useCallback(() => { poseJob.current += 1; }, []);
- useEffect(() => {
-  // A pointer in the FIELD is the reader taking the camera. Capture phase, because OrbitControls
-  // stops propagation on its own canvas.
-  const onDown = () => cancelPoseRestore();
-  window.addEventListener('pointerdown', onDown, true);
-  // UNMOUNT invalidates too: the loop closes over `navOf()`, which after unmount is a renderer that
-  // no longer exists.
-  return () => { window.removeEventListener('pointerdown', onDown, true); cancelPoseRestore(); };
- }, [cancelPoseRestore]);
 
  /**
   * THE KEYBOARD'S SCENE COMMANDS. The camera ones (`home`, `fit`, the drag mode) are answered
@@ -801,10 +815,6 @@ export default function V2() {
   * clicked on the pill are literally the same dispatch and cannot drift apart.
   */
  const shell = useShell(useCallback((cmd: string) => {
-  // ANY of these is a more recent statement about the camera than a tab click, so a restore still
-  // in flight is stale (codex round 13, M1). `escape` is included: leaving the stage re-lays out
-  // the field, and a pose written across that is a pose written about a different viewport.
-  cancelPoseRestore();
   const view = ({'view-three-quarter': 'three-quarter', 'view-front': 'front', 'view-side': 'side', 'view-back': 'back'} as Record<string, View>)[cmd];
   if (view) return dispatch({type: 'set-view', view});
   if (cmd === 'reset') return dispatch({type: 'reset-view'});
@@ -815,7 +825,15 @@ export default function V2() {
   // Shift+S was a one-way door with a single small button back (stand-in review S1 M6).
   if (cmd === 'escape') { if (!stageRef.current) return false; setStage(false); return true; }
   return false;
- }, [dispatch, snapshot, cancelPoseRestore]));
+ }, [dispatch, snapshot]),
+ /**
+  * EVERY command cancels a pending restore, including the ones `useShell` answers itself.
+  *
+  * Round 13 hung this off the handler above, which only sees the commands `useShell` DECLINES —
+  * so `home`, `fit` and the drag-mode commands bypassed it entirely (codex round 14, M1). The
+  * second hook fires for all of them, before any branch returns.
+  */
+ cancelPoseRestore);
  /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
   *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
   *  callbacks would put a hook after a conditional return path in a file this size. */

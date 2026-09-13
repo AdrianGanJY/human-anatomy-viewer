@@ -366,6 +366,11 @@ export const V2: Record<string, Row> = {
  // is drawn beside it as a labelled English quotation, through the same `refusal.detail` convention
  // `app/v2/refusal.tsx` uses for `validateScene`'s sentences.
  'json.invalid':   {en: 'Not valid JSON at line {line}', 'zh-Hans': '第 {line} 行不是有效的 JSON', 'zh-Hant': '第 {line} 行不是有效的 JSON'},
+ // ⚠️ NO LINE IS BETTER THAN A WRONG LINE — codex round 14, Low 1. `JSON.parse('bad\n\n')` gives
+ // no position, and the round-13 fallback (the LAST line) sent the reader to line 3 for a token
+ // on line 1. Truncation is only ONE of the position-less cases. A line number is a CLAIM about
+ // where to look; when the engine will not say, this row does not invent one.
+ 'json.invalidNoLine': {en: 'Not valid JSON', 'zh-Hans': '不是有效的 JSON', 'zh-Hant': '不是有效的 JSON'},
  'json.applied':   {en: 'Applied', 'zh-Hans': '已应用', 'zh-Hant': '已套用'},
  // The clipboard is absent on an insecure origin and can reject without a user gesture. Silent
  // either way unless it is said.

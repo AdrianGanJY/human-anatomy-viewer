@@ -132,7 +132,27 @@ const nav = (): AtlasNav | null => (window as unknown as {__atlasNav?: AtlasNav}
  *  constant rather than a fresh `new Set()`, so it cannot be mistaken for a live set. */
 const EMPTY_HELD: ReadonlySet<string> = new Set<string>();
 
-export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): ShellState {
+export function useShell(
+ onCommand?: (cmd: KeyCommand) => boolean | void,
+ /**
+  * ⚠️ CALLED FOR **EVERY** COMMAND, BEFORE ANY OF THEM IS HANDLED — codex round 14's M1.
+  *
+  * Round 13 put the page's `cancelPoseRestore()` inside `onCommand`, which looked complete and was
+  * not: `home`, `fit` and the drag-mode commands are answered HERE and `return` before
+  * `onCommandRef` is ever reached, because the renderer's navigation surface is a global rather
+  * than React state. So pressing H or F — or clicking Home or Fit on the pill — left an in-flight
+  * pose restore live, and codex executed it:
+  *
+  *     home: apply A -> setPose x=1 scene=A -> new camera x=99 -> setPose x=1 scene=A
+  *
+  * The reader asked for Home, got Home, and then had the tab's old pose written back over it.
+  *
+  * A second hook rather than a re-ordering: "something happened that the page may need to know
+  * about" is a different question from "does the page want to handle this", and folding them
+  * together is what produced a cancellation that covered only the commands this hook declines.
+  */
+ onAnyCommand?: (cmd: KeyCommand) => void,
+): ShellState {
  const vp = useViewport();
  const tier = tierOf(vp.w, vp.h, vp.coarse);
  const studio = isStudio(tier);
@@ -248,6 +268,8 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
  const dispRef = useRef<Dispatcher | null>(null);
 
  cmdRef.current = (cmd: KeyCommand) => {
+  // FIRST, for every command, before any branch can return. See `onAnyCommand`.
+  anyRef.current?.(cmd);
   if (cmd === 'escape') {
    // TOP OVERLAY FIRST. The overlays handle their own Escape when focus is inside them; this is
    // the case where focus has left the panel (a click on the scrim's edge, say) and the key still
@@ -290,6 +312,8 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
  };
  const onCommandRef = useRef(onCommand);
  onCommandRef.current = onCommand;
+ const anyRef = useRef(onAnyCommand);
+ anyRef.current = onAnyCommand;
 
  useEffect(() => {
   const d = installDispatcher({

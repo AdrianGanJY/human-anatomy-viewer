@@ -5122,11 +5122,15 @@ if (variant === 'v2') {
                  * the tree without limit, so the only correct stopping point is the point past
                  * which nothing can be painting — `<body>`.
                  */
+                // codex round 14, Low 2: the loop EXITED before examining `<body>` and `<html>`
+                // themselves, so a strike declared on either was invisible to it. They are
+                // ancestors like any other; the walk simply ends AFTER the root element.
                 let el = n.parentElement, by = '';
-                while (el && el !== document.body && el !== document.documentElement) {
+                while (el) {
                   if ((getComputedStyle(el).textDecorationLine || '').includes('line-through')) {
                     by = `${el.tagName.toLowerCase()}.${el.className || '(no class)'}`; break;
                   }
+                  if (el === document.documentElement) break;
                   el = el.parentElement;
                 }
                 if (by) out.push({surface, text: text.slice(0, 48), by});
