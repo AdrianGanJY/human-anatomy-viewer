@@ -345,8 +345,21 @@ export function useShell(
  // "dialog" in the everyday sense. If it were missing here, W A S D typed into the Find box would
  // reach guard 1 (which declines inside an editor) but a bare `1` or `R` pressed with focus on a
  // RESULT ROW — a button, not an editor — would change the camera behind the open palette.
+ /**
+  * ⚠️ THE TABLET'S PORTRAIT SHEET IS A MODAL AND MUST BE COUNTED — codex round 24, Medium 1.
+  *
+  * It executed the hook and the dispatcher with a portrait Selection sheet open: `W` entered the
+  * held camera set, `2` dispatched a named view, and Ctrl+K opened the palette ON TOP of it, so the
+  * page held two modal surfaces at once. Clearing the held set when the sheet opens (which S6 does)
+  * stops a key that was already down; it does nothing about the next one.
+  *
+  * ⚠️ AND THE INLINE COLUMN IS DELIBERATELY NOT IN THIS LIST. A landscape tablet's sheet is a grid
+  * column beside a live field, not a dialog over it — it does not dim the field, does not trap
+  * focus, and a reader with it open is expected to keep driving the camera. Folding both
+  * presentations in would have taken the keyboard away from the tier that has the most room for it.
+  */
  const modalRef = useRef(false);
- modalRef.current = keysOpen || settingsOpen || findOpen;
+ modalRef.current = keysOpen || settingsOpen || findOpen || !!(tSheet && !tabletInline);
  /**
   * ⚠️ GUARD 7 READS `chrome`, NOT `studio`, SINCE S6 — and that is the guard's own rule applied, not
   * a widening of it. `keys.ts`: "withhold a command iff its SURFACE is studio-only". The camera

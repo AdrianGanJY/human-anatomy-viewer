@@ -736,7 +736,10 @@ body.v2-stage .v2.v2-studio.v2-tablet{grid-template-columns:1fr;grid-template-ro
    the overlays (z 80). Items are full-width rows at the coarse cap, because every reason to be in
    this menu is a reason the pointer is a finger. */
 .v2-more{position:relative;flex-shrink:0}
-.v2-pop{position:absolute;top:calc(100% + 4px);right:0;z-index:70;min-width:200px;padding:6px;
+/* ⚠️ FIXED, NOT ABSOLUTE — codex round 24, High 1. `.v2-tools` has `overflow:hidden`, so an
+   absolutely-positioned menu inside it is CLIPPED TO ZERO HEIGHT no matter its z-index. `top` and
+   `right` are written by the component from the button's own rect. */
+.v2-pop{position:fixed;z-index:70;min-width:200px;padding:6px;
  background:var(--v2-surface);border:1px solid var(--v2-line-2);border-radius:var(--v2-radius-sm);
  box-shadow:var(--v2-shadow);display:flex;flex-direction:column;gap:2px}
 .v2-popitem{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 10px;

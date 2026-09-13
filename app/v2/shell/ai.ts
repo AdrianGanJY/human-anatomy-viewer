@@ -69,6 +69,21 @@ export const MODELS = ['gpt-5-mini', 'gpt-5', 'gpt-4.1-mini'] as const;
 export const DEFAULT_MODEL = 'gpt-5-mini';
 export const modelOf = (stored: string): string => (stored.trim() || DEFAULT_MODEL);
 
+/**
+ * SSE LINE ENDINGS, IN ONE PLACE. The spec's terminator is CR, LF **or** CRLF, and this project has
+ * now paid for two of the three separately (codex round 22 Medium 2, round 23 Medium 3).
+ *
+ * `holdTrailingCR` is the whole subtlety: mid-stream a CR at the very end of the buffer may be the
+ * first half of a CRLF the next chunk completes, so it waits. At EOF there is no next chunk, so it
+ * is a terminator like any other — which is round 24's Medium 4.
+ */
+export function normaliseEol(buf: string, holdTrailingCR: boolean): string {
+  const s = buf.replace(/\r\n/g, '\n');
+  if (!holdTrailingCR) return s.replace(/\r/g, '\n');
+  const held = s.endsWith('\r');
+  return (held ? s.slice(0, -1) : s).replace(/\r/g, '\n') + (held ? '\r' : '');
+}
+
 /** A keyed failure, so the dock can render it in the reader's language like every other refusal. */
 export class AiError extends Error {
   readonly key: string;
@@ -497,6 +512,41 @@ async function askOnce(o: AskOptions, rec: CallRecord): Promise<AskResult> {
    * reader holds the response body open; on an abort that is a socket the browser cannot reclaim
    * until GC, and on a component that has already unmounted nobody will ever come back for it.
    */
+  /**
+   * ONE FRAME PARSER, used by the read loop and by the EOF drain below. Two copies of it is how the
+   * CR-at-EOF case would have been fixed in one of them.
+   *
+   * ⚠️ A USAGE FRAME IS ONLY USAGE IF ITS NUMBERS ARE NUMBERS — codex round 24, Medium 5. It
+   * executed `usage:{}` (recorded as one reply, 0 + 0, no unknown), a VALID 12 + 8 followed by
+   * `usage:{}` (which OVERWROTE the real figure with zero), and a half-populated frame. Any truthy
+   * object was accepted and its missing fields read as zero, so a malformed tail could turn a known
+   * cost into "free" — the direction a billing counter must never round in. A frame that does not
+   * carry two finite, non-negative numbers is not a usage frame at all, and the last VALID one
+   * stands.
+   */
+  const consume = (frame: string): void => {
+    for (const line of frame.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      try {
+        const j = JSON.parse(payload) as {
+          choices?: {delta?: {content?: string}}[];
+          usage?: {prompt_tokens?: number; completion_tokens?: number};
+        };
+        const piece = j.choices?.[0]?.delta?.content;
+        if (typeof piece === 'string' && piece) { text += piece; o.onDelta(piece); }
+        const u = j.usage;
+        const num = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+        if (u && num(u.prompt_tokens) && num(u.completion_tokens)) {
+          usage = {prompt: u.prompt_tokens, completion: u.completion_tokens};
+          // PUBLISHED THE MOMENT IT ARRIVES (codex round 23, Medium 1). A reader error after this
+          // frame used to discard a figure OpenAI had already told us.
+          rec.usage = usage;
+        }
+      } catch { /* a frame we cannot parse is a frame we ignore — never a thrown request */ }
+    }
+  };
   try {
     for (;;) {
       let chunk: ReadableStreamReadResult<Uint8Array>;
@@ -510,7 +560,22 @@ async function askOnce(o: AskOptions, rec: CallRecord): Promise<AskResult> {
         // that becomes live the first time somebody renders `String(e)` in a catch.
         throw new AiError('ai.network', null, sanitise(String((e as Error)?.message ?? e)));
       }
-      if (chunk.done) break;
+      if (chunk.done) {
+        /**
+         * ⚠️ EOF IS NOT "NOTHING LEFT" — codex round 24, Medium 4. A stream whose LAST event is
+         * CR-terminated and is followed immediately by EOF lost the ENTIRE answer: the trailing CR
+         * is held back in case the next chunk completes a CRLF, and there is no next chunk. Every
+         * supplied fixture appends `data: [DONE]`, which provides another event and masked it.
+         *
+         * So the loop drains before it leaves: the held CR becomes a terminator (there is nothing
+         * left that could complete it), and every whole event still in the buffer is parsed.
+         */
+        buf += dec.decode();
+        const tail = normaliseEol(buf, false);
+        buf = '';
+        for (const frame of tail.split('\n\n')) consume(frame);
+        break;
+      }
       buf += dec.decode(chunk.value, {stream: true});
       /**
        * ⚠️ NORMALISE CRLF BEFORE SPLITTING — codex round 22, Medium 2, the silent one.
@@ -532,34 +597,12 @@ async function askOnce(o: AskOptions, rec: CallRecord): Promise<AskResult> {
        * buffer may be the first half of a CRLF that the next chunk completes — converting it here
        * would turn one terminator into two and split a frame down the middle.
        */
-      buf = buf.replace(/\r\n/g, '\n');
-      const heldCR = buf.endsWith('\r');
-      buf = (heldCR ? buf.slice(0, -1) : buf).replace(/\r/g, '\n') + (heldCR ? '\r' : '');
+      buf = normaliseEol(buf, true);
       // A chunk boundary can fall anywhere, so the tail is kept rather than parsed — splitting on a
       // single '\n' would hand half a JSON object to the parser.
       const frames = buf.split('\n\n');
       buf = frames.pop() ?? '';
-      for (const frame of frames) {
-        for (const line of frame.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (!payload || payload === '[DONE]') continue;
-          try {
-            const j = JSON.parse(payload) as {
-              choices?: {delta?: {content?: string}}[];
-              usage?: {prompt_tokens?: number; completion_tokens?: number};
-            };
-            const piece = j.choices?.[0]?.delta?.content;
-            if (typeof piece === 'string' && piece) { text += piece; o.onDelta(piece); }
-            if (j.usage) {
-              usage = {prompt: j.usage.prompt_tokens ?? 0, completion: j.usage.completion_tokens ?? 0};
-              // PUBLISHED THE MOMENT IT ARRIVES (codex round 23, Medium 1). A reader error after
-              // this frame used to discard a figure OpenAI had already told us.
-              rec.usage = usage;
-            }
-          } catch { /* a frame we cannot parse is a frame we ignore — never a thrown request */ }
-        }
-      }
+      for (const frame of frames) consume(frame);
     }
   } finally {
     // `cancel()` on an unfinished body, `releaseLock()` on a finished one. Both are best-effort:

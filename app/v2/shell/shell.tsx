@@ -34,7 +34,7 @@
  * tabindex and tri-state checkboxes. (The pill and the pad were on this list at S0 and came off it
  * in S1, which is what "placeholder-first" is for.)
  */
-import {useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
 import type {Dicts, T} from '../../i18n/dict';
 import {atlasIndex} from '../find.ts';
@@ -138,6 +138,8 @@ export interface ShellProps {
  /** 768-1179: the studio chrome with ONE shared right sheet instead of a sidebar and two docks. */
  tablet: boolean;
  tSheet: TabletTab | null; onTSheet(v: TabletTab | null): void;
+ /** Opens the Scenes list — the coarse tiers' replacement for the 32 px status-strip tabs. */
+ onScenes(v: boolean): void;
  /** The sheet is a 300 px inline column (landscape >= 1024) rather than a 360 px scrim overlay. */
  tabletInline: boolean;
  keysOpen: boolean; onKeys(open: boolean): void;
@@ -355,24 +357,92 @@ export function StudioField(p: {
  */
 function More(p: {label: string; children: React.ReactNode; className?: string}) {
  const [open, setOpen] = useState(false);
+ const [at, setAt] = useState<{top: number; right: number} | null>(null);
  const wrap = useRef<HTMLDivElement | null>(null);
+ const pop = useRef<HTMLDivElement | null>(null);
  const btn = useRef<HTMLButtonElement | null>(null);
+
+ /**
+  * ⚠️ `position:fixed`, MEASURED FROM THE BUTTON — codex round 24, HIGH 1, and it is the defect I
+  * would least have found by looking.
+  *
+  * `.v2-tools` carries `overflow:hidden` (it is what keeps the chrome from wrapping). The first
+  * build positioned the menu `absolute` inside it, so EVERY ITEM had zero visible height — the
+  * whole menu was clipped by the toolbar it hangs from, and on the tablet JSON and Ask live
+  * NOWHERE ELSE. A z-index cannot climb out of an ancestor's clip; only leaving that ancestor's
+  * containing block can, and `fixed` does exactly that (no transformed ancestor here to catch it).
+  *
+  * The oracle certified the broken state, which is the worse half: it measured the items'
+  * HEIGHTS and their horizontal bounds and never asked whether an ancestor was clipping them —
+  * the exact check codex had just made me add for the Ask panel's Apply button.
+  */
+ const place = useCallback(() => {
+  const r = btn.current?.getBoundingClientRect();
+  if (r) setAt({top: Math.round(r.bottom + 4), right: Math.round(window.innerWidth - r.right)});
+ }, []);
  useEffect(() => {
   if (!open) return;
+  place();
   const onDown = (e: PointerEvent) => {
-   if (!wrap.current?.contains(e.target as Node)) { setOpen(false); btn.current?.focus(); }
+   if (!wrap.current?.contains(e.target as Node) && !pop.current?.contains(e.target as Node)) {
+    setOpen(false); btn.current?.focus();
+   }
   };
   // `pointerdown` rather than `click`: a click that lands on another control must close this first,
   // and a `click` listener fires after that control has already acted with the menu still open.
   window.addEventListener('pointerdown', onDown, true);
-  return () => window.removeEventListener('pointerdown', onDown, true);
- }, [open]);
- return <div className={`v2-more ${p.className ?? ''}`} ref={wrap}
-  onKeyDown={(e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); btn.current?.focus(); } }}>
+  window.addEventListener('resize', place);
+  window.addEventListener('scroll', place, true);
+  return () => {
+   window.removeEventListener('pointerdown', onDown, true);
+   window.removeEventListener('resize', place);
+   window.removeEventListener('scroll', place, true);
+  };
+ }, [open, place]);
+
+ /** The menu's own items, in DOM order, for roving focus. */
+ const items = () => [...(pop.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
+  .filter((b) => !b.disabled);
+ // OPENING FOCUSES THE FIRST ITEM (codex round 24, Medium 2). Without it the menu opened behind the
+ // keyboard: Tab walked into the toolbar behind it and ArrowDown reached the CAMERA.
+ useEffect(() => { if (open) requestAnimationFrame(() => items()[0]?.focus()); }, [open]);
+
+ /**
+  * ⚠️ THE MENU EATS ITS OWN KEYS. It is a menu, not a modal, so the global dispatcher is still
+  * live — and codex executed ArrowDown inside it reaching the camera's held set. Every key this
+  * handler consumes is stopped here (`stopPropagation`) rather than declined downstream, which is
+  * the only version of "the camera does not move while a menu is open" that does not require the
+  * dispatcher to know what a menu is.
+  */
+ const onKeyDown = useCallback((ev: React.KeyboardEvent) => {
+  const list = items();
+  const i = list.indexOf(document.activeElement as HTMLButtonElement);
+  const go = (n: number) => { ev.preventDefault(); ev.stopPropagation(); list[(n + list.length) % list.length]?.focus(); };
+  if (ev.key === 'Escape') { ev.stopPropagation(); ev.preventDefault(); setOpen(false); btn.current?.focus(); return; }
+  if (!list.length) return;
+  if (ev.key === 'ArrowDown') return go(i + 1);
+  if (ev.key === 'ArrowUp') return go(i - 1);
+  if (ev.key === 'Home') return go(0);
+  if (ev.key === 'End') return go(list.length - 1);
+  // Anything else that the camera would consume: swallow it while the menu has focus.
+  if (/^(Arrow|Key|Digit)/.test(ev.code) || ev.key === 'Tab') ev.stopPropagation();
+ }, []);
+
+ // DISMISS ON FOCUS DEPARTURE (Medium 2). A menu left open behind the focus is a menu whose items
+ // are still in the tab order of a surface the reader has left.
+ const onBlur = useCallback((ev: React.FocusEvent) => {
+  const next = ev.relatedTarget as Node | null;
+  if (next && (wrap.current?.contains(next) || pop.current?.contains(next))) return;
+  setOpen(false);
+ }, []);
+
+ return <div className={`v2-more ${p.className ?? ''}`} ref={wrap} onKeyDown={onKeyDown} onBlur={onBlur}>
   <button type="button" ref={btn} className={`v2-tbtn ${open ? 'is-on' : ''}`}
    aria-haspopup="menu" aria-expanded={open} aria-label={p.label} title={p.label}
    onClick={() => setOpen((v) => !v)}><Ico d={P.more}/></button>
-  {open && <div className="v2-pop" role="menu" aria-label={p.label}
+  {open && <div className="v2-pop" role="menu" aria-label={p.label} ref={pop}
+   style={at ? {top: at.top, right: at.right} : {visibility: 'hidden'}}
+   onKeyDown={onKeyDown} onBlur={onBlur}
    // Choosing anything closes the menu. One handler on the container rather than a wrapper around
    // every item: an item that forgets to close is the defect this shape cannot have.
    onClick={() => { setOpen(false); btn.current?.focus(); }}>{p.children}</div>}
@@ -534,6 +604,10 @@ export default function Shell(p: ShellProps) {
   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.camera}/>{tr('nav.snapshot')}</button>
   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.link}/>{tr('nav.link')}</button>
   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.plate}/>{tr('nav.plate')}</button>
+  {/* THE COARSE DESKTOP'S SCENES TRIGGER (codex round 24, Medium 3). At >=1180 with a fine pointer
+      the snapshots are the status strip's tabs; on a coarse pointer those tabs are refused as
+      28 px targets and this 44 px button is what replaces them. */}
+  {p.coarse && <button type="button" className="v2-tbtn" onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>}
   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1" aria-label={tr('nav.more')}><Ico d={P.more}/></button>
  </div>;
 
@@ -597,6 +671,12 @@ export default function Shell(p: ShellProps) {
    <button type="button" role="menuitem" className="v2-popitem" disabled={!p.scene}
     title={p.tabsFull ? tr('tabs.full') : tr('tabs.snapshot')}
     onClick={p.onSnapshot}>{tr('tabs.snapshot')}</button>
+   {/* ⚠️ SNAPSHOT AND SCENES ARE TWO CONTROLS, not one — codex round 24, Medium 3. The item above
+       CREATES a snapshot; this one OPENS the list. S6's first build shipped only the first and
+       called it "the Scenes trigger", which left a coarse reader able to save a view and unable to
+       return to one, at both coarse tiers. */}
+   <button type="button" role="menuitem" className="v2-popitem"
+    onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>
    <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.link')}</button>
    <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.plate')}</button>
   </More>
@@ -1083,6 +1163,9 @@ export function PhoneSheets(p: {
  scene: Scene | null; sceneBlob: string; picks: string[]; basket: ShellProps['basket'];
  askOpen: boolean; onAsk(v: boolean): void;
  scenesOpen: boolean; onScenes(v: boolean): void;
+ /** S6: a coarse pointer at ANY width gets the Scenes surface — the 32 px status tabs are refused
+  *  there, so this overlay is the only way to reopen a snapshot. */
+ coarse: boolean;
  tabs: SceneTab[]; tabsFull: boolean; onSnapshot(): void; onApplyTab(t: SceneTab): void;
  /** S5b — the two the chat needs and the S5a sheet did not: the UI-language name for a structure,
   *  and the controller, so a model-proposed view can be applied through the atomic refusal. */
@@ -1102,7 +1185,7 @@ export function PhoneSheets(p: {
   * ⚠️ THE SAME COMPONENT AS THE DOCK (`ask.tsx`), in its sheet presentation. RC5 still holds by
   * construction: a sheet is a scrim ABOVE `.v2-margin`, and nothing here renders inside it.
   */
- const askSheet = <Overlay open={p.askOpen} onClose={() => p.onAsk(false)} sheet
+ const askSheet = <Overlay open={p.askOpen} onClose={() => p.onAsk(false)} sheet={p.sheet}
   title={tr('panel.ask')} labelClose={tr('settings.close')}>
   <AskPanel sheet
    tr={tr} lang={p.lang} scene={p.scene} sceneBlob={p.sceneBlob} picks={p.picks}
@@ -1112,7 +1195,19 @@ export function PhoneSheets(p: {
 
  // A9 — the local snapshots. `spec.md`: "three local snapshots, active scene, + cap 8, no
  // close/delete feature." The cap is said BEFORE the button is pressed, not after it evicts.
- const scenesSheet = <Overlay open={p.scenesOpen} onClose={() => p.onScenes(false)} sheet
+ /**
+  * ⚠️ AND IT IS THE COARSE TIERS' SCENES SURFACE TOO — codex round 24, Medium 3.
+  *
+  * `spec.md`: "On coarse screens use a 44 px Scenes trigger in Panels/More opening a sheet, never
+  * 32 px touch tabs." S0 correctly gated the 32 px status-strip tabs on `!coarse`; nothing ever
+  * shipped the replacement, and codex traced the consequence exactly: at 768-1179 AND at 1366x1024
+  * a reader could CREATE a snapshot and had no way to reopen one. The trigger is in More on the
+  * tablet and in the tools row at >=1180 coarse; this is the surface both of them open.
+  *
+  * `sheet={p.sheet}` keeps the presentation honest: a bottom sheet on the phone, a centred modal on
+  * a tablet, which is the same rule every other overlay in the shell follows.
+  */
+ const scenesSheet = <Overlay open={p.scenesOpen} onClose={() => p.onScenes(false)} sheet={p.sheet}
   title={tr('tabs.short')} labelClose={tr('settings.close')}>
   {p.tabs.length === 0
    ? <p className="v2-empty-state">{tr('tabs.empty')}</p>
@@ -1139,8 +1234,10 @@ export function PhoneSheets(p: {
   </div>
  </Overlay>;
 
- if (!p.sheet) return null;
- return <>{askSheet}{scenesSheet}</>;
+ // The ASK sheet is the phone's alone (the tablet has Ask as a panel in its own sheet, the desktop
+ // as a dock). The SCENES sheet is every coarse tier's, for the reason above.
+ if (!p.sheet && !p.coarse) return null;
+ return <>{p.sheet && askSheet}{scenesSheet}</>;
 }
 
 /**

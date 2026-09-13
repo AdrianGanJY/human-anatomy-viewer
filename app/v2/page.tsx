@@ -1471,6 +1471,7 @@ export default function V2() {
    findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
    tablet={shell.tablet} tSheet={shell.tSheet} onTSheet={shell.setTSheet} tabletInline={shell.tabletInline}
+   onScenes={setScenesOpen}
    dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
    py={shell.py} pinyin={shell.pinyin} onPinyin={shell.setPinyin}
@@ -1495,7 +1496,7 @@ export default function V2() {
       reachable invoker at S0 rather than an untested branch waiting for S4. */}
   {/* S5a: A8 + A9. Hosted at every width; the component renders nothing above 768. */}
   <PhoneSheets
-   tr={tr} lang={lang} sheet={shell.sheet}
+   tr={tr} lang={lang} sheet={shell.sheet} coarse={shell.coarse}
    scene={scene} sceneBlob={sceneBlob} picks={picks} basket={basket}
    askOpen={askOpen} onAsk={setAskOpen} scenesOpen={scenesOpen} onScenes={setScenesOpen}
    tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}

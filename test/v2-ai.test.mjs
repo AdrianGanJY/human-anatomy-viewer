@@ -17,7 +17,7 @@ import {readFileSync, readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {
   AiError, DEFAULT_MODEL, ENDPOINT, ENDPOINT_HOST, MODELS, ask, linkify, modelOf,
-  proposedScene, readSpend, resetSpend, sanitise, sceneDiff, systemMessage, withoutModelLang,
+  normaliseEol, proposedScene, readSpend, resetSpend, sanitise, sceneDiff, systemMessage, withoutModelLang,
 } from '../app/v2/shell/ai.ts';
 import {hasOpenAi, openAiMask, readOpenAiModel} from '../app/v2/shell/store.ts';
 import {LIMITS} from '../app/scene-codec.js';
@@ -343,7 +343,11 @@ test('an http: or protocol-relative URL is NOT linked', () => {
 test('NO innerHTML anywhere in the Ask surface (RC11 / §G.1)', () => {
   // The single rule whose violation turns a model reply, or an attacker-authored scene title in a
   // shared link, into script execution on the origin that holds the key.
-  for (const f of ['app/v2/shell/shell.tsx', 'app/v2/shell/ai.ts', 'app/v2/page.tsx', 'app/v2/shell/overlay.tsx']) {
+  // ⚠️ `ask.tsx` WAS MISSING FROM THIS LIST — codex round 24, Low. It is the file that RENDERS the
+  // model's reply; a no-HTML scan of the Ask surface that omits the Ask surface is the emptiest
+  // possible version of this guard. `find.tsx` and `tree.tsx` render model-adjacent text too.
+  for (const f of ['app/v2/shell/shell.tsx', 'app/v2/shell/ask.tsx', 'app/v2/shell/ai.ts',
+    'app/v2/page.tsx', 'app/v2/shell/overlay.tsx', 'app/v2/shell/find.tsx', 'app/v2/shell/tree.tsx']) {
     const src = readFileSync(ROOT + f, 'utf8');
     for (const bad of ['dangerouslySetInnerHTML', '.innerHTML', 'insertAdjacentHTML', 'document.write']) {
       assert.ok(!src.includes(bad), `${f} uses ${bad}`);
@@ -571,4 +575,63 @@ test('r23 M4: the diff reads ids the way the controller accepts them', () => {
   // Still no `String()` on an arbitrary object (round 22, Medium 3).
   assert.doesNotThrow(() => sceneDiff(null, {structures: [{id: {toString: null}}, 'A']}));
   assert.deepEqual(sceneDiff(null, {structures: [{id: {toString: null}}, 'A']}).added, ['A']);
+});
+
+// ════ codex ROUND 24 ══════════════════════════════════════════════════════════════════════════
+
+test('r24 M4: a CR-terminated final event followed by EOF is not lost', async () => {
+  resetSpend();
+  await withKey(stored(), async () => {
+    // No `[DONE]` — that is what masked this in every earlier fixture: it supplied one more event
+    // after the one under test, so the held CR was always resolved by a later chunk.
+    const text = `data: ${JSON.stringify({choices: [{delta: {content: 'hi'}}]})}\r\r`
+      + `data: ${JSON.stringify({choices: [], usage: {prompt_tokens: 12, completion_tokens: 8}})}\r\r`;
+    for (const size of [1, 7, 512]) {
+      const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+        fetchImpl: okStream(sseStream(text, size))});
+      assert.equal(out.text, 'hi', `chunk size ${size}`);
+      assert.deepEqual(out.usage, {prompt: 12, completion: 8}, `chunk size ${size}`);
+    }
+    // And an event with NO terminator at all at EOF is still read — the drain splits what is left.
+    const bare = `data: ${JSON.stringify({choices: [{delta: {content: 'tail'}}]})}`;
+    const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+      fetchImpl: okStream(sseStream(bare, 4))});
+    assert.equal(out.text, 'tail');
+  });
+  resetSpend();
+});
+
+test('r24 M5: a malformed usage frame is not usage, and cannot erase a real one', async () => {
+  const frame = (u) => `data: ${JSON.stringify({choices: [], usage: u})}\n\n`;
+  const hi = `data: ${JSON.stringify({choices: [{delta: {content: 'hi'}}]})}\n\n`;
+  const cases = [
+    // [stream, expected usage, expected incomplete]
+    [hi + frame({}) + 'data: [DONE]\n\n', null, 1],
+    [hi + frame({prompt_tokens: 12}) + 'data: [DONE]\n\n', null, 1],
+    [hi + frame({prompt_tokens: 12, completion_tokens: 8}) + frame({}) + 'data: [DONE]\n\n', {prompt: 12, completion: 8}, 0],
+    [hi + frame({prompt_tokens: -1, completion_tokens: 8}) + 'data: [DONE]\n\n', null, 1],
+    [hi + frame({prompt_tokens: 'x', completion_tokens: 8}) + 'data: [DONE]\n\n', null, 1],
+  ];
+  for (const [stream, want, unknown] of cases) {
+    resetSpend();
+    await withKey(stored(), async () => {
+      const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+        fetchImpl: okStream(sseStream(stream, 32))});
+      assert.equal(out.text, 'hi');
+      assert.deepEqual(out.usage, want, `usage for ${stream.slice(0, 80)}`);
+      // An unusable usage frame leaves the request counted as UNKNOWN cost, never as free.
+      assert.equal(readSpend().incomplete, unknown, `incomplete for ${stream.slice(0, 80)}`);
+    });
+  }
+  resetSpend();
+});
+
+test('r24: normaliseEol holds a trailing CR mid-stream and resolves it at EOF', () => {
+  assert.equal(normaliseEol('a\r\nb', true), 'a\nb');
+  assert.equal(normaliseEol('a\rb', true), 'a\nb');
+  // mid-stream: the last CR waits, because the next chunk may start with LF
+  assert.equal(normaliseEol('a\r', true), 'a\r');
+  // at EOF: nothing can complete it, so it is a terminator
+  assert.equal(normaliseEol('a\r', false), 'a\n');
+  assert.equal(normaliseEol('a\r\n\r\n', false), 'a\n\n');
 });

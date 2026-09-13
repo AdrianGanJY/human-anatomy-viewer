@@ -2193,6 +2193,14 @@ if (variant === 'v2') {
     if (!b) return 'not-found';
     b.focus(); b.click(); return 'clicked';
   })`;
+  /** Any chrome control, wherever it lives — the bar's Settings button is not in the tools row. */
+  const CLICK_ANY = `((re) => {
+    const rx = new RegExp(re);
+    const b = [...document.querySelectorAll('.v2-bar button, .v2-tools button')]
+      .find((x) => rx.test(x.textContent || '') || rx.test(x.getAttribute('aria-label') || '') || rx.test(x.getAttribute('title') || ''));
+    if (!b) return 'not-found';
+    b.focus(); b.click(); return 'clicked';
+  })`;
   const SHEET_GEOM = `(() => {
     const box = (sel) => { const n = document.querySelector(sel); if (!n) return null; const r = n.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x)}; };
     return {
@@ -2288,38 +2296,105 @@ if (variant === 'v2') {
       }
 
       // ── 6. THE OVERFLOW MENU HOLDS WHAT THE ROW COULD NOT ────────────────────────────────────
-      const more = await page.evaluate(`${CLICK_TOOL}('More|更多')`);
-      await page.waitForTimeout(400);
+      /**
+       * ⚠️ THIS ROW CERTIFIED AN INVISIBLE MENU — codex round 24, HIGH 1, and the oracle is the half
+       * that matters. `.v2-tools` has `overflow:hidden`; the menu was positioned `absolute` inside
+       * it and every item was clipped to ZERO VISIBLE HEIGHT. The row measured item HEIGHTS and
+       * horizontal bounds — both fine — and never asked whether an ancestor was clipping them,
+       * which is the exact check codex had made me add for the Apply button one round earlier.
+       *
+       * So it is opened with a REAL POINTER at a real point (never `.click()`, the Playwright lesson
+       * this project already carries), and every item must survive the same clipping walk AND be the
+       * thing `elementFromPoint` returns at its own centre.
+       */
+      const moreBtn = await page.evaluate(`((sel) => {
+        const b = document.querySelector(sel);
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return {x: r.x + r.width / 2, y: r.y + r.height / 2};
+      })('.v2-tools .v2-more > button')`);
+      if (moreBtn) { await page.mouse.move(moreBtn.x, moreBtn.y); await page.mouse.down(); await page.mouse.up(); }
+      await page.waitForTimeout(450);
       const menu = await page.evaluate(() => {
         const m = document.querySelector('.v2-pop');
         if (!m) return null;
         const items = [...m.querySelectorAll('button')];
-        const r = items.map((b) => b.getBoundingClientRect());
+        const clipped = (el) => {
+          const r = el.getBoundingClientRect();
+          for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+            const cs = getComputedStyle(a);
+            if ([cs.overflowY, cs.overflowX].every((v) => !v || v === 'visible')) continue;
+            const ar = a.getBoundingClientRect();
+            if (r.top < ar.top - 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.right > ar.right + 1) return a.className || a.tagName;
+          }
+          return null;
+        };
+        const hits = (el) => {
+          const r = el.getBoundingClientRect();
+          const h = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return !!h && (h === el || el.contains(h));
+        };
+        const rects = items.map((b) => b.getBoundingClientRect());
         return {
           count: items.length,
           names: items.map((b) => (b.textContent || '').trim()),
-          small: r.filter((x) => x.height < 44).length,
-          // A menu that renders off the right edge is a menu with unreachable items.
-          inViewport: r.every((x) => x.right <= innerWidth + 1 && x.left >= -1),
+          small: rects.filter((x) => x.height < 44).length,
+          zero: rects.filter((x) => x.height <= 0 || x.width <= 0).length,
+          clippedBy: items.map(clipped).filter(Boolean),
+          unhittable: items.filter((b) => !hits(b)).length,
+          inViewport: rects.every((x) => x.right <= innerWidth + 1 && x.left >= -1 && x.top >= -1 && x.bottom <= innerHeight + 1),
+          focused: (document.activeElement?.textContent || '').trim().slice(0, 20),
         };
       });
-      check(vp.name, `[${S6_V}] ${vp.board}: More holds the actions the compact row dropped, all at 44 px and on screen`,
-        more === 'clicked' && !!menu && menu.count >= 5 && menu.small === 0 && menu.inViewport,
-        menu ? `${menu.count} items [${menu.names.join(', ')}] · ${menu.small} under 44px · on screen=${menu.inViewport}`
-          : `no menu (click=${more})`,
-        '>= 5 items, none under 44px, all inside the viewport');
+      check(vp.name, `[${S6_V}] ${vp.board}: More's items are VISIBLE — unclipped, hit-testable, inside the viewport, 44 px`,
+        !!menu && menu.count >= 5 && menu.small === 0 && menu.zero === 0
+          && menu.clippedBy.length === 0 && menu.unhittable === 0 && menu.inViewport,
+        menu ? `${menu.count} items [${menu.names.join(', ')}] · ${menu.small} under 44px · ${menu.zero} with no box`
+          + ` · clipped by [${menu.clippedBy.join(', ') || 'nothing'}] · ${menu.unhittable} not hit-testable`
+          + ` · inside the viewport=${menu.inViewport} · focus on "${menu.focused}"`
+          : 'the menu did not open',
+        '>= 5 items, none short, none clipped by an ancestor, all hit-testable and on screen');
+      // AND IT TAKES THE KEYBOARD WITH IT (round 24, Medium 2): opening focuses an item, ArrowDown
+      // moves inside the menu rather than reaching the camera, and Escape restores the button.
+      await page.keyboard.press('ArrowDown');
+      await page.waitForTimeout(150);
+      const nav = await page.evaluate(() => ({inMenu: !!document.activeElement?.closest('.v2-pop')}));
       await page.keyboard.press('Escape');
       await page.waitForTimeout(300);
+      const closed = await page.evaluate(() => ({
+        open: !!document.querySelector('.v2-pop'),
+        onButton: !!document.activeElement?.closest('.v2-more'),
+      }));
+      check(vp.name, `[${S6_V}] ${vp.board}: the menu owns its keyboard — arrows stay inside it, Escape restores its button`,
+        nav.inMenu && !closed.open && closed.onButton,
+        `ArrowDown stayed in the menu=${nav.inMenu} · after Escape: open=${closed.open}, focus back on the button=${closed.onButton}`,
+        'focus inside, then closed with focus on the More button');
 
       // ── 7. THE COARSE FLOOR HOLDS WHILE A SURFACE IS OPEN ────────────────────────────────────
       // Three states the at-rest sweep cannot see. Each is measured with the surface ACTUALLY open.
+      /**
+       * ⚠️ AN OPENER THAT FOUND NOTHING USED TO PASS THIS ROW — codex round 24, Medium 6.
+       *
+       * The Settings opener searched `.v2-tools button`; Settings lives in `.v2-bar`. It returned
+       * `not-found`, the result was discarded, and the target-floor row then measured a page with
+       * nothing open and reported a clean pass for a state it had never reached. Two fixes, and the
+       * second is the general one: every opener must SAY it landed and is asserted on, and every
+       * state must name a SURFACE that is actually present before its targets are counted.
+       */
       for (const st of [
-        {name: 'the sheet open', open: async () => { await page.evaluate(`${CLICK_TOOL}('Layers|图层|圖層')`); }},
-        {name: 'the Find palette open', open: async () => { await page.keyboard.press('Control+k'); }},
-        {name: 'Settings open', open: async () => { await page.evaluate(`${CLICK_TOOL}('Settings|设置|設定')`); }},
+        {name: 'the sheet open', surface: '.v2-tsheet, .v2-modal.is-right',
+          open: async () => page.evaluate(`${CLICK_TOOL}('Layers|图层|圖層')`)},
+        {name: 'the Find palette open', surface: '.v2-find',
+          open: async () => { await page.keyboard.press('Control+k'); return 'clicked'; }},
+        {name: 'Settings open', surface: '.v2-modal',
+          open: async () => page.evaluate(`${CLICK_ANY}('Settings|设置|設定')`)},
       ]) {
-        await st.open();
+        const landed = await st.open();
         await page.waitForTimeout(600);
+        const surfaceUp = await page.evaluate((sel) => !!document.querySelector(sel), st.surface);
+        check(vp.name, `[${S6_V}] ${vp.board}: ${st.name} — the state this row measures was actually reached`,
+          landed === 'clicked' && surfaceUp,
+          `opener=${landed} · ${st.surface} present=${surfaceUp}`, 'the opener landed and its surface is on screen');
         const t = await page.evaluate(() => {
           const sel2 = 'button,a[href],input,select,textarea,[role=button],[role=option],[role=switch],[tabindex]:not([tabindex="-1"])';
           const small = [];
@@ -2345,9 +2420,12 @@ if (variant === 'v2') {
           }
           return {total, small};
         });
+        // AND THE POPULATION IS NAMED. "0 of 0 under 44px" is the shape of a vacuous pass; a state
+        // with an open surface has interactive targets in it or the state was not reached.
         check(vp.name, `[${S6_V}] ${vp.board}: every visible target is >= 44 px with ${st.name}`,
-          t.small.length === 0,
-          `${t.small.length} of ${t.total} under 44px${t.small.length ? ': ' + t.small.slice(0, 6).join(', ') : ''}`, '0');
+          t.small.length === 0 && t.total >= 5,
+          `${t.small.length} of ${t.total} under 44px${t.small.length ? ': ' + t.small.slice(0, 6).join(', ') : ''}`,
+          '0 under 44px, over a population of at least 5');
         await page.keyboard.press('Escape');
         await page.waitForTimeout(400);
       }
@@ -2448,7 +2526,11 @@ if (variant === 'v2') {
         }
         return {moving, animating, names: names.slice(0, 5)};
       });
-      check(vp.name, `[${S6_V}] prefers-reduced-motion leaves NO transition or animation running`,
+      // NAMED HONESTLY (codex round 24, Low): v2.css sets `.001ms`, not zero, so the claim is "no
+      // transition or animation longer than 10 ms" — which is what the predicate measures. It also
+      // walks mounted elements only, and not pseudo-elements; both limits are stated rather than
+      // implied by a stronger name.
+      check(vp.name, `[${S6_V}] prefers-reduced-motion leaves no transition or animation over 10 ms (mounted elements; pseudo-elements not walked)`,
         motion.moving === 0 && motion.animating === 0,
         `${motion.moving} transitions, ${motion.animating} animations${motion.names.length ? ' — ' + motion.names.join(', ') : ''}`,
         '0 and 0');
