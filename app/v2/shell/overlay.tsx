@@ -37,9 +37,12 @@ export interface OverlayProps {
  children: React.ReactNode;
  /** Extra class on the panel, for per-overlay width/height. */
  kind?: string;
+ /** S6 — the tablet sheet's toolbar buttons `aria-controls` it, so the panel needs a stable id.
+  *  Only set where a control outside the overlay points AT it. */
+ id?: string;
 }
 
-export default function Overlay({open, onClose, title, sheet, labelClose, children, kind = ''}: OverlayProps) {
+export default function Overlay({open, onClose, title, sheet, labelClose, children, kind = '', id}: OverlayProps) {
  const panel = useRef<HTMLDivElement | null>(null);
  const invoker = useRef<Element | null>(null);
  const titleId = useId();
@@ -110,9 +113,12 @@ export default function Overlay({open, onClose, title, sheet, labelClose, childr
  }, [open, sheet]);
 
  if (!open) return null;
- return <div className={`v2-scrim ${sheet ? 'is-sheet' : ''}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+ // ⚠️ `kind` LANDS ON THE SCRIM TOO — S6. The right-anchored tablet sheet has to change the SCRIM's
+ // alignment (stretch/flex-end instead of centred), and a `:has()` selector for that would make the
+ // one layout rule in this file depend on a feature no other rule here needs.
+ return <div className={`v2-scrim ${sheet ? 'is-sheet' : ''} ${kind}`} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
   <div
-   ref={panel} className={`v2-modal ${sheet ? 'is-sheet' : ''} ${kind}`}
+   ref={panel} id={id} className={`v2-modal ${sheet ? 'is-sheet' : ''} ${kind}`}
    role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} onKeyDown={onKeyDown}
   >
    {/* The handle is a real 44 px control on the sheet: tapping it closes, which is what a human

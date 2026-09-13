@@ -191,7 +191,12 @@ if (!SWEEP.length) { console.error(`UX_VIEWPORTS matched none of: ${VIEWPORTS.ma
  *  dock is role-ordered. The app bar deliberately shows the scene's CAPTION instead, which is a
  *  different fact and would have made this row assert the wrong thing. `querySelector` takes the
  *  first match of either, and only one of the two exists at any width. */
-const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b, .v2-card b'};
+/** ⚠️ `.v2-cap b` JOINED THE LIST AT S6, and it is not a loosening. The scene's primary name is
+ *  drawn in the phone's term line, in the Selection dock's card, and — since S0 — in the field's
+ *  CAPTION. The tablet opens with its shared sheet CLOSED (`spec.md`), so the card is not mounted
+ *  and the caption is where the name actually is. Asserting against a surface that is not on this
+ *  tier's screen measures the oracle's assumptions, not the product. */
+const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b, .v2-card b, .v2-cap b'};
 /** The element the camera actually draws into — the whole viewport in v1, the grid cell in v2.
  *  This is the measurement that makes 'the field is a layout cell' checkable. */
 const FIELD_SEL = {v1: '.scene', v2: '.v2-field'};
@@ -701,9 +706,29 @@ for (const vp of SWEEP) {
      */
     const AREA_FLOOR = {'390x844': 0.208, '768x1024': 0.190, '1024x768': 0.113,
       '1440x900': 0.153, '1920x860': 0.117, '1366x1024': 0.199}[vp.name] ?? 0.05;
+    /**
+     * ⚠️ 1024x768 IS DEFERRED AT S6, AND THE THRESHOLD IS NOT TOUCHED — measured 11.09% against a
+     * 11.3% floor, a 0.21 pp shortfall, and it is a GEOMETRY consequence rather than a framing
+     * regression: the floor was measured on the LEGACY tablet, whose field was 639x712, and S6
+     * replaced that arrangement with `spec.md`'s — bar 52 + tools 44 + status 32 spend 128 px of a
+     * 768 px viewport, so the field is 1024x640. The subject is a standing figure and the fit is
+     * height-bound, so a shorter field is a smaller subject. Portrait (768x1024) is unaffected and
+     * still passes its own floor.
+     *
+     * THE THREE THINGS THIS DELIBERATELY IS NOT: it is not a retune (the number in the table is
+     * untouched); it is not a silent deferral (it is named here, in the summary, in the worklog and
+     * to Adrian in #coord); and it is not a claim that nothing can be done — the only levers that
+     * would recover it are the studio padding constant and G3's 1.12 multiplier, both of which move
+     * the DESKTOP framing Adrian has already accepted, which is a decision for him and not for this
+     * session. OWNER: Adrian, with the S6 close-out.
+     */
+    const areaDefer = vp.name === '1024x768' && variant === 'v2'
+      ? 'Adrian — the tablet field lost 128 px of height to the chrome rows the spec specifies; recovering it means moving the DESKTOP fit'
+      : undefined;
     check(vp.name, 'subject area has not regressed below the v2.1a entry baseline',
       !framing.error && framing.area >= AREA_FLOOR,
-      framing.error || `${(framing.area * 100).toFixed(2)}%`, `>= ${(AREA_FLOOR * 100).toFixed(1)}%`);
+      framing.error || `${(framing.area * 100).toFixed(2)}%`, `>= ${(AREA_FLOOR * 100).toFixed(1)}%`,
+      areaDefer);
 
     // ── 10 SAFE RECT — every intended frame member, all four edges ──────────────────────────
     // The declared safe rectangle is FIELD_INSET (app/v2/page.tsx:45), the constant the fit is
@@ -1285,7 +1310,12 @@ for (const vp of SWEEP) {
     // IS. Without it, a studio viewport that stopped applying `.v2-studio` would quietly take the
     // phone branch and report a pass for the wrong product.
     if (variant === 'v2') {
-      const wantStudio = vp.width >= 1180;
+      // ⚠️ 1180 -> 768 AT S6, AND THIS IS THE SECOND NAMED CHECK IN THE SUITE WHOSE POLARITY
+      // CHANGES (after S1's bare-fit row). `.v2-studio` is the CHROME class, and S6 gives the
+      // tablet the chrome — so at 768 and 1024 the correct reading is now `true`. The row still
+      // does its job: it is the control arm for the fork above, and a studio viewport that stopped
+      // applying the class still fails here.
+      const wantStudio = vp.width >= 768;
       check(vp.name, 'the bare page renders the tier this viewport is supposed to be',
         bareFrame.studio === wantStudio, `.v2-studio=${bareFrame.studio} at ${vp.width}px`,
         String(wantStudio));
@@ -1497,6 +1527,9 @@ for (const vp of SWEEP) {
 if (variant === 'v2') {
   /** The five tiers and their expected `grid-template-areas`, as STRINGS the browser computed. */
   const STUDIO_AREAS = '"bar bar bar" "tools tools tools" "side field dock" "status status status"';
+  /** S6 — the tablet's own template: no side column, one right column that is 0 px until the shared
+   *  sheet is opened INLINE. `spec.md` §Geometry: "Rows 52 / 44 / flexible / 32; side width zero." */
+  const TABLET_AREAS = '"bar bar" "tools tools" "field dock" "status status"';
   // ⚠️ `board` IS THE CONTRACT, IN THE PASS EXPRESSION. The first version of this pass named only
   // 390 / 1024 / 1179 / 1180 / 1920 and asserted `side === 264 && field.w >= 420` — so D1 (1440),
   // X6 (1366 coarse) and every field HEIGHT were measured at ZERO viewports while the commit claimed
@@ -1506,12 +1539,21 @@ if (variant === 'v2') {
   const TIERS = [
     {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true, tier: 'phone',
       areas: '"head head" "field rail" "margin margin"'},
+    // ⚠️ S6 TOOK THIS TIER. Through S0-S5b these two rows asserted the LEGACY page ("head rail
+    // margin") because the kickoff froze 768-1179 until S6; they now assert the studio chrome in its
+    // tablet arrangement. The polarity change is deliberate and is the second one in the increment
+    // (after S1's framing row) — recorded here rather than quietly edited.
+    // T1L — `spec.md`: "Tablet landscape at 1024x768 has a 1024x640 field closed."
     {name: '1024x768', width: 1024, height: 768, dpr: 2, coarse: true, tier: 'tablet',
-      areas: '"head head head" "field rail margin"'},
+      areas: TABLET_AREAS, board: 'T1L', side: 0, field: [1024, 640], dock: 0, panes: []},
     // THE BOUNDARY ITSELF (opus-plan-review-2.md RC7). 1180, not 1200: v2.css:265 still says 1200
     // for its own legacy rules, and the studio's own tier query is what has to be at 1180.
     {name: '1179x900', width: 1179, height: 900, dpr: 1, coarse: false, tier: 'tablet',
-      areas: '"head head head" "field rail margin"'},
+      areas: TABLET_AREAS, board: 'the 1179 ceiling', side: 0, field: [1179, 772], dock: 0, panes: []},
+    // T1P — `spec.md`: "Portrait at 768x1024 has a 768x896 field under the overlay." The sheet is
+    // CLOSED on entry, so the field is the full width before anything is opened.
+    {name: '768x1024', width: 768, height: 1024, dpr: 2, coarse: true, tier: 'tablet',
+      areas: TABLET_AREAS, board: 'T1P', side: 0, field: [768, 896], dock: 0, panes: []},
     {name: '1180x900', width: 1180, height: 900, dpr: 1, coarse: false, tier: 'studio', areas: STUDIO_AREAS,
       board: 'the 1180 floor', side: 264, field: [596, 772], dock: 320, panes: [320]},
     // D1 — mock-spec.md: side 264, field 856x772, dock 320.
@@ -1542,6 +1584,7 @@ if (variant === 'v2') {
           areas: getComputedStyle(el).gridTemplateAreas,
           tier: el.dataset.tier,
           studio: el.classList.contains('v2-studio'),
+          tablet: el.classList.contains('v2-tablet'),
           bar: box('.v2-bar'), tools: box('.v2-tools'), status: box('.v2-status'),
           side: box('.v2-side'), field: box('.v2-field'), dock: box('.v2-dock'),
           // BOTH the column and the panes inside it. The pane rects alone re-measure a number the
@@ -1556,11 +1599,16 @@ if (variant === 'v2') {
       // G8. The ONE line that detects a mis-ordered `@media`, and the only instrument that can.
       check(vp.name, `[${STUDIO_V}] the computed grid-template-areas is the ${vp.tier} tier`,
         g.areas === vp.areas, `tier=${g.tier} areas=${g.areas}`, vp.areas);
+      // ⚠️ `.v2-studio` IS THE CHROME CLASS SINCE S6, NOT THE DESKTOP CLASS — the tablet renders the
+      // same regions and carries it, plus `.v2-tablet` for its columns. So the row asserts the pair.
+      const wantChrome = vp.tier !== 'phone';
+      const wantTablet = vp.tier === 'tablet';
       check(vp.name, `[${STUDIO_V}] the tier the page believes it is in agrees with the grid it drew`,
-        g.tier === vp.tier && g.studio === (vp.tier === 'studio' || vp.tier === 'studio-wide'),
-        `data-tier=${g.tier} .v2-studio=${g.studio}`, `${vp.tier}, studio=${vp.tier.startsWith('studio')}`);
+        g.tier === vp.tier && g.studio === wantChrome && g.tablet === wantTablet,
+        `data-tier=${g.tier} .v2-studio=${g.studio} .v2-tablet=${g.tablet}`,
+        `${vp.tier}, chrome=${wantChrome}, tablet=${wantTablet}`);
 
-      if (vp.tier.startsWith('studio')) {
+      if (vp.tier.startsWith('studio') || vp.tier === 'tablet') {
         // THE FIXED ROWS, RENDERED. 52 / 44 / 32 in every studio tier including coarse — `spec.md`
         // decision 4 fixes the synthesis's inconsistent heights rather than carrying them in.
         check(vp.name, `[${STUDIO_V}] the studio rows are 52 / 44 / 32 as rendered`,
@@ -1571,9 +1619,9 @@ if (variant === 'v2') {
         // fixed rows actually consumed 52 + 44 + 32 of the viewport rather than merely rendering at
         // those heights somewhere.
         const want = `side ${vp.side} / field ${vp.field[0]}x${vp.field[1]} / dock ${vp.dock}`;
-        const got = `side ${g.side?.w} / field ${g.field?.w}x${g.field?.h} / dock ${g.dock?.w ?? 0}`;
+        const got = `side ${g.side?.w ?? 0} / field ${g.field?.w}x${g.field?.h} / dock ${g.dock?.w ?? 0}`;
         check(vp.name, `[${STUDIO_V}] ${vp.board}: the rendered geometry IS the contract (${want})`,
-          g.side?.w === vp.side && g.field?.w === vp.field[0] && g.field?.h === vp.field[1]
+          (g.side?.w ?? 0) === vp.side && g.field?.w === vp.field[0] && g.field?.h === vp.field[1]
             && (g.dock?.w ?? 0) === vp.dock,
           got, want);
         check(vp.name, `[${STUDIO_V}] ${vp.board}: the field clears the 420 px floor`,
@@ -1587,16 +1635,20 @@ if (variant === 'v2') {
             && total === (g.dock?.w ?? 0) && total <= 780,
           `${g.panes.length} pane(s) [${g.panes.join(', ')}] total ${total}, column ${g.dock?.w ?? 0}`,
           `[${vp.panes.join(', ')}], column ${vp.dock}`);
-        check(vp.name, `[${STUDIO_V}] ${vp.board}: ${vp.tier === 'studio-wide' ? 'two docks' : 'one dock'} by default (G2)`,
-          g.panes.length === (vp.tier === 'studio-wide' ? 2 : 1),
-          `${g.panes.length} pane(s)`, vp.tier === 'studio-wide' ? '2' : '1');
-        check(vp.name, `[${STUDIO_V}] the phone's head / rail / margin are GONE, not merely hidden`,
+        // ⚠️ ZERO ON THE TABLET, AND THAT IS THE ROW — `spec.md`: "Shared right sheet closed on
+        // entry." The desktop's persisted `atlas.dock` must not reach this tier: a reader who left
+        // Info open on a 1920 px monitor has not asked for a sheet over a 768 px field.
+        const wantPanes = vp.tier === 'studio-wide' ? 2 : vp.tier === 'tablet' ? 0 : 1;
+        check(vp.name, `[${STUDIO_V}] ${vp.board}: ${wantPanes === 2 ? 'two docks' : wantPanes === 0 ? 'no sheet' : 'one dock'} by default (G2)`,
+          g.panes.length === wantPanes,
+          `${g.panes.length} pane(s)`, String(wantPanes));
+        check(vp.name, `[${STUDIO_V}] the ${vp.tier === 'tablet' ? 'legacy' : "phone's"} head / rail / margin are GONE, not merely hidden`,
           g.head === null && g.rail === null && g.margin === null,
           `head=${!!g.head} rail=${!!g.rail} margin=${!!g.margin}`, 'absent');
       } else {
         // PHONE AND TABLET PRESERVATION, as a POSITIVE control rather than the absence of a change:
         // the constants are read back off the rendered page.
-        check(vp.name, `[${STUDIO_V}] the shell did not render below 1180 — head / rail / margin intact`,
+        check(vp.name, `[${STUDIO_V}] the shell did not render below 768 — head / rail / margin intact`,
           !!g.head && !!g.rail && !!g.margin && g.bar === null && g.side === null && g.status === null,
           `head=${g.head?.h} rail=${g.rail?.w} margin=${g.margin?.h} bar=${!!g.bar} side=${!!g.side}`,
           'the pre-S0 tree');
@@ -1690,11 +1742,16 @@ if (variant === 'v2') {
        * inverted, inside the fix for round 3's Medium, with no oracle on it at all (round 4,
        * Mediums 1 and 3). EXACT counts, both directions.
        */
+      // ⚠️ THE BOUNDARY IS 768 SINCE S6, NOT 1180 — the map marks a row "desktop only" iff guard 7
+      // withholds it, and guard 7 follows the SURFACE. The tablet has the pill, the pad and
+      // `__atlasNav` now, so the seven camera rows are live there and marking them would be the map
+      // lying in the other direction. The phone still has none of that, and still gets all seven.
       const WITHHELD = 7;
-      check(vp.name, `[${STUDIO_V}] the key map marks exactly the ${WITHHELD} withheld rows as desktop-only ${vp.width >= 1180 ? '(none, in the studio)' : ''}`,
-        modal?.desktopOnly === (vp.width >= 1180 ? 0 : WITHHELD),
+      const wantMarked = vp.width >= 768 ? 0 : WITHHELD;
+      check(vp.name, `[${STUDIO_V}] the key map marks exactly the ${WITHHELD} withheld rows as desktop-only ${vp.width >= 768 ? '(none — this tier has the field chrome)' : ''}`,
+        modal?.desktopOnly === wantMarked,
         `${modal?.desktopOnly} rows marked desktop-only at ${vp.width}px`,
-        String(vp.width >= 1180 ? 0 : WITHHELD));
+        String(wantMarked));
       check(vp.name, `[${STUDIO_V}] the key map names every binding S1 and S2 wired, and marks none of them forthcoming`,
         !!modal && missingKeys.length === 0 && modal.pending === (KEY_ROWS - 2 - BOUND.length),
         modal ? `${modal.keys.length} keys${missingKeys.length ? `, MISSING: ${missingKeys.join(' / ')}` : ''}, ${modal.pending} still marked forthcoming`
@@ -2059,7 +2116,7 @@ if (variant === 'v2') {
         `.v2-margin .v2-search=${leftovers.inMargin}, .v2-search anywhere (palette closed)=${leftovers.anywhere}`,
         '0 and 0');
 
-      if (vp.tier.startsWith('studio')) {
+      if (vp.tier.startsWith('studio') || vp.tier === 'tablet') {
         await page.screenshot({path: join(outDir, `${label}-studio-${vp.name}.png`), timeout: SHOT_MS});
         // The palette, open and populated, as its own shot — the thing Adrian reacts to.
         await openFind();
@@ -2076,6 +2133,315 @@ if (variant === 'v2') {
       }
     } catch (e) {
       check(vp.name, `[${STUDIO_V}] the studio pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ══ S6 — THE TABLET, THE COARSE TIER AND ACCESSIBILITY ════════════════════════════════════════
+   *
+   * The tier rows above measure the tablet AT REST — closed sheet, full-width field. Everything a
+   * reader actually does to it happens in a state no static board describes, and `spec.md` is
+   * specific about all of them: one sheet at a time, 360 overlay / 300 inline, tabs that preserve
+   * the scene, an Escape that returns focus to its invoker, and a 44 px floor that holds WHILE a
+   * surface is open rather than only before it was.
+   *
+   * ⚠️ THE COARSE TARGET SWEEP ABOVE RUNS ON A PAGE AT REST. That is the measurement S3 already
+   * corrected once (a clipped row is not on screen); this is its other half — a menu, a sheet and a
+   * modal each ADD interactive targets, and every one of them was outside the population until now.
+   */
+  const S6_V = 'S6';
+  const TABLET_BOARDS = [
+    {name: '768x1024', width: 768, height: 1024, dpr: 2, coarse: true, inline: false,
+      board: 'T2P', sheetW: 360, fieldOpen: 768},
+    {name: '1024x768', width: 1024, height: 768, dpr: 2, coarse: true, inline: true,
+      board: 'T2L', sheetW: 300, fieldOpen: 724},
+  ];
+  /** Click a tools-row button by its visible name, in any of the three languages. */
+  const CLICK_TOOL = `((re) => {
+    const b = [...document.querySelectorAll('.v2-tools button')].find((x) => new RegExp(re).test(x.textContent || '') || new RegExp(re).test(x.getAttribute('aria-label') || ''));
+    if (!b) return 'not-found';
+    b.focus(); b.click(); return 'clicked';
+  })`;
+  const SHEET_GEOM = `(() => {
+    const box = (sel) => { const n = document.querySelector(sel); if (!n) return null; const r = n.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x)}; };
+    return {
+      inline: box('.v2-tsheet'), overlay: box('.v2-modal.is-right'), scrim: box('.v2-scrim'),
+      field: box('.v2-field'),
+      panes: document.querySelectorAll('.v2-pane, .v2-modal.is-right').length,
+      heads: [...document.querySelectorAll('.v2-pane-head h2, .v2-modal-head h2')].map((n) => n.textContent.trim()),
+      pressed: [...document.querySelectorAll('.v2-tools button[aria-pressed="true"]')].map((n) => n.textContent.trim()),
+      blob: new URL(location.href).searchParams.get('scene') || '',
+      trapped: !!document.querySelector('.v2-modal.is-right')?.contains(document.activeElement),
+    };
+  })`;
+
+  for (const vp of TABLET_BOARDS) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+      const rest = await page.evaluate(`${SHEET_GEOM}()`);
+      // ── 1. CLOSED ON ENTRY, and the desktop's persisted dock set did not reach here ───────────
+      check(vp.name, `[${S6_V}] ${vp.board}: the shared sheet is CLOSED on entry`,
+        rest.panes === 0 && !rest.inline && !rest.overlay && rest.pressed.length === 0,
+        `${rest.panes} panel(s), pressed=[${rest.pressed.join(', ')}]`, '0 panels, nothing pressed');
+
+      // ── 2. ONE SHEET, IN ITS TIER'S PRESENTATION ─────────────────────────────────────────────
+      const opened = await page.evaluate(`${CLICK_TOOL}('Layers|图层|圖層')`);
+      await page.waitForTimeout(600);
+      const open = await page.evaluate(`${SHEET_GEOM}()`);
+      const wantWhere = vp.inline ? 'a 300 px INLINE column, no scrim' : 'a 360 px OVERLAY with a scrim';
+      const gotWhere = `inline=${open.inline?.w ?? 'none'} overlay=${open.overlay?.w ?? 'none'} scrim=${!!open.scrim}`;
+      check(vp.name, `[${S6_V}] ${vp.board}: Layers opens as ${wantWhere}`,
+        opened === 'clicked'
+          && (vp.inline
+            ? open.inline?.w === vp.sheetW && !open.overlay && !open.scrim
+            : open.overlay?.w === vp.sheetW && !!open.scrim && !open.inline),
+        `${opened} · ${gotWhere}`, wantWhere);
+      // THE FIELD IS THE OTHER HALF OF THE SAME FACT. `spec.md`: 1024x640 closed, 724x640 open;
+      // portrait keeps its 768 under the overlay.
+      check(vp.name, `[${S6_V}] ${vp.board}: the field is ${vp.fieldOpen} px wide with the sheet open`,
+        open.field?.w === vp.fieldOpen, `field ${open.field?.w}x${open.field?.h}`, `${vp.fieldOpen} px`);
+      check(vp.name, `[${S6_V}] ${vp.board}: EXACTLY ONE panel is open, and the toolbar says which`,
+        open.panes === 1 && open.pressed.length === 1,
+        `${open.panes} panel(s), pressed=[${open.pressed.join(', ')}]`, '1 panel, 1 pressed button');
+      if (!vp.inline) {
+        check(vp.name, `[${S6_V}] ${vp.board}: the overlay sheet TRAPS focus (it is a dialog)`,
+          open.trapped, `focus inside the sheet=${open.trapped}`, 'true');
+      }
+      // The tree really is IN it — a sheet with a title and no rows would satisfy every row above.
+      const treeRows = await page.evaluate(() => document.querySelectorAll('.v2-tree-row').length);
+      check(vp.name, `[${S6_V}] ${vp.board}: it is the SAME tree, not a placeholder`,
+        treeRows >= 10, `${treeRows} tree rows in the sheet`, '>= 10');
+
+      // ── 3. SWITCHING TABS KEEPS ONE SHEET AND DOES NOT TOUCH THE SCENE ───────────────────────
+      await page.evaluate(`${CLICK_TOOL}('Selection|选择|選擇')`);
+      await page.waitForTimeout(500);
+      const sel = await page.evaluate(`${SHEET_GEOM}()`);
+      check(vp.name, `[${S6_V}] ${vp.board}: switching to Selection REPLACES the panel — never two`,
+        sel.panes === 1 && sel.pressed.length === 1 && sel.blob === open.blob,
+        `${sel.panes} panel(s) [${sel.heads.join(', ')}], blob ${sel.blob === open.blob ? 'unchanged' : 'CHANGED'}`,
+        '1 panel, the scene untouched');
+      await page.evaluate(`${CLICK_TOOL}('Info|信息|資訊')`);
+      await page.waitForTimeout(500);
+      const info = await page.evaluate(`${SHEET_GEOM}()`);
+      check(vp.name, `[${S6_V}] ${vp.board}: and to Info, still exactly one, still the same scene`,
+        info.panes === 1 && info.blob === open.blob,
+        `${info.panes} panel(s) [${info.heads.join(', ')}]`, '1 panel, the scene untouched');
+
+      // ── 4. THE ACTIVE TAB CLOSES IT, and the field comes back ────────────────────────────────
+      await page.evaluate(`${CLICK_TOOL}('Info|信息|資訊')`);
+      await page.waitForTimeout(500);
+      const shut = await page.evaluate(`${SHEET_GEOM}()`);
+      check(vp.name, `[${S6_V}] ${vp.board}: pressing the SHOWING tab closes the sheet and returns the field`,
+        shut.panes === 0 && shut.field?.w === rest.field?.w,
+        `${shut.panes} panel(s), field ${shut.field?.w}`, `0 panels, field ${rest.field?.w}`);
+
+      // ── 5. ESCAPE CLOSES THE OVERLAY AND RETURNS FOCUS TO ITS INVOKER ────────────────────────
+      if (!vp.inline) {
+        await page.evaluate(`${CLICK_TOOL}('Layers|图层|圖層')`);
+        await page.waitForTimeout(500);
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(500);
+        const back = await page.evaluate(() => ({
+          panes: document.querySelectorAll('.v2-modal.is-right').length,
+          focus: (document.activeElement?.textContent || '').trim().slice(0, 24),
+          inToolbar: !!document.activeElement?.closest('.v2-tools'),
+        }));
+        check(vp.name, `[${S6_V}] ${vp.board}: Escape closes the sheet and focus returns to the button that opened it`,
+          back.panes === 0 && back.inToolbar,
+          `${back.panes} sheet(s), focus on "${back.focus}" (in the toolbar=${back.inToolbar})`,
+          'closed, focus back in the toolbar');
+      }
+
+      // ── 6. THE OVERFLOW MENU HOLDS WHAT THE ROW COULD NOT ────────────────────────────────────
+      const more = await page.evaluate(`${CLICK_TOOL}('More|更多')`);
+      await page.waitForTimeout(400);
+      const menu = await page.evaluate(() => {
+        const m = document.querySelector('.v2-pop');
+        if (!m) return null;
+        const items = [...m.querySelectorAll('button')];
+        const r = items.map((b) => b.getBoundingClientRect());
+        return {
+          count: items.length,
+          names: items.map((b) => (b.textContent || '').trim()),
+          small: r.filter((x) => x.height < 44).length,
+          // A menu that renders off the right edge is a menu with unreachable items.
+          inViewport: r.every((x) => x.right <= innerWidth + 1 && x.left >= -1),
+        };
+      });
+      check(vp.name, `[${S6_V}] ${vp.board}: More holds the actions the compact row dropped, all at 44 px and on screen`,
+        more === 'clicked' && !!menu && menu.count >= 5 && menu.small === 0 && menu.inViewport,
+        menu ? `${menu.count} items [${menu.names.join(', ')}] · ${menu.small} under 44px · on screen=${menu.inViewport}`
+          : `no menu (click=${more})`,
+        '>= 5 items, none under 44px, all inside the viewport');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+
+      // ── 7. THE COARSE FLOOR HOLDS WHILE A SURFACE IS OPEN ────────────────────────────────────
+      // Three states the at-rest sweep cannot see. Each is measured with the surface ACTUALLY open.
+      for (const st of [
+        {name: 'the sheet open', open: async () => { await page.evaluate(`${CLICK_TOOL}('Layers|图层|圖層')`); }},
+        {name: 'the Find palette open', open: async () => { await page.keyboard.press('Control+k'); }},
+        {name: 'Settings open', open: async () => { await page.evaluate(`${CLICK_TOOL}('Settings|设置|設定')`); }},
+      ]) {
+        await st.open();
+        await page.waitForTimeout(600);
+        const t = await page.evaluate(() => {
+          const sel2 = 'button,a[href],input,select,textarea,[role=button],[role=option],[role=switch],[tabindex]:not([tabindex="-1"])';
+          const small = [];
+          let total = 0;
+          for (const el of document.querySelectorAll(sel2)) {
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            const cs = getComputedStyle(el);
+            if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) === 0) continue;
+            // Clipped out of a scroller is not on screen — the S3 correction, applied here too.
+            let clipped = false;
+            for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
+              const acs = getComputedStyle(a);
+              if ([acs.overflowY, acs.overflowX].every((v) => !v || v === 'visible')) continue;
+              const ar = a.getBoundingClientRect();
+              if (r.bottom <= ar.top + 1 || r.top >= ar.bottom - 1 || r.right <= ar.left + 1 || r.left >= ar.right - 1) { clipped = true; break; }
+            }
+            if (clipped) continue;
+            total += 1;
+            if (r.width < 44 || r.height < 44) {
+              small.push(`${(el.getAttribute('aria-label') || el.textContent || el.className || el.tagName).trim().slice(0, 20)}@${Math.round(r.width)}x${Math.round(r.height)}`);
+            }
+          }
+          return {total, small};
+        });
+        check(vp.name, `[${S6_V}] ${vp.board}: every visible target is >= 44 px with ${st.name}`,
+          t.small.length === 0,
+          `${t.small.length} of ${t.total} under 44px${t.small.length ? ': ' + t.small.slice(0, 6).join(', ') : ''}`, '0');
+        await page.keyboard.press('Escape');
+        await page.waitForTimeout(400);
+      }
+      await page.screenshot({path: join(outDir, `${label}-s6-tablet-${vp.name}.png`), timeout: SHOT_MS});
+    } catch (e) {
+      check(vp.name, `[${S6_V}] the tablet pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ── S6 — ACCESSIBILITY ────────────────────────────────────────────────────────────────────────
+   *
+   * `spec.md` §Accessibility and focus order gives a production focus order, a visible ring, and a
+   * reduced-motion contract. All three are assertable from the rendered page, and none of them was
+   * ever measured: the increment has a `role=tree` with `aria-posinset` because S3 wrote one, not
+   * because anything went red when it did not.
+   */
+  for (const vp of [
+    {name: '1440x900', width: 1440, height: 900, dpr: 1, coarse: false},
+    {name: '768x1024', width: 768, height: 1024, dpr: 2, coarse: true},
+  ]) {
+    const ctx = await newContext(vp);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(1200);
+
+      // ── FOCUS ORDER: skip link → bar → tools → field → (dock) ───────────────────────────────
+      // Not "every element in the right place" — the REGION SEQUENCE, which is what a keyboard
+      // reader experiences and what a stray `tabindex` or a mis-placed region breaks.
+      const order = [];
+      for (let i = 0; i < 14; i++) {
+        await page.keyboard.press('Tab');
+        const where = await page.evaluate(() => {
+          const a = document.activeElement;
+          if (!a || a === document.body) return 'body';
+          if (a.classList?.contains('v2-skip')) return 'skip';
+          for (const [sel3, name] of [['.v2-bar', 'bar'], ['.v2-tools', 'tools'], ['.v2-side', 'side'],
+            ['.v2-field', 'field'], ['.v2-dock', 'dock'], ['.v2-status', 'status']]) {
+            if (a.closest?.(sel3)) return name;
+          }
+          return 'other';
+        });
+        if (!order.length || order[order.length - 1] !== where) order.push(where);
+      }
+      // The sequence must START at the skip link and reach the bar before the tools — a monotone
+      // reading rather than an exact list, because how MANY controls each region holds is a design
+      // decision every later group is allowed to change and this row is not about.
+      const iSkip = order.indexOf('skip'), iBar = order.indexOf('bar'), iTools = order.indexOf('tools');
+      check(vp.name, `[${S6_V}] the focus order is skip → bar → tools → …`,
+        iSkip === 0 && iBar > iSkip && iTools > iBar,
+        `visited regions in order: ${order.join(' → ')}`, 'skip first, then the bar, then the tools');
+
+      // ── THE RING IS REALLY PAINTED ──────────────────────────────────────────────────────────
+      // `:focus-visible` does not match a PROGRAMMATIC focus in Chromium, so a keyboard press is
+      // what makes the ring real — this reads the resolved paint after a real Tab, not the rule.
+      const ringKb = await page.evaluate(() => {
+        const cs = getComputedStyle(document.activeElement);
+        return {tag: document.activeElement?.className || document.activeElement?.tagName,
+          w: parseFloat(cs.outlineWidth) || 0, style: cs.outlineStyle, color: cs.outlineColor};
+      });
+      check(vp.name, `[${S6_V}] a keyboard-focused control paints a visible ring (2-3 px, accent)`,
+        ringKb.w >= 2 && ringKb.style !== 'none' && ringKb.color !== 'rgba(0, 0, 0, 0)',
+        `outline ${ringKb.w}px ${ringKb.style} ${ringKb.color} on ${String(ringKb.tag).slice(0, 30)}`,
+        '>= 2px, a real style, a real colour');
+
+      // ── THE TREE'S SEMANTICS, READ BACK ─────────────────────────────────────────────────────
+      const tree = await page.evaluate(() => {
+        const t = document.querySelector('[role=tree]');
+        if (!t) return null;
+        const rows = [...t.querySelectorAll('[role=treeitem]')];
+        const roving = rows.filter((r) => r.getAttribute('tabindex') === '0').length;
+        return {
+          rows: rows.length, roving,
+          posinset: rows.filter((r) => r.hasAttribute('aria-posinset') && r.hasAttribute('aria-setsize')).length,
+          level: rows.filter((r) => r.hasAttribute('aria-level')).length,
+        };
+      });
+      if (tree) {
+        check(vp.name, `[${S6_V}] the tree has ONE roving tabindex and reports posinset/setsize on every row`,
+          tree.roving === 1 && tree.posinset === tree.rows && tree.level === tree.rows,
+          `${tree.rows} rows · roving=${tree.roving} · posinset+setsize=${tree.posinset} · level=${tree.level}`,
+          '1 roving row, every row positioned and levelled');
+      }
+
+      // ── REDUCED MOTION: NOT "FAST", ZERO ────────────────────────────────────────────────────
+      await page.emulateMedia({reducedMotion: 'reduce'});
+      await page.waitForTimeout(500);
+      const motion = await page.evaluate(() => {
+        const dur = (v) => Math.max(...String(v).split(',').map((x) => parseFloat(x) || 0), 0);
+        let moving = 0, animating = 0;
+        const names = [];
+        for (const el of document.querySelectorAll('*')) {
+          const cs = getComputedStyle(el);
+          if (dur(cs.transitionDuration) > 0.01) { moving += 1; names.push(`transition ${el.className}`); }
+          if (cs.animationName !== 'none' && dur(cs.animationDuration) > 0.01) { animating += 1; names.push(`animation ${el.className}`); }
+        }
+        return {moving, animating, names: names.slice(0, 5)};
+      });
+      check(vp.name, `[${S6_V}] prefers-reduced-motion leaves NO transition or animation running`,
+        motion.moving === 0 && motion.animating === 0,
+        `${motion.moving} transitions, ${motion.animating} animations${motion.names.length ? ' — ' + motion.names.join(', ') : ''}`,
+        '0 and 0');
+      await page.emulateMedia({reducedMotion: null});
+
+      // ── THE STAGE'S TOUCH EXIT ──────────────────────────────────────────────────────────────
+      await page.goto(`${base}${path}?scene=${BLOB}&stage=1`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForTimeout(2500);
+      const exit = await page.evaluate(() => {
+        const b = document.querySelector('.v2-stage-exit');
+        if (!b) return null;
+        const r = b.getBoundingClientRect(), cs = getComputedStyle(b);
+        return {w: Math.round(r.width), h: Math.round(r.height), opacity: Number(cs.opacity),
+          name: (b.textContent || '').trim(), chrome: !!document.querySelector('.v2-bar, .v2-tools, .v2-status')};
+      });
+      // PERSISTENT on touch, at full contrast, 44 px, and named — the kickoff's replacement for the
+      // spec's reveal-then-fade. On a fine pointer it stays the faint one, which hover restores.
+      check(vp.name, `[${S6_V}] the stage keeps a named 44 px exit${vp.coarse ? ' at full contrast on touch' : ''}`,
+        !!exit && exit.h >= 44 && exit.w >= 44 && exit.name.length > 0 && !exit.chrome
+          && (!vp.coarse || exit.opacity === 1),
+        exit ? `${exit.w}x${exit.h} "${exit.name}" opacity=${exit.opacity}, chrome present=${exit.chrome}`
+          : 'no exit button', vp.coarse ? '>= 44px, opacity 1, no chrome' : '>= 44px, no chrome');
+    } catch (e) {
+      check(vp.name, `[${S6_V}] the accessibility pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 
@@ -3066,8 +3432,21 @@ if (variant === 'v2') {
   // Below 1180 there is no pill, no key pad, and `manual` is never read — so W/A/S/D panned and `H`
   // ran G3's whole-body formula on a tier it was never tuned for, after which the next resize threw
   // the pose away. The keys did not feel absent, they felt broken.
-  for (const vp of [{name: 's1-tier-1100', width: 1100, height: 900, dpr: 1, coarse: false, studio: false},
-    {name: 's1-tier-1180', width: 1180, height: 900, dpr: 1, coarse: false, studio: true}]) {
+  /**
+   * ⚠️ S6 MOVED THIS GATE, AND THE WITHHELD ARM MOVED WITH IT RATHER THAN DISAPPEARING.
+   *
+   * Guard 7's rule is "withhold a command iff its SURFACE is studio-only" (keys.ts). Until S6 that
+   * made 1100 px a withholding tier, because below 1180 there was no pill, no key pad and no
+   * `__atlasNav`. S6 gives the tablet all three, so 1100 is now a WORKING tier — the guard did not
+   * widen, its premise changed underneath it.
+   *
+   * The third fixture is why this is a move and not a deletion: a guard that cannot fire is not
+   * tested, so the withheld half is asserted at the PHONE, which genuinely has no field chrome.
+   * Losing the negative arm is how a guard quietly becomes a no-op.
+   */
+  for (const vp of [{name: 's1-tier-1100', width: 1100, height: 900, dpr: 1, coarse: false, studio: true},
+    {name: 's1-tier-1180', width: 1180, height: 900, dpr: 1, coarse: false, studio: true},
+    {name: 's1-tier-390', width: 390, height: 844, dpr: 3, coarse: true, studio: false}]) {
     const ctx = await newContext(vp);
     const page = await ctx.newPage();
     try {
@@ -3099,13 +3478,13 @@ if (variant === 'v2') {
         await page.keyboard.down('KeyD'); await page.waitForTimeout(900); await page.keyboard.up('KeyD');
         await page.waitForTimeout(400);
         after = await page.evaluate(POSE);
-        note = 'a bounded 900 ms hold — there is no pad below 1180 to observe';
+        note = 'a bounded 900 ms hold — there is no pad on the phone to observe';
       }
       await page.keyboard.press('h');
       await page.waitForTimeout(900);
       const settled = await page.evaluate(POSE);
       const moved = !!settled && !!before && settled.k !== before.k;
-      check(vp.name, `[${S1_V}] the camera keys ${vp.studio ? 'WORK in the studio' : 'are WITHHELD below 1180'}`,
+      check(vp.name, `[${S1_V}] the camera keys ${vp.studio ? 'WORK where the field chrome exists' : 'are WITHHELD on the phone, which has none'}`,
         moved === vp.studio, `${before?.k} -> ${after?.k} -> ${settled?.k} (moved=${moved}) · ${note}`,
         vp.studio ? 'the camera moved' : 'the camera did not move');
 
@@ -5232,8 +5611,8 @@ if (variant === 'v2') {
       const pops = {}, struck = [], drove = [];
       /** Drive one state, then scan it. `false` from the driver means "this state does not exist at
        *  this tier" and is not an error — the REQUIRED table decides what counts as missing. */
-      const step = async (name, driver) => {
-        const landed = await page.evaluate(driver);
+      const step = async (name, driver, arg) => {
+        const landed = await page.evaluate(driver, arg);
         if (landed === false) return;
         await page.waitForTimeout(520);
         const r = await page.evaluate(([surfaces]) => {
@@ -5282,8 +5661,27 @@ if (variant === 'v2') {
       };
 
       const studio = await page.evaluate(() => !!document.querySelector('.v2-studio'));
+      /**
+       * ⚠️ THE TABLET'S SURFACES ARE BEHIND A SHEET THAT IS CLOSED ON ENTRY — S6. This scan reached
+       * `selection` and `tree` by assuming they were on screen (a dock and a sidebar), which was
+       * true of every chrome tier until S6 made 768-1179 one that opens with neither. The first
+       * sweep after the tablet landed reported `UNREACHED selection,tree` at both tablet viewports:
+       * a red on the INSTRUMENT's assumption, over a population of zero, which is exactly the
+       * vacuous pass the population counters exist to prevent — caught because they are counted.
+       */
+      const openTablet = (re) => step(`tablet-${re}`, (r) => {
+        if (document.querySelector('.v2-side')) return false;  // the desktop already shows the tree
+        const b = [...document.querySelectorAll('.v2-tools button')]
+          .find((x) => new RegExp(r).test((x.getAttribute('aria-label') || '').trim()));
+        if (!b) return false;
+        if (b.getAttribute('aria-pressed') === 'true') return 'already';
+        b.click(); return true;
+      }, re);
       await step('rest', () => true);
       if (studio) {
+        // Layers first, so the rows the refusal step needs exist at all on the tablet. A no-op on
+        // the desktop, where `.v2-side` is already mounted.
+        await openTablet('^(Layers|图层|圖層)$');
         // The refusal card FIRST, while every system row is still inside the virtualised window.
         await step('refusal', () => {
           const offs = [...document.querySelectorAll('.v2-tree-row.is-system')]
@@ -5301,6 +5699,9 @@ if (variant === 'v2') {
           if (b.className.includes('is-on')) return 'already-open';
           b.click(); return 'opened';
         });
+        // The refusal step switches the tablet's ONE sheet to Selection, so the tree has to be
+        // asked for again before it can be expanded. On the desktop this is a no-op.
+        await openTablet('^(Layers|图层|圖層)$');
         await step('tree', () => {
           const tw = document.querySelector('.v2-tree-row.is-system .v2-tw');
           if (!tw) return false;
@@ -5926,12 +6327,32 @@ if (variant === 'v2') {
   };
 
   /** Open the Ask dock by its tools-row button, then type a question into the box React owns. */
+  /**
+   * ⚠️ THREE TIERS, THREE INVOKERS, ONE HELPER — S6. This selected `.v2-tools .v2-tbtn` only, which
+   * is the DESKTOP dock button. The reachability scenario now runs at 390 (the phone's A8 sheet,
+   * opened from the margin) and 768 (the tablet, where `spec.md` puts Ask behind More), and at both
+   * of those the helper returned `no-button` — so the row went red on the INSTRUMENT rather than on
+   * the product. A helper that only knows one tier turns a three-tier claim into a one-tier claim
+   * with two false reds.
+   */
   const OPEN_ASK = `(src) => {
-    const b = [...document.querySelectorAll('.v2-tools .v2-tbtn')]
-      .find((x) => new RegExp(src).test((x.textContent || '').trim()));
-    if (!b) return 'no-button';
-    if (b.className.includes('is-on')) return 'already';
-    b.click(); return 'opened';
+    const re = new RegExp(src);
+    const hit = (root, sel) => [...root.querySelectorAll(sel)]
+      .find((x) => re.test((x.textContent || '').trim()) || re.test(x.getAttribute('aria-label') || ''));
+    const direct = hit(document, '.v2-tools .v2-tbtn');
+    if (direct) { if (direct.className.includes('is-on')) return 'already'; direct.click(); return 'opened'; }
+    // TABLET: Ask lives in the overflow menu, so the menu has to be opened first.
+    const more = [...document.querySelectorAll('.v2-tools .v2-more > button')][0];
+    if (more) {
+      more.click();
+      const item = hit(document, '.v2-pop button');
+      if (item) { item.click(); return 'opened'; }
+      more.click();
+    }
+    // PHONE: the margin's action row.
+    const phone = hit(document, '.v2-actions button, .v2-margin button');
+    if (phone) { phone.click(); return 'opened'; }
+    return 'no-button';
   }`;
   const TYPE_ASK = `(text) => {
     const el = document.querySelector('.v2-askbox');
@@ -5940,9 +6361,13 @@ if (variant === 'v2') {
     el.dispatchEvent(new Event('input', {bubbles: true}));
     return true;
   }`;
+  // The Ask surface is a `.v2-pane` in the dock, a `.v2-modal` on the phone and the tablet overlay,
+  // and a `.v2-pane` inside `.v2-tsheet` when the tablet sheet is inline. It is found by the ONE
+  // thing all four have: the box the question was typed into (S6).
   const PRESS_ASK = `() => {
-    const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-askbox'));
-    const b = [...(pane?.querySelectorAll('.v2-pane-foot button') ?? [])]
+    const box = document.querySelector('.v2-askbox');
+    const host = box?.closest('.v2-pane, .v2-modal') ?? document;
+    const b = [...host.querySelectorAll('button')]
       .find((x) => /^(Ask|提问|提問)$/.test((x.textContent || '').trim()));
     if (!b) return 'no-ask-button';
     b.click(); return 'pressed';

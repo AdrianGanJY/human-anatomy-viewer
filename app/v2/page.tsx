@@ -1328,7 +1328,8 @@ export default function V2() {
   * through a second command channel it cannot.
   */
  const studioFrame = useMemo(() => {
-  if (!shell.studio || !basket.length) return null;
+  // S6 — `chrome`, for the same reason the renderer option is: the tablet is the studio shell now.
+  if (!shell.chrome || !basket.length) return null;
   // A scene that DECLARES a focus keeps it; one that does not gets the selection.
   if (plate && plate.focus.length) return null;
   const ids = basket.flatMap((p) => p.elements);
@@ -1347,7 +1348,7 @@ export default function V2() {
    * and no roles to respect, so the selection is both.
    */
   return plate ? {focus: ids} : {focus: ids, frame: ids};
- }, [shell.studio, plate, basket]);
+ }, [shell.chrome, plate, basket]);
 
  /**
   * ── THE ONE STATE THE RENDERER SEES ────────────────────────────────────────────────────────────
@@ -1382,10 +1383,13 @@ export default function V2() {
   * Guarded on `!includes`, so a refusal with the dock already open does not re-publish the dock set.
   */
  useEffect(() => {
-  if (!refused || !shell.studio) return;
+  if (!refused || !shell.chrome) return;
+  // S6 — the tablet has one sheet, so "show the refusal" is "show Selection in it". Same rule,
+  // same guard: a refusal with the panel already showing does not re-publish anything.
+  if (shell.tablet) { if (shell.tSheet !== 'selection') shell.setTSheet('selection'); return; }
   if (!shell.docks.includes('selection')) shell.toggleDock('selection');
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [refused, shell.studio]);
+ }, [refused, shell.chrome, shell.tablet]);
 
  const elementsOf = useCallback((id: string): readonly string[] => conceptsById.get(id)?.elements ?? [id], [conceptsById]);
  /**
@@ -1434,9 +1438,19 @@ export default function V2() {
   (id: string, kind: EyeKind, on: boolean) => readEye(eyeProbe, id, kind, on), [eyeProbe]);
 
  return <main
-  className={`v2 ${shell.studio ? 'v2-studio' : ''}`}
+  // ⚠️ `v2-studio` IS THE CHROME CLASS, NOT THE DESKTOP CLASS — S6. The tablet renders the same
+  // bar / tools / field / status regions and needs the same accent scope and the same stage fence;
+  // `v2-tablet` then re-declares only the columns. Naming it after the first tier that used it was
+  // an accident of S0, kept because renaming a class the oracles select on is a change with no
+  // benefit and a real chance of a silent miss.
+  className={`v2 ${shell.chrome ? 'v2-studio' : ''} ${shell.tablet ? 'v2-tablet' : ''}`}
   data-phase={phase} data-detent={detent} data-ground={background} data-tier={shell.tier}
-  style={shell.studio ? {'--v2-side-w': `${shell.sideW}px`, '--v2-dock-w': `${shell.dockW}px`} as React.CSSProperties : undefined}
+  style={shell.chrome ? {
+   '--v2-side-w': shell.tablet ? '0px' : `${shell.sideW}px`,
+   // The tablet's INLINE sheet is the dock column; its overlay presentation is out of flow, so the
+   // column is zero and the field keeps the whole width under the scrim.
+   '--v2-dock-w': shell.tablet ? (shell.tSheet && shell.tabletInline ? '300px' : '0px') : `${shell.dockW}px`,
+  } as React.CSSProperties : undefined}
  >
   {/* ⚠️ `!stage` IS LOAD-BEARING. `?stage=1` is the L32 display client's whole contract: the figure
       and NOTHING else. v2.css's fence lists the phone's surfaces by name (`.v2-head`, `.v2-rail`,
@@ -1444,7 +1458,7 @@ export default function V2() {
       rendered the whole studio in stage and squeezed the field to 362x138 — caught by the
       `stage-probe` regression case, which asserts the field gets the whole viewport. Not rendering
       is the primary fence; shell.css adds the display:none belt behind it. */}
-  {shell.studio && !stage && <Shell
+  {shell.chrome && !stage && <Shell
    t={t} tr={tr} lang={lang} applyLang={applyLang} askState={shell.askState}
    atlas={atlas} basket={basket} focused={focused} focusPick={focusPick} clearPicks={clearPicks}
    systemId={systemId} describe={describe}
@@ -1456,6 +1470,7 @@ export default function V2() {
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
    findOpen={shell.findOpen} onFind={shell.setFindOpen}
    sheet={shell.sheet} coarse={shell.coarse}
+   tablet={shell.tablet} tSheet={shell.tSheet} onTSheet={shell.setTSheet} tabletInline={shell.tabletInline}
    dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
    py={shell.py} pinyin={shell.pinyin} onPinyin={shell.setPinyin}
@@ -1493,14 +1508,16 @@ export default function V2() {
    t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}
    keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
    settingsOpen={shell.settingsOpen} onSettings={shell.setSettingsOpen}
-   studio={shell.studio}
+   // S6: the tablet renders the chrome, so it gets the chrome's Settings modal rather than the
+   // phone's sheet — `sheet` is still what decides the PRESENTATION, and it is false at >=768.
+   studio={shell.chrome}
    pinyin={shell.pinyin} onPinyin={shell.setPinyin} py={shell.py}
   />
   {/* THE HEADER IS PAINTED FROM THE URL, IN THE FIRST FRAME. It never resizes afterwards:
       its height is fixed in CSS, so the title arriving, the name arriving and the model
       arriving all land inside a box that was already there. That is CLS 0 by construction
       rather than by measurement. */}
-  {!shell.studio && <header className="v2-head">
+  {!shell.chrome && <header className="v2-head">
    <div className="v2-head-text">
     <h1 title={title}>{title || v2t(lang, 'app.title')}</h1>
     {caption.note && <p className="v2-note">{caption.note}</p>}
@@ -1532,7 +1549,15 @@ export default function V2() {
     // the biggest possible picture — a presentation mode that frames worse than the app it was
     // launched from. `?stage=1` on a phone still gets the phone's framing, because `shell.studio`
     // is false there.
-    studio={shell.studio}
+    //
+    // ⚠️ S6 — IT IS `chrome` NOW, NOT `studio`, AND THAT IS A DELIBERATE FRAMING CHANGE AT THE
+    // TABLET TIER. Until S6 the tablet drew the legacy page: a 340 px right margin beside the
+    // field, and v1's `distance = 4`. S6 replaced that arrangement wholesale — the margin is gone
+    // and the field is the width of the viewport — so "preserve today's framing" is not available
+    // to preserve; the only question is whether the new field gets the good fit or the old one.
+    // It gets the good one. RC4's rule that the LEVERS are studio-only still holds exactly: this
+    // is the same option, and `scene.camera.padding` is still never touched.
+    studio={shell.chrome}
     priority={priority}
     // THE GENERATION AND ITS REQUIREMENT. Both are read through refs assigned during RENDER
     // (app/scene.tsx), never in an effect — so when a re-drive bumps the epoch and replaces the
@@ -1561,7 +1586,7 @@ export default function V2() {
    {/* ONE PROGRESS INSTRUMENT PER TIER. In the studio the app bar's status chip says the same thing
        in a place that does not float over the key pad — two of them on one screen is how the first
        build said "Loading this view" and "This view is ready" at the same time. */}
-   {loading && !shell.studio && !error && !expired && <div className="v2-progress" role="status">
+   {loading && !shell.chrome && !error && !expired && <div className="v2-progress" role="status">
     <span>{phase === 'boot' ? tr('entry.loading') : tr('entry.sceneReady')}</span>
     {bytes.total > 0 && <b>{tr('entry.bytes', {done: MB(bytes.done), total: MB(bytes.total)})}</b>}
    </div>}
@@ -1578,7 +1603,7 @@ export default function V2() {
        directly rather than through a command, so `POSE_CMDS` inside `useShell` cannot see them —
        the same class of miss as round 14's `onCommand` hook, closed here by routing them through the
        one abort function rather than by noticing it again in a later round. */}
-   {shell.studio && !stage && <StudioField
+   {shell.chrome && !stage && <StudioField
     tr={tr} caption={caption} state={state} dispatch={dispatch}
     structures={basket.length} pieces={state.selected.length} onKeys={shell.setKeysOpen}
     navMode={shell.navMode} onNavMode={shell.setNavMode}
@@ -1593,7 +1618,7 @@ export default function V2() {
       44 px column. Names arrive with the atlas; the NOTCHES arrive with the URL, so the
       skeleton is the finished component with its labels missing, not a placeholder that gets
       replaced (and therefore not a layout shift). */}
-  {!shell.studio && <nav className="v2-rail" aria-label={tr('rail.aria')} role="listbox" aria-orientation="vertical">
+  {!shell.chrome && <nav className="v2-rail" aria-label={tr('rail.aria')} role="listbox" aria-orientation="vertical">
    {rail.map((n) => <button
      type="button" key={n.id} role="option" aria-selected={focused?.id === n.id}
      className={`v2-notch role-${n.role} ${focused?.id === n.id ? 'is-on' : ''} ${atlas ? '' : 'is-skeleton'}`}
@@ -1608,7 +1633,7 @@ export default function V2() {
   {/* THE MARGIN — two detents on a phone. PEEK is what a chat link opens on: the term pair and
       one line, so the figure keeps the screen. Everything else is one drag or one tap away.
       Replaced by the studio's docks at >=1180; unchanged below it. */}
-  {!shell.studio && <section className="v2-margin" aria-label={tr('margin.aria')}>
+  {!shell.chrome && <section className="v2-margin" aria-label={tr('margin.aria')}>
    <button type="button" className="v2-handle" onClick={() => setDetent((d) => (d === 'peek' ? 'half' : 'peek'))} aria-expanded={detent === 'half'}>
     <i/><span className="sr-only">{detent === 'peek' ? tr('margin.expand') : tr('margin.collapse')}</span>
    </button>

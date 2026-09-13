@@ -34,7 +34,7 @@
  * tabindex and tri-state checkboxes. (The pill and the pad were on this list at S0 and came off it
  * in S1, which is what "placeholder-first" is for.)
  */
-import {useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
+import {useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent} from 'react';
 import {SYSTEMS, type Atlas, type Part, type SceneState, type SystemId, type View} from '../../anatomy';
 import type {Dicts, T} from '../../i18n/dict';
 import {atlasIndex} from '../find.ts';
@@ -60,7 +60,7 @@ declare const __ATLAS_DEPS__: string | undefined;
 /** `react 19.2.6 (MIT) · three 0.159.0 (MIT) · …` — the RESOLVED tree, read from each package's own
  *  manifest at build time. See `about.notices` for what this does and does not include. */
 const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
-import type {NavMode} from './use-shell.ts';
+import type {NavMode, TabletTab} from './use-shell.ts';
 import Overlay from './overlay.tsx';
 import {DOCK_KEYS, clearOpenAi, openAiMask, readOpenAiModel, saveOpenAiKey, setOpenAiModel, tabOrdinals, type DockKey, type SceneTab} from './store.ts';
 import AskPanel, {OPENAI_CHANGED, type AskState} from './ask.tsx';
@@ -134,6 +134,12 @@ export interface ShellProps {
  /** A coarse pointer. Drives the controls that must not exist at all on touch, as distinct from
   *  the ones that merely grow — the split `spec.md` makes for the 32 px scene tabs. */
  coarse: boolean;
+ /** ── S6 ─────────────────────────────────────────────────────────────────────────────────── */
+ /** 768-1179: the studio chrome with ONE shared right sheet instead of a sidebar and two docks. */
+ tablet: boolean;
+ tSheet: TabletTab | null; onTSheet(v: TabletTab | null): void;
+ /** The sheet is a 300 px inline column (landscape >= 1024) rather than a 360 px scrim overlay. */
+ tabletInline: boolean;
  keysOpen: boolean; onKeys(open: boolean): void;
  settingsOpen: boolean; onSettings(open: boolean): void;
  /** S2. The palette itself is rendered by `page.tsx`, not here: it must exist at the PHONE tier too
@@ -221,6 +227,9 @@ const tabTip = (
  *  right. `null` is a SPACER, not an empty key — drawn with the key border they read as broken
  *  buttons, which is what S0's first screenshot showed. The `code` is the PHYSICAL code the cell
  *  presses, which is the whole reason a finger and a keyboard are the same event downstream. */
+/** The tablet sheet's three panels, in the order `spec.md` draws them. */
+const TABLET_TABS: TabletTab[] = ['layers', 'selection', 'info'];
+
 const PAD: ({label: string; code: string} | null)[] = [
  null, {label: 'W', code: 'KeyW'}, null, null, {label: '↑', code: 'ArrowUp'}, null,
  {label: 'A', code: 'KeyA'}, {label: 'S', code: 'KeyS'}, {label: 'D', code: 'KeyD'},
@@ -328,6 +337,46 @@ export function StudioField(p: {
    <div><span>{tr('legend.pieces')}</span><b>{p.pieces.toLocaleString()}</b></div>
   </div>
  </>;
+}
+
+
+/**
+ * ══ THE OVERFLOW MENU — S6 ═════════════════════════════════════════════════════════════════════
+ *
+ * `spec.md`: "Chrome never wraps. Toolbar overflow priority: camera extras → selection actions →
+ * named views → textual share labels. More remains reachable." On a coarse pointer every control in
+ * the tools row is 44 px rather than 32, so a 768 px portrait toolbar cannot hold what a 1440 px
+ * desktop one holds — and the answer `spec.md` refuses is a second toolbar row.
+ *
+ * It is a MENU, not a dialog: no scrim, no focus trap, no `aria-modal`. It closes on Escape, on a
+ * pointer outside it, and on choosing anything — and Escape and the outside click both return focus
+ * to the button, because a menu that leaves focus on a removed node drops the keyboard reader at
+ * the top of the document.
+ */
+function More(p: {label: string; children: React.ReactNode; className?: string}) {
+ const [open, setOpen] = useState(false);
+ const wrap = useRef<HTMLDivElement | null>(null);
+ const btn = useRef<HTMLButtonElement | null>(null);
+ useEffect(() => {
+  if (!open) return;
+  const onDown = (e: PointerEvent) => {
+   if (!wrap.current?.contains(e.target as Node)) { setOpen(false); btn.current?.focus(); }
+  };
+  // `pointerdown` rather than `click`: a click that lands on another control must close this first,
+  // and a `click` listener fires after that control has already acted with the menu still open.
+  window.addEventListener('pointerdown', onDown, true);
+  return () => window.removeEventListener('pointerdown', onDown, true);
+ }, [open]);
+ return <div className={`v2-more ${p.className ?? ''}`} ref={wrap}
+  onKeyDown={(e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); setOpen(false); btn.current?.focus(); } }}>
+  <button type="button" ref={btn} className={`v2-tbtn ${open ? 'is-on' : ''}`}
+   aria-haspopup="menu" aria-expanded={open} aria-label={p.label} title={p.label}
+   onClick={() => setOpen((v) => !v)}><Ico d={P.more}/></button>
+  {open && <div className="v2-pop" role="menu" aria-label={p.label}
+   // Choosing anything closes the menu. One handler on the container rather than a wrapper around
+   // every item: an item that forgets to close is the defect this shape cannot have.
+   onClick={() => { setOpen(false); btn.current?.focus(); }}>{p.children}</div>}
+ </div>;
 }
 
 export default function Shell(p: ShellProps) {
@@ -488,6 +537,104 @@ export default function Shell(p: ShellProps) {
   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1" aria-label={tr('nav.more')}><Ico d={P.more}/></button>
  </div>;
 
+ /**
+  * ── THE TABLET'S TOOLS ROW — S6 ───────────────────────────────────────────────────────────────
+  *
+  * The same 44 px row, with the same controls, arranged for a viewport that is 768 px wide and a
+  * pointer that is a finger. Three differences, each from `spec.md`:
+  *
+  *  · the panel buttons are the SHEET'S TABS. There is one sheet, so "open Selection" and "switch
+  *    to Selection" are the same act — `aria-pressed` says which one is showing, and pressing the
+  *    showing one closes the sheet, exactly as a dock toggle does upstairs.
+  *  · Find keeps its full-width button (it is the single most used control) but drops the `Ctrl K`
+  *    chip, which names a key a tablet does not have.
+  *  · everything else moves into More, in the spec's own priority order — selection actions first,
+  *    then the share/snapshot group. Nothing is dropped and nothing wraps.
+  */
+ const tabletTab = (k: TabletTab) => {
+  const on = p.tSheet === k;
+  const label = k === 'layers' ? tr('panel.layers') : k === 'selection' ? tr('panel.selection') : tr('panel.info');
+  // ⚠️ THE ACCESSIBLE NAME IS THE LABEL ALONE, WITHOUT THE COUNT. The reachability oracle matches a
+  // control by `textContent === 'Selection'` OR its aria-label, and this button's text is
+  // "Selection" + the basket count — so on a bare `?select=` visit it read as absent. A screen
+  // reader had the same problem in words: "Selection 3" is a name that changes as you work.
+  return <button type="button" key={k} className={`v2-tbtn ${on ? 'is-on' : ''}`} aria-pressed={on}
+   aria-controls="v2-tsheet" aria-label={label}
+   onClick={() => p.onTSheet(on ? null : k)}>
+   {k === 'layers' ? <Ico d={P.layers}/> : null}{label}
+   {k === 'selection' && p.basket.length > 0 ? <em className="v2-count">{p.basket.length}</em> : null}
+  </button>;
+ };
+ const tabletTools = <div className="v2-tools is-compact" role="toolbar" aria-label={tr('panel.panels')}>
+  {TABLET_TABS.map(tabletTab)}
+  <span className="v2-sep"/>
+  <button type="button" className="v2-tbtn v2-findbtn" aria-label={tr('search.open')}
+   aria-haspopup="dialog" aria-expanded={p.findOpen} onClick={() => p.onFind(true)}>
+   <Ico d={P.find}/><span className="v2-grow">{tr('search.open')}</span>
+  </button>
+  <span className="v2-grow"/>
+  <More label={tr('nav.more')}>
+   <button type="button" role="menuitem" className="v2-popitem" disabled={!p.focused}
+    onClick={() => p.focused && p.focusPick(p.focused.id)}>{tr('panel.focus')}</button>
+   <button type="button" role="menuitem" className={`v2-popitem ${p.state.isolate ? 'is-on' : ''}`}
+    disabled={!p.basket.length} aria-pressed={p.state.isolate}
+    onClick={() => p.dispatch({type: 'set-isolate', on: !p.state.isolate})}>{tr('margin.hideOthers')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" disabled={!p.basket.length}
+    onClick={p.clearPicks}>{tr('margin.clear')}</button>
+   <span className="v2-popsep"/>
+   {/* ⚠️ JSON AND ASK ARE NOT DROPPED ON THE TABLET, THEY ARE BEHIND THE OVERFLOW — `spec.md`
+       T2/T3: "Tablet tabs are Layers / Selection / Info, with JSON and Ask in Panels/More." They
+       open the SAME sheet at a different panel, so "exactly one sheet" still holds and the reader
+       has one mental model for five panels. The first build of this row shipped without them and
+       the Ask reachability oracle at 768 said so immediately: the whole chat had no surface. */}
+   {(['json', 'ask'] as TabletTab[]).map((k) => <button type="button" role="menuitem" key={k}
+    className={`v2-popitem ${p.tSheet === k ? 'is-on' : ''}`} aria-pressed={p.tSheet === k}
+    onClick={() => p.onTSheet(p.tSheet === k ? null : k)}>{k === 'json' ? tr('panel.json') : tr('panel.ask')}</button>)}
+   <span className="v2-popsep"/>
+   {/* ⚠️ THE SCENES TRIGGER LIVES HERE, AND ONLY HERE, ON A COARSE SCREEN. `spec.md`: "On coarse
+       screens use a 44 px Scenes trigger in Panels/More opening a sheet, never 32 px touch tabs."
+       The status strip's tabs are already gated on `!p.coarse`; this is their replacement. */}
+   <button type="button" role="menuitem" className="v2-popitem" disabled={!p.scene}
+    title={p.tabsFull ? tr('tabs.full') : tr('tabs.snapshot')}
+    onClick={p.onSnapshot}>{tr('tabs.snapshot')}</button>
+   <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.link')}</button>
+   <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.plate')}</button>
+  </More>
+ </div>;
+
+ /**
+  * ── THE TREE, AS ONE NODE, FOR TWO HOSTS — S6 ─────────────────────────────────────────────────
+  *
+  * The desktop draws it in the left sidebar; the tablet draws the SAME node in its right sheet
+  * (`spec.md`: "Same S3 tree component, S6 placement"). Extracted rather than duplicated for the
+  * reason the Ask surface was: a second copy of a 780-line tree is a second place for a membership
+  * rule to drift, and this one carries the atomic refusal.
+  */
+ const treeBody = <>
+  <div className="v2-side-filter">
+   <label>
+    <Ico d={P.find} size={14}/>
+    <input type="search" value={p.treeQuery} onChange={(e) => p.onTreeQuery(e.target.value)}
+     placeholder={tr('panel.filter')} aria-label={tr('panel.filter')}/>
+   </label>
+  </div>
+  <Tree
+   t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
+   visible={p.state.visible} visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
+   hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha} eyeState={p.eyeState}
+   py={p.py} pinyin={p.pinyin}
+   focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
+   query={p.treeQuery} coarse={p.coarse}
+  />
+  <div className="v2-side-foot">
+   <div>{tr('panel.membership')}</div>
+   <div>{tr('panel.visibility')}</div>
+   <button type="button" disabled={p.hidden.size === 0}
+    title={p.hidden.size ? tr('tree.sessionHidden', {n: p.hidden.size}) : undefined}
+    onClick={() => p.onHide('*', false)}>{tr('panel.resetVisibility')}</button>
+  </div>
+ </>;
+
  // ── the left sidebar ────────────────────────────────────────────────────────────────────────
  const side = <aside className={`v2-side ${p.sideStub ? 'is-stub' : ''}`} aria-label={tr('panel.layers')}>
   <div className="v2-side-head">
@@ -513,40 +660,9 @@ export default function Shell(p: ShellProps) {
       systems and silently done nothing for the structures — a control that half-works against its
       own placeholder reads as broken rather than as forthcoming. It now narrows BOTH populations
       through the palette's own matcher (`find.ts best()`), so "胸骨" narrows this tree in an
-      English interface exactly as it narrows the palette. */}
-  {!p.sideStub && <div className="v2-side-filter">
-   <label>
-    <Ico d={P.find} size={14}/>
-    <input type="search" value={p.treeQuery} onChange={(e) => p.onTreeQuery(e.target.value)}
-     placeholder={tr('panel.filter')} aria-label={tr('panel.filter')}/>
-   </label>
-  </div>}
-  {!p.sideStub && <Tree
-   t={t} tr={tr} atlas={p.atlas} dicts={p.dicts} picks={p.picks} scene={p.scene}
-   visible={p.state.visible} visibleIntent={p.visibleIntent} isolate={p.state.isolate} dispatch={p.dispatch}
-   hidden={p.hidden} onHide={p.onHide} effectiveAlpha={p.effectiveAlpha} eyeState={p.eyeState}
-   py={p.py} pinyin={p.pinyin}
-   focusedId={p.focused?.id ?? null} onFocus={p.focusPick}
-   query={p.treeQuery} coarse={p.coarse}
-  />}
-  {/* ⚠️ NOTHING LATE-ARRIVING IN THE FOOT. It printed the derived concept total, which is 0 until
-      the atlas lands and 3,432 after — a longer string that re-wrapped the foot, shrank the tree's
-      flex box and moved every row. The CLS oracle attributed 0.0124 to `li.v2-tree-row` for exactly
-      that reason. The total is already on screen, at the top of the sidebar.
-      (The sub-line the tree renders is a count too — but it lives ABOVE the scroller, so its arrival
-      cannot move a row inside it. Measured again in S3's CLS rows rather than assumed.) */}
-  {!p.sideStub && <div className="v2-side-foot">
-   <div>{tr('panel.membership')}</div>
-   <div>{tr('panel.visibility')}</div>
-   {/* LIVE AT S3, and it clears exactly ONE of the three visibility facts — the session-only
-       overrides. It deliberately does not touch the system set (that is serialised, and silently
-       re-enabling fifteen systems is not "reset") or a scene's declared opacities (those belong to
-       the link). `disabled` rather than inert when there is nothing to reset: the control works,
-       it simply has nothing to do. */}
-   <button type="button" disabled={p.hidden.size === 0}
-    title={p.hidden.size ? tr('tree.sessionHidden', {n: p.hidden.size}) : undefined}
-    onClick={() => p.onHide('*', false)}>{tr('panel.resetVisibility')}</button>
-  </div>}
+      English interface exactly as it narrows the palette.
+      ⚠️ S6: the filter, the tree and the foot are `treeBody` above — ONE node, two hosts. */}
+  {!p.sideStub && treeBody}
  </aside>;
 
  // ── the right docks ─────────────────────────────────────────────────────────────────────────
@@ -889,9 +1005,54 @@ export default function Shell(p: ShellProps) {
    onClick={p.onSnapshot}>+ {tr('tabs.snapshot')}</button>}
  </footer>;
 
+ /**
+  * ══ THE TABLET'S ONE RIGHT SHEET — S6 ═════════════════════════════════════════════════════════
+  *
+  * Tabs Layers / Selection / Info over the SAME three nodes the desktop draws in its sidebar and
+  * docks. `spec.md` T2/T3: "Selection+Info at T3 is one sheet with tabs and an expanded Info
+  * accordion, not two squeezed columns", and "Exactly one sheet."
+  *
+  * TWO PRESENTATIONS, ONE CONTENT:
+  *  · LANDSCAPE >= 1024 — a 300 px INLINE grid column. Not a dialog: it does not trap focus, does
+  *    not dim the field, and the field keeps 724 px, which is the artboard's own number. A reader
+  *    can drive the camera with the sheet open, which is the whole point of an inline panel.
+  *  · PORTRAIT (and any narrow/short landscape) — a 360 px OVERLAY with a scrim, through the same
+  *    `Overlay` primitive every other surface uses, so it inherits the trap, the Escape, the focus
+  *    restore and the safe-area padding rather than re-inventing four of them.
+  *
+  * The tab list is the toolbar's three buttons (`tabletTools`) — there is no second row of tabs
+  * inside the sheet. One control per panel, in one place, is why `aria-pressed` on the toolbar
+  * button is a true statement about what is on screen.
+  */
+ const tSheetTitle = p.tSheet === 'layers' ? tr('panel.layers')
+  : p.tSheet === 'selection' ? tr('panel.selection')
+   : p.tSheet === 'json' ? tr('panel.json')
+    : p.tSheet === 'ask' ? tr('panel.ask') : tr('panel.info');
+ const tSheetBody = p.tSheet === 'layers' ? treeBody
+  : p.tSheet === 'selection' ? selectionPane
+   : p.tSheet === 'json' ? jsonPane
+    : p.tSheet === 'ask' ? askPane : infoPane;
+ const tabletSheet = p.tSheet && (p.tabletInline
+  ? <aside className="v2-dock v2-tsheet" id="v2-tsheet" aria-label={tSheetTitle}>
+   <section className="v2-pane">
+    <div className="v2-pane-head">
+     <h2>{tSheetTitle}</h2>
+     {p.tSheet === 'selection' && <em>{p.basket.length}</em>}
+     <button type="button" className="v2-pane-x" aria-label={tr('panel.close', {name: tSheetTitle})}
+      onClick={() => p.onTSheet(null)}>×</button>
+    </div>
+    {tSheetBody}
+   </section>
+  </aside>
+  : <Overlay open onClose={() => p.onTSheet(null)} sheet={false} kind="is-right" id="v2-tsheet"
+   title={tSheetTitle} labelClose={tr('panel.close', {name: tSheetTitle})}>
+   {tSheetBody}
+  </Overlay>);
+
  // THE GRID ITEMS ARE THE FRAGMENT'S CHILDREN. A React fragment emits no DOM node, so `bar`,
  // `tools`, `side`, `dock` and `status` are direct children of `.v2` and the `grid-area` on each
  // one resolves against it.
+ if (p.tablet) return <>{bar}{tabletTools}{tabletSheet}{status}</>;
  return <>{bar}{tools}{side}{dock}{status}</>;
 }
 

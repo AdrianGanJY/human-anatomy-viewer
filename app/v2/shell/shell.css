@@ -664,3 +664,87 @@ button.v2-tab[disabled]{opacity:.45;cursor:default}
    the scroller, and the log simply grows inside it. */
 .v2-ai-sheetbody{display:flex;flex-direction:column;min-height:0}
 .v2-ai-sheetbody .v2-ai-log{max-height:none;overflow:visible}
+
+/* ══ THE TABLET TIER — 768–1179. L31 v2.1b+c, S6 ═══════════════════════════════════════════════
+   `spec.md` §Geometry: "Rows 52 / 44 / flexible / 32; side width zero. Shared right sheet closed on
+   entry. Portrait: 360 px overlay with scrim. Landscape >= 1024 and height > 520: 300 px inline.
+   Exactly one sheet."
+
+   The rows are the studio's, unchanged — decision 4 in the spec is explicit that the 52/44/32 rows
+   hold in EVERY studio tier, coarse included, and that the synthesis's other numbers were an
+   arithmetic slip rather than a design. Only the COLUMNS differ: no left sidebar at all, and one
+   right column that is 300 px when the sheet is inline and 0 px otherwise. `--v2-dock-w` is written
+   by `page.tsx` from the sheet state, exactly as the desktop's is written by the collapse ladder. */
+.v2.v2-studio.v2-tablet{
+ grid-template-columns:minmax(0,1fr) var(--v2-dock-w);
+ grid-template-rows:var(--v2-bar) var(--v2-tools) minmax(0,1fr) var(--v2-status);
+ grid-template-areas:"bar bar" "tools tools" "field dock" "status status";
+}
+body.v2-stage .v2.v2-studio.v2-tablet{grid-template-columns:1fr;grid-template-rows:1fr;grid-template-areas:"field"}
+/* The inline sheet IS the dock column, so it inherits every `.v2-dock`/`.v2-pane` rule and differs
+   only in width. A separate component would have been a second panel chrome to keep in step. */
+.v2-tsheet .v2-pane{width:300px}
+/* ⚠️ THE COMPACT TOOLS ROW DOES NOT WRAP AND DOES NOT GROW. `spec.md`: "Chrome never wraps." It
+   scrolls horizontally only as a last resort on a 768 px portrait in 繁體, where the three tab
+   labels are longest — everything optional is already in More. */
+.v2-tools.is-compact{gap:4px;padding:0 8px}
+.v2-tools.is-compact .v2-findbtn{flex:1 1 140px;min-width:100px}
+.v2-count{font-style:normal;font-size:var(--v2-type-xs);color:var(--v2-ink-3);font-variant-numeric:tabular-nums}
+.v2-tbtn.is-on .v2-count{color:var(--v2-accent)}
+
+/* ── THE RIGHT OVERLAY SHEET (portrait) ────────────────────────────────────────────────────────
+   The same `Overlay` primitive, anchored right and full height instead of centred. It keeps the
+   trap, the Escape, the focus restore and the scrim click — which is the entire reason it is not a
+   second sheet implementation. 360 px per the spec; the field keeps its full width underneath. */
+.v2-scrim.is-right{align-items:stretch;justify-content:flex-end;padding:0}
+.v2-modal.is-right{width:360px;max-width:100%;max-height:none;height:100%;border-radius:0;border-left:1px solid var(--v2-line-2)}
+.v2-modal.is-right .v2-modal-body{padding:0;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+/* The tree and the two panes are already scrolling columns; the body must not add a second scroller
+   around them (a nested scrollbar is the defect the Ask reachability row exists to catch). */
+.v2-modal.is-right .v2-side-filter,.v2-modal.is-right .v2-side-foot{flex-shrink:0}
+.v2-modal.is-right .v2-tree,.v2-modal.is-right .v2-pane-body{flex:1;min-height:0;overflow:auto}
+
+/* ── THE OVERFLOW MENU ─────────────────────────────────────────────────────────────────────────
+   A menu, not a dialog: it sits in the toolbar's own stacking context, above the field and below
+   the overlays (z 80). Items are full-width rows at the coarse cap, because every reason to be in
+   this menu is a reason the pointer is a finger. */
+.v2-more{position:relative;flex-shrink:0}
+.v2-pop{position:absolute;top:calc(100% + 4px);right:0;z-index:70;min-width:200px;padding:6px;
+ background:var(--v2-surface);border:1px solid var(--v2-line-2);border-radius:var(--v2-radius-sm);
+ box-shadow:var(--v2-shadow);display:flex;flex-direction:column;gap:2px}
+.v2-popitem{display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0 10px;
+ border-radius:6px;font-size:var(--v2-type-sm);color:var(--v2-ink);text-align:left}
+.v2-popitem:hover{background:var(--v2-surface-2)}
+.v2-popitem[disabled]{opacity:.45;cursor:default}
+.v2-popitem[disabled]:hover{background:none}
+.v2-popitem.is-on{color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}
+.v2-popsep{height:1px;margin:4px 2px;background:var(--v2-line-2)}
+
+/* ── THE STAGE'S EXIT ON TOUCH ─────────────────────────────────────────────────────────────────
+   `spec.md`: "first touch reveals an explicit 44 px Show controls button … then fades if unused".
+   The kickoff cuts the reveal and the fade and ships it PERSISTENT on touch instead — a control
+   that removes itself on a timer is a control the reader has to discover twice, and the fade is
+   what the deferral list names.
+
+   ⚠️ IT IS NOT A NEW BUTTON. `.v2-stage-exit` has existed since P3 (v2.css:230) and is already a
+   44 px target with the translated name `stage.exit` ("Show controls"). What was wrong for a finger
+   was `opacity:.45` with `:hover`/`:focus-visible` as the only way back to full — neither of which
+   a touch screen has. So the coarse pointer gets the SAME button at full contrast, with a shadow so
+   it reads against light anatomy; the fine pointer keeps the faint one, which is correct for a
+   presentation surface being presented against. */
+@media (pointer:coarse){
+ .v2-stage-exit{opacity:1;padding:0 16px;font-size:var(--v2-type-sm);box-shadow:var(--v2-shadow);
+  border-color:var(--v2-line-2);color:var(--v2-ink)}
+}
+
+/* ── REDUCED MOTION, STATED ONCE FOR THE STUDIO ────────────────────────────────────────────────
+   v2.css already zeroes every animation and transition globally under `prefers-reduced-motion`.
+   This is the half a duration cannot express: a pulse that is merely instant still PAINTS both of
+   its keyframes, so the loading chip's `v2pulse` flickers rather than stops. `animation:none` is
+   the only thing that removes it, and the skeleton, the wash and the chip are the three surfaces
+   the spec names ("Reduced motion removes automatic rotation, skeleton pulses and animated
+   transitions"). */
+@media (prefers-reduced-motion:reduce){
+ .v2-chip.is-loading .v2-sub,.v2-skel,.v2-wash{animation:none!important}
+ .v2-skip{transition:none}
+}

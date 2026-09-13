@@ -38,9 +38,28 @@ function useViewport() {
  return vp;
 }
 
+/**
+ * The panels the tablet's ONE right sheet can show. `spec.md` T2/T3: "Tablet tabs are Layers /
+ * Selection / Info, with JSON and Ask in Panels/More" — five destinations, three of them in the
+ * toolbar and two behind the overflow, all of them the SAME sheet.
+ */
+export type TabletTab = 'layers' | 'selection' | 'info' | 'json' | 'ask';
+
 export interface ShellState {
  tier: Tier;
  studio: boolean;
+ /** ── S6 ─────────────────────────────────────────────────────────────────────────────────── */
+ /** 768-1179. The studio chrome, one shared right sheet instead of a sidebar and docks. */
+ tablet: boolean;
+ /** `studio || tablet` — the tiers that render the shell at all. */
+ chrome: boolean;
+ /** Which panel the tablet sheet is showing, or null when it is closed. Closed on entry, never
+  *  persisted: `atlas.dock` is a DESKTOP choice and must not open a sheet over a tablet field. */
+ tSheet: TabletTab | null; setTSheet(v: TabletTab | null): void;
+ /** True when the sheet is a 300 px INLINE column (landscape >= 1024) rather than a 360 px overlay
+  *  with a scrim. The overlay is focus-trapped and closes on Escape; the inline column is not a
+  *  modal and does not steal focus. */
+ tabletInline: boolean;
  /** Below 768 an overlay presents as a bottom sheet. */
  sheet: boolean;
  /** `pointer:coarse`. Read once here so no component re-derives it. */
@@ -178,6 +197,34 @@ export function useShell(
  const studio = isStudio(tier);
  const wide = tier === 'studio-wide';
 
+ /**
+  * ══ THE TABLET TIER — S6 ══════════════════════════════════════════════════════════════════════
+  *
+  * 768-1179 kept "today's behaviour" through S0-S5b by the kickoff's own instruction, which meant
+  * the legacy v2 page: a 340 px right MARGIN, the phone's detent state, no studio chrome. S6 gives
+  * it the studio's bar / tools / field / status and ONE shared right sheet — `spec.md`'s explicit
+  * exception to the desktop's left sidebar ("The brief asks tablet Layers in the right sheet …
+  * desktop Layers remains left"), because two overlapping drawers on a touch screen block each
+  * other and a 768 px portrait viewport has no room for a 264 px column beside a field.
+  *
+  * ⚠️ CLOSED ON ENTRY, AND NOT PERSISTED. `spec.md`: "Shared right sheet closed on entry." The
+  * desktop's `atlas.dock` deliberately does NOT reach here: a reader who opened Info on a 1920 px
+  * monitor has not asked for a sheet covering a third of their tablet.
+  *
+  * The two presentations are the spec's, and the boundary is its own: portrait (or a short/narrow
+  * landscape) gets a 360 px OVERLAY with a scrim — over the field, focus-trapped, Escape closes;
+  * a landscape >= 1024 wide gets 300 px INLINE, a real grid column, because at that width the field
+  * survives it (1024 - 300 = 724, the artboard's own number).
+  */
+ const tablet = tier === 'tablet';
+ /** The studio chrome renders here too — the tier only changes its arrangement. */
+ const chrome = studio || tablet;
+ const [tSheet, setTSheet] = useState<TabletTab | null>(null);
+ const tabletInline = tablet && vp.w >= 1024 && vp.h > 520;
+ // A resize that leaves the tablet takes its sheet with it: the desktop has docks for these three
+ // panels, and a sheet left open across the boundary would be a fourth, trapped, invisible one.
+ useEffect(() => { if (!tablet) setTSheet(null); }, [tablet]);
+
  // Read ONCE, lazily. Re-reading on every tier change would discard an in-session choice the moment
  // the window crossed 1600 — the persisted value is the SEED, not the live truth.
  //
@@ -300,8 +347,17 @@ export function useShell(
  // RESULT ROW — a button, not an editor — would change the camera behind the open palette.
  const modalRef = useRef(false);
  modalRef.current = keysOpen || settingsOpen || findOpen;
+ /**
+  * ⚠️ GUARD 7 READS `chrome`, NOT `studio`, SINCE S6 — and that is the guard's own rule applied, not
+  * a widening of it. `keys.ts`: "withhold a command iff its SURFACE is studio-only". The camera
+  * commands were withheld below 1180 because below 1180 there was no pill, no key pad and no
+  * `__atlasNav` — S6 gives the tablet all three, so the surface exists and the reason to withhold
+  * does not. The key map reads the same flag, so it stops marking those seven rows "desktop only"
+  * at exactly the tier where they start working. The PHONE is unchanged: it has no field chrome and
+  * the seven stay withheld and marked.
+  */
  const studioRef = useRef(false);
- studioRef.current = studio;
+ studioRef.current = chrome;
  const cmdRef = useRef<((cmd: KeyCommand) => boolean | void) | null>(null);
  const dispRef = useRef<Dispatcher | null>(null);
 
@@ -420,7 +476,7 @@ export function useShell(
  }, []);
  // The renderer is created after the first render, so a mode chosen before it exists (or restored
  // across a scene remount) has to be re-applied rather than assumed to have landed.
- useEffect(() => { nav()?.mode(navMode); }, [navMode, studio]);
+ useEffect(() => { nav()?.mode(navMode); }, [navMode, studio, tablet]);
 
  /**
   * LOSING THE STUDIO CLEARS THE HELD SET, and so does gaining it.
@@ -433,15 +489,18 @@ export function useShell(
   * (`Shift+S` is dead while `KeyS` is stuck). Round 2, Medium 1 — found by execution, and it had
   * already produced one red that was attributed to something else.
   */
- useEffect(() => { dispRef.current?.clear(); }, [studio]);
+ useEffect(() => { dispRef.current?.clear(); }, [studio, tablet]);
 
  // OPENING A MODAL CLEARS THE HELD SET — one of the six ways a keyup goes missing. The dispatcher
  // clears on blur / pointercancel / visibilitychange itself; a modal that takes focus within the
  // same document fires none of those.
- useEffect(() => { if (keysOpen || settingsOpen || findOpen) window.dispatchEvent(new Event('blur')); }, [keysOpen, settingsOpen, findOpen]);
+ // S6: the tablet's OVERLAY sheet is a modal too — it traps focus and takes the pointer, so a key
+ // held when it opens has the same missing-keyup problem as Settings.
+ useEffect(() => { if (keysOpen || settingsOpen || findOpen || (tSheet && !tabletInline)) window.dispatchEvent(new Event('blur')); }, [keysOpen, settingsOpen, findOpen, tSheet, tabletInline]);
 
  return {
-  tier, studio, sheet: vp.w < 768, coarse: vp.coarse,
+  tier, studio, tablet, chrome, sheet: vp.w < 768, coarse: vp.coarse,
+  tSheet, setTSheet, tabletInline,
   docks: studio ? lad.open : [],
   sideStub: studio ? lad.sideW <= 44 : false,
   autoCollapsed: studio ? lad.autoCollapsed : false,
