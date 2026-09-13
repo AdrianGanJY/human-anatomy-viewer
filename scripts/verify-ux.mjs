@@ -195,8 +195,11 @@ if (!SWEEP.length) { console.error(`UX_VIEWPORTS matched none of: ${VIEWPORTS.ma
  *  drawn in the phone's term line, in the Selection dock's card, and — since S0 — in the field's
  *  CAPTION. The tablet opens with its shared sheet CLOSED (`spec.md`), so the card is not mounted
  *  and the caption is where the name actually is. Asserting against a surface that is not on this
- *  tier's screen measures the oracle's assumptions, not the product. */
-const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b, .v2-card b, .v2-cap b'};
+ *  tier's screen measures the oracle's assumptions, not the product. The answer is to OPEN the
+ *  panel (see `openSelection` below), not to widen the selector: `.v2-cap b` is the scene TITLE
+ *  ("腘绳肌与骨盆"), a different fact from the structure's primary name, and reading it here made
+ *  the row green-ish for the wrong reason before it went red for the right one. */
+const TITLE_SEL = {v1: '.detail-sheet .structure-title', v2: '.v2-term b, .v2-card b'};
 /** The element the camera actually draws into — the whole viewport in v1, the grid cell in v2.
  *  This is the measurement that makes 'the field is a layout cell' checkable. */
 const FIELD_SEL = {v1: '.scene', v2: '.v2-field'};
@@ -598,8 +601,36 @@ for (const vp of SWEEP) {
       '2 distinct');
 
     // ── 1 ORIENTATION ──────────────────────────────────────────────────────────────────────
+    /**
+     * ⚠️ THE TABLET OPENS WITH ITS PANEL CLOSED — S6, and this is a DRIVER change, not a selector
+     * change. `spec.md` gives 768-1179 one shared sheet, closed on entry, so the Selection card the
+     * structure's primary name is drawn in is not mounted at rest. Widening `TITLE_SEL` to the
+     * caption instead was tried and is wrong: the caption holds the scene TITLE, a different fact,
+     * and the row would have gone green while measuring something else. So the panel is OPENED, the
+     * way a reader opens it, and the same assertion is then made against the same surface.
+     */
+    await page.evaluate(() => {
+      if (document.querySelector('.v2-side') || !document.querySelector('.v2-tablet')) return false;
+      const b = [...document.querySelectorAll('.v2-tools button')]
+        .find((x) => /^(Selection|所选结构|所選結構)$/.test((x.getAttribute('aria-label') || '').trim()));
+      if (!b || b.getAttribute('aria-pressed') === 'true') return false;
+      b.click(); return true;
+    });
+    await page.waitForTimeout(500);
     let titleText = '';
     try { titleText = ((await page.textContent(TITLE_SEL[variant], {timeout: 30000})) || '').trim(); } catch { /* absent */ }
+    /**
+     * ⚠️ AND IT IS CLOSED AGAIN BEFORE ANYTHING ELSE IS MEASURED. The tablet's INLINE sheet is a
+     * grid column: leaving it open takes the field from 1024 to 724 px, and the FRAMING rows
+     * immediately below would then measure subject area against a field the tier does not have at
+     * rest. A driver that opens a panel owns closing it.
+     */
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.v2-tools button')]
+        .find((x) => /^(Selection|所选结构|所選結構)$/.test((x.getAttribute('aria-label') || '').trim()));
+      if (b && b.getAttribute('aria-pressed') === 'true') b.click();
+    });
+    await page.waitForTimeout(500);
     // In zh-Hans the title is the Chinese name, so assert against what the app itself resolves
     // for the expected id rather than against a hard-coded translation.
     const expected = await page.evaluate(async (id) => {
@@ -2217,7 +2248,7 @@ if (variant === 'v2') {
         treeRows >= 10, `${treeRows} tree rows in the sheet`, '>= 10');
 
       // ── 3. SWITCHING TABS KEEPS ONE SHEET AND DOES NOT TOUCH THE SCENE ───────────────────────
-      await page.evaluate(`${CLICK_TOOL}('Selection|选择|選擇')`);
+      await page.evaluate(`${CLICK_TOOL}('Selection|所选结构|所選結構')`);
       await page.waitForTimeout(500);
       const sel = await page.evaluate(`${SHEET_GEOM}()`);
       check(vp.name, `[${S6_V}] ${vp.board}: switching to Selection REPLACES the panel — never two`,
@@ -5574,7 +5605,11 @@ if (variant === 'v2') {
  */
 {
   const STRIKE_SURFACES = [
-    ['selection', '.v2-pane .v2-card, .v2-pane .v2-card-row, .v2-row, .v2-margin .v2-set'],
+    // ⚠️ `.v2-modal.is-right` IS A SELECTION SURFACE TOO (S6). The tablet's portrait sheet is an
+    // overlay, not a `.v2-pane` inside `.v2-dock`, so at 768x1024 the panel was open, populated and
+    // entirely outside this selector — `UNREACHED selection` over a population of zero. The
+    // landscape board passed, because there the same panel IS a `.v2-pane`.
+    ['selection', '.v2-pane .v2-card, .v2-pane .v2-card-row, .v2-modal.is-right .v2-card, .v2-modal.is-right .v2-card-row, .v2-row, .v2-margin .v2-set'],
     ['info', '.v2-kv, .v2-acc'],
     // The tablet draws its systems list as `.v2-systems` labels rather than `.v2-tree-row`, and
     // that surface was outside every selector here (codex round 13, Low 2) — so the tablet's
@@ -6341,19 +6376,31 @@ if (variant === 'v2') {
       .find((x) => re.test((x.textContent || '').trim()) || re.test(x.getAttribute('aria-label') || ''));
     const direct = hit(document, '.v2-tools .v2-tbtn');
     if (direct) { if (direct.className.includes('is-on')) return 'already'; direct.click(); return 'opened'; }
-    // TABLET: Ask lives in the overflow menu, so the menu has to be opened first.
+    /**
+     * TABLET: Ask lives in the overflow menu. OPENING THE MENU AND CLICKING INSIDE IT CANNOT BE ONE
+     * SYNCHRONOUS PASS -- '.v2-pop' is React state, so it does not exist until a render that has
+     * not happened when this function returns. The first build clicked More and then searched for
+     * an item that was never there, and the 768 reachability row reported found=false as if the
+     * PRODUCT had no Apply button. So the helper stops here and the caller waits.
+     */
     const more = [...document.querySelectorAll('.v2-tools .v2-more > button')][0];
-    if (more) {
-      more.click();
-      const item = hit(document, '.v2-pop button');
-      if (item) { item.click(); return 'opened'; }
-      more.click();
-    }
+    if (more && !document.querySelector('.v2-pop')) { more.click(); return 'menu-opened'; }
+    const item = hit(document, '.v2-pop button');
+    if (item) { item.click(); return 'opened'; }
     // PHONE: the margin's action row.
     const phone = hit(document, '.v2-actions button, .v2-margin button');
     if (phone) { phone.click(); return 'opened'; }
     return 'no-button';
   }`;
+  /** Open the Ask surface at ANY tier, waiting out the overflow menu's render where there is one. */
+  const openAsk = async (page, src) => {
+    let r = await page.evaluate(`(${OPEN_ASK})(${JSON.stringify(src)})`);
+    if (r === 'menu-opened') {
+      await page.waitForTimeout(400);
+      r = await page.evaluate(`(${OPEN_ASK})(${JSON.stringify(src)})`);
+    }
+    return r;
+  };
   const TYPE_ASK = `(text) => {
     const el = document.querySelector('.v2-askbox');
     if (!el) return false;
@@ -6380,7 +6427,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(600);
       const stored = await page.evaluate(() => {
         const raw = localStorage.getItem('atlas.openai') || '';
@@ -6404,7 +6451,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(400);
       // Every surface the key could reach: the address bar, the history entry, the serialised
       // scene, the probe panel, the whole rendered DOM, and the page's own storage-adjacent state.
@@ -6441,7 +6488,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(400);
       await page.evaluate(`(${TYPE_ASK})('what is this')`);
       await page.waitForTimeout(200);
@@ -6512,7 +6559,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(400);
       await page.evaluate(`(${TYPE_ASK})('show me everything')`);
       await page.waitForTimeout(200);
@@ -6613,7 +6660,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(400);
       await page.evaluate(`(${TYPE_ASK})('who am i')`);
       await page.waitForTimeout(200);
@@ -6646,7 +6693,7 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(2500);
-      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await openAsk(page, 'Ask|提问|提問');
       await page.waitForTimeout(400);
       await page.evaluate(`(${TYPE_ASK})('what is this')`);
       await page.waitForTimeout(300);
