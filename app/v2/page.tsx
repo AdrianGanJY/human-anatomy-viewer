@@ -823,14 +823,14 @@ export default function V2() {
    /**
     * WHAT THE READER CAN SEE — and `visibleIntent` is deliberately NOT in it.
     *
-    * The intent is PROVENANCE ("a human stated this system set"), not a picture: it is what the
-    * serialiser writes back as `system=`, and `render.visible` beside it is what is actually drawn.
-    * Including it would make `#system=skeletal` a transition whenever the set it names is already the
-    * one on screen — which is codex's own first row, the one that must stay a no-op. The cost is
-    * stated rather than hidden: a hash that merely restates the drawn set no longer records its
-    * authority, so the debounced writer may drop `system=` from the address bar while continuing to
-    * draw exactly that set. Nothing the reader looks at changes, and the alternative is the defect
-    * this whole round exists to remove.
+    * The intent is not a PICTURE — `render.visible` beside it is what is drawn — so including it here
+    * would make `#system=<the set already on screen>` a transition, which is codex round 19's own
+    * first row and must stay a no-op.
+    *
+    * ⚠️ THAT IS A STATEMENT ABOUT THE COMPARISON ONLY, NOT ABOUT DISCARDING IT. Round 20 measured
+    * what discarding it costs (the tablet's checkboxes, the tree's note, and the visibility a LATER
+    * scene arrives with), so `commitNoop` below writes the accepted intent through anyway. Excluded
+    * from "did the view change", committed as part of "the arrival happened".
     *
     * `reset` is excluded for the same reason it is the signature's third field: it IS the re-frame,
     * and not re-framing is the decision being made here.
@@ -841,29 +841,62 @@ export default function V2() {
     && next.render.view === c.render.view && next.render.isolate === c.render.isolate
     && next.render.explode === c.render.explode
     && sameIds([...new Set(next.render.visible)].sort(), [...new Set(c.render.visible)].sort());
-   /** True when the controller would end up exactly where it already is. A REFUSAL is not a no-op:
-    *  it has a message to render, and `dispatch` is what renders it. */
-   const noop = (cmd: Command) => {
-    if (hiddenRef.current.size) return false;
+   /**
+    * True when the controller would end up exactly where it already is — AND, when it is, the
+    * arrival is still COMMITTED, minus the re-frame. codex round 20, and it corrected the trade I
+    * had written into the code above:
+    *
+    *   · `visibleIntent` is not just provenance for the serialiser. It drives the tablet's system
+    *     checkboxes (page.tsx), the tree's explanatory note (`tree.tsx`) and the visibility a LATER
+    *     scene arrives with (`controller.ts`). codex executed the divergence: legacy intent
+    *     `muscular` → a skeletal-ghost scene → re-applied with `system=skeletal` left the hash path
+    *     showing `drawn skeletal / intent muscular` against `skeletal / skeletal` for a direct
+    *     arrival, and a later scene then drew the WRONG systems.
+    *   · An accepted arrival CLEARS a previous refusal (`dispatch`). Returning early left the reader
+    *     back on a valid link with the old failure message still on screen.
+    *
+    * So a no-op returns the state to commit rather than a boolean: the reducer's own next state with
+    * the CURRENT `render` put back — which is what makes it generation-neutral, since `render.reset`
+    * is the re-frame and `unchanged` has already established every visible field is equal. Written
+    * through `ctlRef` (synchronously, as `dispatch` does) and `setCtl` (so React and the controls
+    * see it), with the refusal cleared. Nothing here bumps the generation, so a pending pose restore
+    * still lands — which was the whole point of the no-op path.
+    */
+   const noop = (cmd: Command): V2State | null => {
+    if (hiddenRef.current.size) return null;
     const out = reduce(c, cmd);
-    return !out.rejected && unchanged(out.state);
+    if (out.rejected || !unchanged(out.state)) return null;
+    return {...out.state, render: c.render};
+   };
+   const commitNoop = (next: V2State) => {
+    ctlRef.current = next;
+    setCtl(next);
+    // Post-mount by construction (this is a hashchange), so the seed-arrival carve-out in `dispatch`
+    // does not apply: a valid arrival here always means "the reader has moved on".
+    setRefused(null);
    };
 
    if (u.scene) {
     const blob = u.sceneBlob ?? encodeScene(u.scene);
-    if (noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible})) {
+    const same = noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible});
+    if (same) {
+     commitNoop(same);
      // Not a transition — but the language still resolves, by the SAME rule the accepted path uses.
      resolveArrivalLang(u.scene, blob, u.lang);
      return;
     }
    } else if (u.clearScene) {
-    if (noop({type: 'clear-scene', url: {...u, select: u.select?.filter(known)}})) {
+    const same = noop({type: 'clear-scene', url: {...u, select: u.select?.filter(known)}});
+    if (same) {
+     commitNoop(same);
      setLegacyCaption({title: u.title, note: u.note});
      if (u.lang) applyLang(u.lang);
      return;
     }
    } else if (u.select?.length) {
-    if (noop({type: 'apply-legacy', url: {...u, select: u.select.filter(known)}})) {
+    const same = noop({type: 'apply-legacy', url: {...u, select: u.select.filter(known)}});
+    if (same) {
+     commitNoop(same);
      setLegacyCaption({title: u.title, note: u.note});
      if (u.lang) applyLang(u.lang);
      return;

@@ -164,10 +164,15 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     },
     // `dispatch` is NOT here: it is extracted from the page (see `program`). These are the
     // collaborators it calls, and they are where the log comes from.
+    // WHAT REACT WOULD SEE. Recorded rather than ignored: assertions that only read the synchronous
+    // `ctlRef` cannot notice a missing publication (codex round 20, Low 1).
     setCtl: (next) => {
+      ctx.publishedState = next;
       log.push(`dispatch -> scene=${next.scene?.caption?.title ?? null} reset=${next.render.reset} gen=${ctx.sceneGen.current}`);
     },
-    setRefused: (r) => { if (r) log.push(`refused ${r.key}`); },
+    publishedState: null,
+    setRefused: (r) => { ctx.refusedState = r ?? null; if (r) log.push(`refused ${r.key}`); },
+    refusedState: null,
     mounted: {current: true},
     // Collaborators this test does not assert about. Named no-ops rather than second implementations:
     // if one ever becomes load-bearing for the restore, this list is where it shows up as a throw.
@@ -207,6 +212,8 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
      *  arrival, which is why an otherwise identical scene is still a change (codex round 19). */
     hide: (id) => { ctx.hiddenRef.current = new Set([...ctx.hiddenRef.current, id]); },
     hidden: () => ctx.hiddenRef.current,
+    published: () => ctx.publishedState,
+    refused: () => ctx.refusedState,
     lang: () => ctx.langSeen,
     /** Move the address bar between navigations. `readUrlState` reads BOTH halves (url-state.ts:123),
      *  which is the whole subject of codex round 18. */
@@ -649,6 +656,58 @@ test('a scene that declares NO language still lets an explicit lang= through on 
   assert.equal(s.lang(), 'zh-Hant');
 });
 
+// ════ 3e. codex ROUND 20 — A NO-OP IS "NO RE-FRAME", NOT "NOTHING HAPPENED" ═══════════════════════
+
+test('M1 (round 20): a generation-neutral arrival still COMMITS the accepted visibleIntent', () => {
+  /**
+   * codex's sequence was legacy intent `muscular` → a skeletal-ghost scene → a re-apply carrying
+   * `system=skeletal`, which left `drawn skeletal / intent muscular` on the hash path against
+   * `skeletal / skeletal` on a direct arrival. The same divergence, in the form this harness can
+   * state exactly: a controller that has NEVER been told a system set (intent `null`) draws the
+   * default `skeletal`, so a hash saying `system=skeletal` changes no picture and every visible
+   * field compares equal — and the intent it carries must still be committed, because the intent
+   * drives the tablet's checkboxes, the tree's note, and the visibility a LATER scene arrives with.
+   */
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  assert.equal(s.ctl().visibleIntent, null, 'the precondition: no system set has ever been stated');
+  const drawn = [...s.ctl().render.visible];
+  const gen = s.gen();
+  s.setUrl({hash: `#scene=${t.blob}&system=${drawn.join(',')}`});
+  s.api().reapply();
+  assert.equal(s.gen(), gen, `still generation-neutral; log: ${s.log.join(' -> ')}`);
+  assert.deepEqual([...(s.ctl().visibleIntent ?? [])].sort(), [...drawn].sort(),
+    'and the intent the reducer accepted is committed, not dropped');
+  assert.deepEqual([...s.ctl().render.visible].sort(), [...drawn].sort(), 'the drawn set is untouched');
+  assert.deepEqual([...(s.published()?.visibleIntent ?? [])].sort(), [...drawn].sort(),
+    'published to React, not only written to the ref');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', 'and the pending pose still lands');
+});
+
+test('M2 (round 20): a valid no-op arrival clears the PREVIOUS refusal', () => {
+  // Apply A -> a refused 25-structure arrival -> back to A. The reader is on a valid link again, so
+  // the failure message from the last one must not still be on screen.
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const tooMany = encodeScene(normalizeScene({
+    structures: Array.from({length: 25}, (_, i) => ({id: `FMA${20000 + i}`})),
+    caption: {title: 'too many'},
+  }));
+  s.setUrl({hash: `#scene=${tooMany}`});
+  s.api().reapply();
+  assert.ok(s.refused(), `the refusal is on screen: ${s.refused()?.key}`);
+  const gen = s.gen();
+  s.setUrl({hash: `#scene=${t.blob}`});
+  s.api().reapply();
+  assert.equal(s.refused(), null, 'returning to a valid link clears it');
+  assert.equal(s.gen(), gen, 'without opening a generation');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', 'and the pending pose still lands');
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -714,8 +773,8 @@ const mutations = [
   {
     name: "the hash handler's no-op early return",
     mutate: (s) => s.replace(
-      "    if (noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible})) {",
-      '    if (false) {'),
+      "    const same = noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible});",
+      '    const same = null;'),
     // codex round 17: a skip-link jump discarding a valid restore.
     /**
      * THE WARM-TAB FORM, which is what round 18 corrected: the scene lives in the QUERY, so the skip
@@ -765,7 +824,7 @@ const mutations = [
   },
   {
     name: 'the session-hidden guard on the no-op path',
-    mutate: (s) => s.replace('    if (hiddenRef.current.size) return false;', ''),
+    mutate: (s) => s.replace('    if (hiddenRef.current.size) return null;', ''),
     // An identical scene arriving while something is hidden by hand must clear the override.
     defect: (mk) => {
       const s = mk();
@@ -808,6 +867,35 @@ const mutations = [
       s.setUrl({hash: `#scene=${declares}&lang=en`});
       s.api().reapply();
       return {ok: s.lang() === 'en', saw: `lang=${s.lang()}`};
+    },
+  },
+  {
+    name: "the no-op path's commit of the accepted state",
+    mutate: (s) => s.replace('     commitNoop(same);\n     // Not a transition', '     // Not a transition'),
+    defect: (mk) => {
+      const s = mk();
+      const t = s.tab('A', null);
+      s.api().applyTab(t);
+      const drawn = [...s.ctl().render.visible];
+      s.setUrl({hash: `#scene=${t.blob}&system=${drawn.join(',')}`});
+      s.api().reapply();
+      return {ok: (s.ctl().visibleIntent ?? null) === null,
+        saw: `intent=${(s.ctl().visibleIntent ?? []).join() || '(none)'} drawn=${drawn.join()}`};
+    },
+  },
+  {
+    name: "dispatch's publication to React (setCtl)",
+    mutate: (s) => s.replace('  setCtl(out.state);', ''),
+    /**
+     * codex round 20, Low 1: assertions read the synchronous `ctlRef`, so deleting the React
+     * publication left all 45 cases green. The harness records what `setCtl` was given and the
+     * round-20 case asserts it, which is what makes this arm bite.
+     */
+    defect: (mk) => {
+      const s = mk();
+      const t = s.tab('A', null);
+      s.dispatchRaw({type: 'apply-scene', scene: decodeScene(t.blob), blob: t.blob});
+      return {ok: s.published() === null, saw: `published=${s.published() ? 'yes' : 'never'}`};
     },
   },
   {
