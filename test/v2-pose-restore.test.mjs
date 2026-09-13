@@ -60,6 +60,13 @@ const program = () => [
   // The URL parser, with `export` stripped so it runs in the VM against the fake `location`.
   URLSTATE.slice(URLSTATE.indexOf('export const TITLE_MAX='), URLSTATE.indexOf('/** Chrome-less'))
     .replace(/^export /gm, ''),
+  /**
+   * THE REAL GENERATION WIRING — codex round 17, Low 1. The harness used to supply its own bump, so
+   * deleting the production `setEpoch(sceneGen.current)` left all 23 cases green: the ref advanced
+   * and the renderer's prop never did. `bumpEpoch` is extracted now, the harness's `setEpoch` records
+   * what the RENDERER would have been given, and `ready()` publishes THAT rather than the ref.
+   */
+  cut(PAGE, ' const bumpEpoch = useCallback(', ', []);'),
   cut(PAGE, ' const abortPoseRestore = useCallback(', ', []);'),
   cut(PAGE, ' const poseSig = () => {', '\n };'),
   cut(PAGE, ' const applySceneState = useCallback(', ' }, [dispatch]);'),
@@ -79,6 +86,7 @@ const program = () => [
   // The `onHold` wiring, turned from an object property into a callable.
   'const onHold = ' + cut(SHELL, '   onHold: (n: number) =>', '},').replace(/^\s*onHold:\s*/, '').replace(/,$/, '') + ';',
   'globalThis.api = {applyTab, applySceneState, clearSceneState, reapply, onSceneReady, runCmd: cmdRef.current, onHold, abortPoseRestore};',
+  'globalThis.bumpEpoch = bumpEpoch;',
 ].join('\n');
 
 /**
@@ -117,8 +125,9 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     // barrier is now driven through the REAL callback, so the production `poseRestoreRef.current(...)`
     // line is load-bearing for this suite (codex round 16, Low 1).
     sceneGen: {current: 0},
-    // The page's own bump, as `reapply` calls it. One writer for the generation, as in production.
-    bumpEpoch: () => { ctx.sceneGen.current += 1; },
+    // What the RENDERER would receive as `sceneEpoch` — written only by the production `bumpEpoch`.
+    setEpoch: (n) => { ctx.renderEpoch = n; },
+    renderEpoch: 0,
     mark: () => {},
     performance: {now: () => 0},
     modelBytes: () => ({done: 0, requests: 0}),
@@ -140,15 +149,18 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
       const out = reduce(ctl, cmd);
       if (out.rejected) { log.push(`refused ${out.rejected.key}`); return false; }
       ctl = out.state;
-      // The page bumps its generation synchronously whenever the controller opens a new one.
-      if (out.epoch) ctx.sceneGen.current += 1;
+      // The page bumps its generation synchronously whenever the controller opens a new one — through
+      // the PRODUCTION `bumpEpoch`, so both halves of it (the ref and the renderer's prop) are live.
+      if (out.epoch) ctx.bumpEpoch();
       log.push(`dispatch ${cmd.type} -> scene=${ctl.scene?.caption?.title ?? null} reset=${ctl.render.reset} gen=${ctx.sceneGen.current}`);
       return true;
     },
     // Collaborators this test does not assert about. Named no-ops rather than second implementations:
     // if one ever becomes load-bearing for the restore, this list is where it shows up as a throw.
     known: () => true, applyLang: () => {}, emitAtlas: (e) => { if (e.type === 'pose-restore') log.push(`emit ${e.state}`); },
-    setRefused: () => {}, setHidden: () => {}, setDetent: () => {}, setEpoch: () => {},
+    // NOTE: no `setEpoch` here — it is defined above and records what the RENDERER would receive.
+    // A second no-op entry silently shadowed it once, which is how the generation stopped moving.
+    setRefused: () => {}, setHidden: () => {}, setDetent: () => {},
     markScene: () => {}, markSceneReady: () => {}, markSettled: () => {}, setLegacyCaption: () => {},
     sceneDeclaresLang: () => null, readUrlState: null,
     keysOpen: false, settingsOpen: false, findOpen: false,
@@ -179,7 +191,7 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
      * the page's current generation, which is what the renderer publishes when nothing has moved
      * since the barrier armed; a case that needs an OLDER barrier passes one explicitly.
      */
-    ready: (gen = ctx.sceneGen.current) => ctx.api.onSceneReady(0, gen),
+    ready: (gen = ctx.renderEpoch) => ctx.api.onSceneReady(0, gen),
     gen: () => ctx.sceneGen.current,
     /** Subscribe to the public event stream, as `tools.ts` delivers it: synchronously. */
     onEvent: (f) => { ctx.emitAtlas = (e) => { if (e.type === 'pose-restore') log.push(`emit ${e.state}`); f(e); }; },
@@ -409,6 +421,24 @@ test('a barrier from a SUPERSEDED generation discards the pending restore rather
   assert.equal(s.marks.atlasPose, 'stale');
 });
 
+test('M1 (round 17): a hash that names NO view does not supersede a pending restore', () => {
+  /**
+   * The reachable case is our own SKIP LINK (`#v2-field`, shell.tsx): a keyboard user jumping to the
+   * field while a tab restore is pending. Nothing about the view changes — the controller, and so the
+   * signature, is untouched — but the handler used to open a new generation anyway, and the newer
+   * barrier then discarded a restore that was about to be correct. codex executed it:
+   * `armedGen 1, drawnGen 2, marker stale, setters 0`, against `applied / 1 setter` without the bump.
+   */
+  const s = scenario({hash: '#v2-field'});
+  armA(s);
+  const gen = s.gen();
+  s.api().reapply();
+  assert.equal(s.gen(), gen, 'no generation was opened, because no view was applied');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', `the restore still arrives; log: ${s.log.join(' -> ')}`);
+  assert.equal(s.pose().x, 1);
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -469,6 +499,36 @@ const mutations = [
       armA(s);
       s.ready();
       return {ok: s.pose().x !== 1, saw: `pose.x=${s.pose().x} · marker=${s.marks.atlasPose}`};
+    },
+  },
+  {
+    name: "the hash handler's no-op early return",
+    mutate: (s) => s.replace('   if (!kind) return;', ''),
+    // codex round 17: a skip-link jump discarding a valid restore.
+    defect: (mk) => {
+      const s = mk({hash: '#v2-field'});
+      armA(s);
+      s.api().reapply();          // the skip link, while the restore is pending
+      s.ready();                  // the barrier that follows the superfluous generation
+      return {ok: s.marks.atlasPose === 'stale' && s.pose().x !== 1,
+        saw: `marker=${s.marks.atlasPose} pose.x=${s.pose().x} · ${s.log.join(' -> ')}`};
+    },
+  },
+  {
+    name: "bumpEpoch's write to the renderer's prop",
+    mutate: (s) => s.replace('setEpoch(sceneGen.current);', ''),
+    /**
+     * codex round 17, Low 1: with the harness supplying its own counter, deleting this left all 23
+     * cases green — the ref advanced and the renderer's prop never did. The suite now publishes the
+     * value the RENDERER would have been given, so the connection is load-bearing.
+     */
+    defect: (mk) => {
+      const s = mk();
+      const a = s.tab('A', null);
+      s.api().applySceneState(decodeScene(a.blob), a.blob);
+      armA(s);
+      s.ready();
+      return {ok: s.pose().x !== 1, saw: `pose.x=${s.pose().x} marker=${s.marks.atlasPose}`};
     },
   },
   {

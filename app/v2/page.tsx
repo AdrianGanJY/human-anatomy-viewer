@@ -729,6 +729,21 @@ export default function V2() {
   if (!atlas) return;
   const reapply = () => {
    const u = readUrlState();
+   /**
+    * ⚠️ A HASH THAT NAMES NO VIEW IS NOT A RE-DRIVE — codex round 17, and the reachable case is our
+    * own skip link (`#v2-field`, shell.tsx). This handler used to withdraw readiness and open a new
+    * generation BEFORE deciding whether anything would be applied, so jumping to the field with the
+    * keyboard superseded a generation for nothing. With a tab restore pending that is a lost
+    * restore: the controller is untouched, so the SIGNATURE still matches, and the newer barrier
+    * discards a pose that was about to be correct. codex executed it — `armedGen 1, drawnGen 2,
+    * marker stale, setters 0`, against `applied / 1 setter` with the bump omitted.
+    *
+    * So the branch is decided first and the side effects happen only when one of them will run. Not
+    * a widening of the generation rule (which stays exactly as round 16 left it, both directions):
+    * a generation is opened when the view changes, and `#v2-field` does not change the view.
+    */
+   const kind = u.scene ? 'scene' : u.clearScene ? 'clear' : (u.select?.length ? 'legacy' : null);
+   if (!kind) return;
    markSettled(false); markSceneReady(false);
    // WITHDRAW READINESS AND OPEN A NEW GENERATION. The renderer re-arms its barrier against the
    // ids below and publishes only once their chunks are merged AND drawn, which is what replaced
