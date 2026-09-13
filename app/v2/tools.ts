@@ -22,6 +22,15 @@ export type AtlasEvent =
  | {type: 'ready'; ms: number}
  | {type: 'lang'; lang: Lang}
  | {type: 'stage'; on: boolean}
+ /**
+  * S5a-2: what a scene tab's pending camera restore DID on the readiness barrier — `applied` (the
+  * setter returned true, the only success), `stale` (the view moved between arming and readiness, so
+  * nothing was written), `norenderer`, `refused`, and `aborted` (a human took the camera first — a
+  * gesture, a held key, Home or Fit). Additive, so `version` stays 3; and it is the
+  * machine-readable half of `data-atlas-pose`, which exists because "restored" used to be inferred
+  * from coordinate equality and that inference held with zero setter calls (codex round 15, Low 3).
+  */
+ | {type: 'pose-restore'; state: 'applied' | 'stale' | 'norenderer' | 'refused' | 'aborted'}
  | {type: 'error'; code: string};
 
 export interface AtlasState {

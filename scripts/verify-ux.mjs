@@ -65,7 +65,7 @@
  */
 import {chromium} from 'file:///E:/Dev/Mipos/Tools/mipos-bank-fetch/node_modules/playwright-core/index.mjs';
 import {execSync} from 'node:child_process';
-import {mkdirSync, writeFileSync} from 'node:fs';
+import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 /** The repo root, for the one `git` call this suite makes (the About commit assertion, S4). */
@@ -4850,17 +4850,33 @@ if (variant === 'v2') {
       try {
         expectCommit = execSync('git rev-parse --short HEAD', {cwd: REPO_DIR, stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
       } catch { expectCommit = ''; }
+      /**
+       * ⚠️ S5a-2: THE BUILD ID IS READ FROM `wrangler.toml`, NOT WRITTEN HERE. It used to be the
+       * literal `'l31v21bc'`, and that row FAILED the moment `SITE_BUILD` moved to `l31v21bc2` — on a
+       * rebuild of the tree that had just bumped it. Nothing about the product was wrong; the oracle
+       * was holding the page to a figure the repo had already changed, which is the staleness class
+       * this whole suite exists to catch. It now reads the SAME source `vite.config.ts` reads, so the
+       * two cannot disagree, and the row's real claim — the page names the build it was BUILT from,
+       * and THIS commit — is the one being asserted.
+       */
+      let expectBuild = '';
+      try {
+        expectBuild = /^SITE_BUILD\s*=\s*"([^"]+)"/m.exec(
+          readFileSync(`${REPO_DIR}/workers/snap/wrangler.toml`, 'utf8'))?.[1] ?? '';
+      } catch { expectBuild = ''; }
       check(py.name, `[${S4_V}] About names the deployed build and THIS commit (not the upstream sha)`,
-        !about.error && !!expectCommit && about.found
-          && about.buildAttr === 'l31v21bc' && about.commitAttr === expectCommit
+        !about.error && !!expectCommit && !!expectBuild && about.found
+          && about.buildAttr === expectBuild && about.commitAttr === expectCommit
           // The RENDERED sentence still has to carry them, or the fields would be right and the
           // reader would be looking at something else.
-          && about.buildLine.includes('l31v21bc') && about.buildLine.includes(expectCommit),
-        about.error || (expectCommit
+          && about.buildLine.includes(expectBuild) && about.buildLine.includes(expectCommit),
+        about.error || (expectCommit && expectBuild
           ? `${about.found ? `data-build=${about.buildAttr} data-commit=${about.commitAttr}` : '(no .v2-about-build element)'}`
-            + ` · expected commit ${expectCommit} · rendered: "${about.buildLine.slice(0, 80)}"`
-          : 'git rev-parse failed, so the expected commit is unknown — this row must not be satisfiable by a pattern'),
-        `data-build=l31v21bc and data-commit=${expectCommit || '(unknown)'} compared EXACTLY, on a named element`);
+            + ` · expected ${expectBuild} / ${expectCommit} · rendered: "${about.buildLine.slice(0, 80)}"`
+          : 'git rev-parse or the SITE_BUILD read failed, so the expected values are unknown — this row '
+            + 'must not be satisfiable by a pattern'),
+        `data-build=${expectBuild || '(unknown)'} and data-commit=${expectCommit || '(unknown)'}`
+          + ' compared EXACTLY, on a named element, against wrangler.toml and git');
     } finally { await ctx.close(); }
   }
 
@@ -5436,13 +5452,35 @@ if (variant === 'v2') {
         `.v2-tabs=${empty.strips} · .v2-status-btn present=${empty.add}`,
         'a DELIBERATE change from S0, which reserved the strip with one tab and an inert +');
 
+      /**
+       * ⚠️ S5a-2 — THE SNAPSHOT IS TAKEN AT A POSE THE SCENE'S OWN FIT WOULD NEVER PRODUCE, and until
+       * this session it was not. The original order was: snapshot at the ENTRY pose, drift, click the
+       * tab, assert the camera is back at the snapshot. But applying a tab dispatches `apply-scene`,
+       * which bumps `render.reset`, which makes the renderer clear `manual` and RE-RUN ITS FIT — and
+       * the fit is deterministic, so it lands back at the entry pose. **The camera returned to the
+       * snapshot pose whether or not the restore ran.** Measured directly (a probe that logged the
+       * pose every 200 ms during an ABORTED restore: `x` was back at the snapshot value within 60 ms,
+       * with `data-atlas-pose=aborted`). This row passed round after round without being able to fail.
+       *
+       * So: drift FIRST, snapshot THAT, then drift again somewhere else. The saved pose is now a
+       * MANUAL one, and `fitAway` below asserts it really is away from the entry fit — which is what
+       * makes "the camera came back to it" evidence of a restore rather than of arithmetic.
+       */
+      const entry = await page.evaluate(() => { const q = window.__atlasNav.pose(); return [q.x, q.y, q.z, q.tx, q.ty, q.tz]; });
       const saved = await page.evaluate(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        for (let i = 0; i < 24; i++) { window.__atlasNav.orbit(0.06, 0.012); window.__atlasNav.dolly(1.03); }
+        await wait(400);
         document.querySelector('.v2-status-btn')?.click();
         await wait(600);
         const q = window.__atlasNav.pose();
         return {cam: [q.x, q.y, q.z, q.tx, q.ty, q.tz], stored: localStorage.getItem('atlas.scenes')};
       })()`);
+      const fitAway = Math.max(...saved.cam.map((v, i) => Math.abs(v - entry[i])));
+      check(VP5.name, `[${S5_V}] the snapshot pose is one the scene's own FIT would not produce`,
+        fitAway > 0.05,
+        `the snapshot sits ${fitAway.toFixed(4)} from the entry fit on its worst axis`,
+        'a MANUAL pose — otherwise the re-fit that a tab apply triggers satisfies "restored" on its own');
       // DRIFT THE CAMERA SOMEWHERE IT WOULD NEVER BE BY ACCIDENT — the control arm. Without it,
       // "the pose matches" is satisfied by a camera that never moved at all.
       const drifted = await page.evaluate(`(async () => {
@@ -5478,6 +5516,130 @@ if (variant === 'v2') {
         '{v:1, tabs:[{blob, title, cam:[6 numbers]}]}');
     } catch (e) {
       check(VP5.name, `[${S5_V}] the scene-tab pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  /**
+   * ── 4b. S5a-2: A NEWER HUMAN INTENT BEATS A PENDING RESTORE — IN A REAL BROWSER ──────────────
+   *
+   * The unit arms (`test/v2-pose-restore.test.mjs`) execute the shipped callbacks against the real
+   * reducer, and codex has said three times that what they cannot establish is the browser. These
+   * three rows are that half: a real keypress, a real held key, real renderer timing.
+   *
+   * Row 4 above is their CONTROL ARM — same page, same snapshot, same drift, nothing interfering,
+   * and the pose comes back within 0.01. If that row is green and these are too, the restore both
+   * works and yields.
+   */
+  {
+    const ctx = await newContext(VP5);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      /**
+       * ⚠️ DRIFT, SNAPSHOT, DRIFT AGAIN — for the reason block 4 above now records: a tab apply
+       * re-runs the scene's FIT, so a snapshot taken at the entry pose is indistinguishable from that
+       * fit and every distance measured from it is meaningless. Two earlier runs of this block proved
+       * it the hard way: first I read the reference AFTER the drift (wrong point), then with the
+       * reference right the held-key row measured 0.0000 — not because the restore won, but because
+       * the FIT had already put the camera back there with `data-atlas-pose=aborted` on the element.
+       * The saved pose has to be a MANUAL one, asserted away from the entry fit below.
+       * (No backticks inside this function: it is a template literal and one would end it.)
+       */
+      const entry = await page.evaluate(() => { const q = window.__atlasNav.pose(); return [q.x, q.y, q.z, q.tx, q.ty, q.tz]; });
+      const saved = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        for (let i = 0; i < 24; i++) { window.__atlasNav.orbit(0.06, 0.012); window.__atlasNav.dolly(1.03); }
+        await wait(400);
+        document.querySelector('.v2-status-btn')?.click();
+        await wait(600);
+        const q0 = window.__atlasNav.pose();
+        const snap = [q0.x, q0.y, q0.z, q0.tx, q0.ty, q0.tz];
+        for (let i = 0; i < 30; i++) { window.__atlasNav.orbit(-0.07, 0.02); window.__atlasNav.dolly(0.97); }
+        await wait(400);
+        const q1 = window.__atlasNav.pose();
+        return {snap, drift: Math.max(...[q1.x, q1.y, q1.z, q1.tx, q1.ty, q1.tz].map((v, i) => Math.abs(v - snap[i])))};
+      })()`);
+      const fitAway = Math.max(...saved.snap.map((v, i) => Math.abs(v - entry[i])));
+      check(VP5.name, `[${S5_V}] the restore-yield pass has a MANUAL reference the camera has left`,
+        saved.drift > 0.05 && fitAway > 0.05,
+        `snapshot ${fitAway.toFixed(4)} from the entry fit · drifted ${saved.drift.toFixed(4)} from the snapshot`,
+        'a reference away from the fit AND away from where the camera is now — or neither direction of '
+          + 'this test can fail');
+      const clickTab = () => page.evaluate(`(() => {
+        const tab = [...document.querySelectorAll('.v2-tabs button.v2-tab')].find((b) => !b.className.includes('v2-tab-add'));
+        if (!tab) return false;
+        tab.click();
+        return true;
+      })()`);
+      const distance = async () => {
+        const q = await page.evaluate(() => { const p = window.__atlasNav.pose(); return [p.x, p.y, p.z, p.tx, p.ty, p.tz]; });
+        return Math.max(...q.map((v, i) => Math.abs(v - saved.snap[i])));
+      };
+      const mark = () => page.evaluate(() => document.documentElement.dataset.atlasPose ?? '(none)');
+
+      /**
+       * (i) HOME IMMEDIATELY AFTER THE CLICK — the defect's own sentence: the reader asks for Home and
+       *     must not have the tab's old pose written back over them.
+       *
+       * ⚠️ THE CLAIM IS ABOUT THE FINAL POSE, NOT ABOUT `data-atlas-pose`. The readiness barrier can
+       *     fire before a keypress lands (the scene is already drawn), in which case the restore
+       *     legitimately applies and Home then moves the camera off it — the reader still gets Home,
+       *     which is the whole product claim. What must NEVER happen is the reverse order: the restore
+       *     writing AFTER Home, which would leave the camera back at the snapshot pose. That is
+       *     exactly what this distance measures. The marker is reported for the record.
+       */
+      const clicked = await clickTab();
+      await page.keyboard.press('h');
+      await page.waitForTimeout(2600);
+      const afterHome = await distance();
+      const homeMark = await mark();
+      check(VP5.name, `[${S5_V}] Home pressed during a tab restore WINS — the pose is not written back`,
+        clicked && afterHome > 0.05,
+        `worst axis ${afterHome === Infinity ? 'n/a' : afterHome.toFixed(4)} from the snapshot pose · data-atlas-pose=${homeMark}`,
+        'the camera is NOT sitting at the snapshot pose (a stale write would put it within 0.01 of it)');
+
+      /**
+       * (ii) A HELD CAMERA KEY — round 15's entry point that no command hook can see.
+       *
+       * ⚠️ THE KEY GOES DOWN **BEFORE** THE CLICK, and that is not a convenience. Pressing it after
+       *    the click races the readiness barrier, which on a warm page fires within ~16 ms: the first
+       *    version of this row measured `0.0000 / applied` on one run and `1.91 / aborted` on the next,
+       *    for the same build. And a 900 ms hold only moves the camera 0.010 (W) to 0.056 (ArrowUp) at
+       *    this distance — measured — so the applied branch cannot be separated from a stale write by
+       *    position at all. The race also had to be REMOVED from the product, not just from the test:
+       *    `applyTab` now refuses to arm while the dispatcher's held set is non-empty.
+       *    The "key pressed DURING the pending window" half is asserted in
+       *    `test/v2-pose-restore.test.mjs`, where the barrier is called explicitly and nothing races.
+       */
+      await page.keyboard.down('w');
+      await page.waitForTimeout(120);
+      await clickTab();
+      await page.waitForTimeout(2600);
+      const afterHeld = await distance();
+      const heldMark = await mark();
+      await page.keyboard.up('w');
+      await page.waitForTimeout(200);
+      check(VP5.name, `[${S5_V}] a tab clicked WHILE a camera key is held does not restore over the hand`,
+        heldMark === 'aborted' && afterHeld > 0.05,
+        `data-atlas-pose=${heldMark} · worst axis ${afterHeld === Infinity ? 'n/a' : afterHeld.toFixed(4)} from the snapshot pose`,
+        'the restore never arms while the held set is non-empty, so the camera stays with the reader');
+
+      // (iii) AND THE MIRROR CLAIM: the key map is not a camera request, so the restore still lands.
+      await page.keyboard.press('Escape');
+      await clickTab();
+      await page.keyboard.press('?');
+      await page.waitForTimeout(2600);
+      const afterKeys = await distance();
+      const keysMark = await mark();
+      await page.keyboard.press('Escape');
+      check(VP5.name, `[${S5_V}] opening the KEY MAP does not cancel a restore (round 15, Low 2)`,
+        afterKeys < 0.01 && keysMark === 'applied',
+        `worst axis ${afterKeys === Infinity ? 'n/a' : afterKeys.toFixed(5)} · data-atlas-pose=${keysMark}`,
+        'the pose still arrives: `?` changes neither the scene nor the camera, so it is not an intent');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the restore-yield pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 

@@ -9,6 +9,9 @@
  */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {stripTypeScriptTypes} from 'node:module';
+import vm from 'node:vm';
 import {isStudio, ladder, openDock, tierOf} from '../app/v2/shell/layout.ts';
 import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
@@ -463,4 +466,51 @@ test('the key map lists every S1 binding and no key nobody bound', () => {
   for (const r of KEY_MAP) {
     if (r.group === 'now') assert.equal(r.owner, undefined, `${r.keys}: a "now" row cannot be forthcoming`);
   }
+});
+
+// ── the Scene JSON dock's error LINE — S5a-2, codex round 15's Low 1 ────────────────────────────
+
+/**
+ * THE DRAFT USED TO SUPPLY ITS OWN ERROR LOCATION. V8 quotes the offending input back inside the
+ * message, so `/line (\d+)/` read **99** out of a draft keyed `"line 99"` for a token on line 3, and
+ * `/position (\d+)/` read a position out of the literal text `\n\nposition 0`. A wrong line number is
+ * a claim about where to look, which is worse than no claim — and it had already been "fixed" twice
+ * without a test, which is why there is one now.
+ *
+ * The helper is EXTRACTED FROM `shell.tsx`, not re-typed: a copy in the test would pass while the
+ * shipped regex stayed wrong.
+ */
+const lineOf = await (async () => {
+  const src = readFileSync(new URL('../app/v2/shell/shell.tsx', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const begin = src.indexOf(' const lineOf = (text: string, e: unknown): number | null => {');
+  assert.ok(begin >= 0, 'the test cannot reach `lineOf`');
+  const end = src.indexOf('\n };', begin);
+  const body = src.slice(begin, end + 4).replace(/^ const /, 'const ');
+  const ctx = {};
+  vm.runInNewContext(stripTypeScriptTypes(body) + ';globalThis.out = lineOf;', ctx);
+  return ctx.out;
+})();
+
+test('a JSON error line comes from the ENGINE, never from the reader\'s own text', () => {
+  const at = (text) => { try { JSON.parse(text); return 'parsed'; } catch (e) { return lineOf(text, e); } };
+
+  // GENUINE engine locations (measured on V8 / Node 23): the trailing `(line L column C)` wins.
+  assert.equal(at('{\n "a":1,\n}'), 3, 'a trailing comma before } is on line 3');
+  assert.equal(at('{"a":1} x'), 1, 'trailing junk after a complete value is on line 1');
+
+  // ROUND 15's TWO SPOOFS — the draft supplies text that LOOKS like engine metadata.
+  assert.equal(at('{\n "line 99": \n @}'), null,
+    'the quoted input says "line 99"; the engine offered no location, so neither does the dock');
+  assert.equal(at('\n\nposition 0'), null, 'and "position 0" in the draft is not a position either');
+  assert.equal(at('{"line 5 column 3": @}'), null,
+    'a draft spelling the full line/column form still supplies no location — the match is anchored '
+    + 'at the END of the message, where the quoted-input family never puts it');
+
+  // NO POSITION AT ALL stays null (round 14: pointing at line 1 or the last line is a guess).
+  assert.equal(at('{\n "a":'), null, 'Unexpected end of JSON input carries no location');
+
+  // SpiderMonkey's form, which no V8 test would reach.
+  assert.equal(lineOf('x', {message: 'JSON.parse: expected property name or \'}\' at line 4 column 2 of the JSON data'}), 4);
+  // ...and the same sentence with the input quoted around it must NOT yield a line.
+  assert.equal(lineOf('x', {message: 'Unexpected token \'@\', "at line 4 column 2 of the JSON data" is not valid JSON'}), null);
 });

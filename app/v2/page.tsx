@@ -305,6 +305,16 @@ export default function V2() {
   }
  }, [sampleBytes]);
 
+ /**
+  * S5a-2: THE RESTORE RUNS ON THE READINESS BARRIER, and this ref is how it gets here.
+  *
+  * `onSceneReady` is declared above the controller and the renderer surface it needs (`ctlRef`,
+  * `navOf`), and moving either of those up would put the controller above the state it reduces. A
+  * ref assigned during render is the file's existing idiom for that ordering (`shellRef`,
+  * `ctlRef`) — and it keeps the ONE call site for "a pending pose becomes a pose" visible here, in
+  * the barrier, rather than hidden inside a timer somewhere else.
+  */
+ const poseRestoreRef = useRef<(() => void) | null>(null);
  const onSceneReady = useCallback((armedAt: number) => {
   mark('sceneReady');
   // FREEZE THE BYTE COUNT AT THE BARRIER, in the DOM, before anything can await.
@@ -320,6 +330,9 @@ export default function V2() {
   setPhase((p) => (p === 'atlas' ? p : 'scene'));
   sampleBytes();
   emitAtlas({type: 'scene-ready', ms: Math.round(performance.now())});
+  // AND THE PENDING POSE, LAST: the barrier is the one moment at which the scene is drawn and its
+  // fit has run, so a pose written now is the reader's and not a frame's.
+  poseRestoreRef.current?.();
  }, [sampleBytes]);
 
  // ─── the one door into the controller ─────────────────────────────────────────────────────
@@ -546,54 +559,102 @@ export default function V2() {
   * that tie the reader's explicit `?lang=` wins, which is the side that cannot surprise anybody.
   */
  /**
-  * ── THE PENDING-RESTORE GENERATION — codex round 13's M1, and it was a real one ────────────────
+  * ══ THE PENDING POSE RESTORE — S5a-2, and it is a NEW DESIGN rather than a fourth patch ═════════
   *
-  * Every tab click used to start its own animation-frame loop and NOTHING cancelled the previous
-  * one. codex executed the consequence against the real reducer: apply tab A (which carries a
-  * pose), let one frame run, apply tab B (a valid tab with NO pose), then let A's outstanding frame
-  * run — and A's pose was written while B's scene was live. `setPose` also sets `manual=true`, so
-  * the stale write additionally suppresses B's own fit. Its measured output:
+  * THE DEFECT (codex rounds 13, 14 and 15, all three FAIL): a scene tab's pending camera restore
+  * could outlive a newer human intent and overwrite it. The reader asks for Home, gets Home, and
+  * then has a tab's old pose written back over them — with `manual=true`, which additionally
+  * suppresses the fit they just asked for.
   *
-  *     apply A · setPose x=1 while scene=A · apply B · setPose x=1 while scene=B
-  *     final {"scene":"B","pose":{"x":1,…,"manual":true}}
+  * THREE PATCHES OF THE SAME SHAPE FAILED, and the shape was the problem. Each one ENUMERATED the
+  * callers that must cancel the restore, and each time codex executed the next caller nobody had
+  * listed: tab-to-tab (r13) → `home`/`fit` bypassing a hook that only saw DECLINED commands, plus
+  * `applySceneState` (r14) → `clearSceneState` via the legacy hash branch, plus HELD CAMERA KEYS,
+  * which `installDispatcher` never routes through `cmdRef` (r15). Five entry points. Round 15 also
+  * measured the mirror defect: the cancellation was simultaneously too BROAD — opening the keyboard
+  * help cancelled a restore, which is not a camera request. A list that is both incomplete and
+  * over-inclusive is not a bug list; it is the wrong mechanism.
   *
-  * ⚠️ THE INVALIDATION HAPPENS EVEN WHEN THE NEW TAB HAS NO POSE, which is exactly the case that
-  * made the defect reachable: the early `return` for a pose-less tab skipped every cleanup that
-  * lived below it. So the generation is bumped at the TOP of `applyTab`, before the decode and
-  * before the dispatch — a click supersedes a pending restore whether or not it arms a new one, and
-  * whether or not the controller accepts it. A refused tab leaves the camera where it is, which is
-  * the same thing a refusal does to everything else.
+  * ── SO THE RESTORE OBSERVES INSTEAD OF BEING NOTIFIED, on two axes that are not the same axis ───
   *
-  * It is also bumped by anything else that is a statement about the camera: a keyboard or pill
-  * command (Home, Fit, a named view, Reset, Stage), a pointer landing in the field, and unmount.
-  * A reader who grabs the camera has said something more recent than a tab click 800 ms ago.
+  * 1. THE SCENE CHANGED → the signature differs, and the restore aborts BY CONSTRUCTION. At arm
+  *    time it captures `poseSig()` — the controller's canonical `blob`, plus `render.view` and
+  *    `render.reset`, which are *precisely* the renderer's own re-frame key (app/scene.tsx:
+  *    `if(s.view!==lastView||s.reset!==lastReset){manual=false;…}`). Every caller that changes the
+  *    scene goes through the controller — `applySceneState`, `clearSceneState`, the legacy hash
+  *    branch, `window.atlas`, a named view, Reset, and every caller nobody has written yet — and
+  *    `intent()` in controller.ts is "the ONLY way `reset` is ever bumped". There is no list to
+  *    keep in step, and a command that changes NEITHER (the key map, Settings, a dock toggle)
+  *    leaves the restore alone, which is round 15's second Low.
+  *
+  * 2. A HUMAN TOOK THE CAMERA → abort, via the signals the engine already emits. The restore must
+  *    OUTLIVE the entry fit (which moves the camera, and is not a person) while YIELDING to a
+  *    reader (who also moves the camera). Those two are indistinguishable from the POSE and
+  *    perfectly distinguishable by SOURCE, so this is decided by source and never by comparing
+  *    coordinates:
+  *      · OrbitControls' own `start` event, re-emitted as `atlas-nav-gesture` (app/scene.tsx) —
+  *        pointer, touch and wheel. It does NOT fire for `studioHome`, the frame loop's fit or
+  *        `setPose`, which is exactly the distinction that matters.
+  *      · the S1 dispatcher's HELD set — any camera key down (`use-shell.ts`'s `onHold`).
+  *      · `POSE_CMDS` (`home`, `fit`) from the keyboard, the pill or the key pad — the only commands
+  *        that move the camera without touching the controller, so the only ones axis 1 cannot see.
+  *    ONE function (`abortPoseRestore`), three subscribers.
+  *
+  * 3. IT APPLIES EXACTLY ONCE, WHEN THE SCENE IS READY — `onSceneReady`, the renderer's own barrier
+  *    (chunks merged AND drawn), through `poseRestoreRef` below. No rAF loop, no 1,200 ms budget, no
+  *    clock anywhere. The previous design re-applied across frames to outlive the post-apply refit;
+  *    arming on the barrier means the refit has already happened, and `setPose`'s `manual=true` is
+  *    what makes the studio branch absorb the next focus key without re-fitting.
+  *
+  * 4. COMPLETION IS THE SETTER'S OWN VERDICT (round 15's third Low). The old predicate — two frames
+  *    of coordinate equality — succeeded with ZERO setter calls whenever the camera already happened
+  *    to be there, so "restored" was a claim about arithmetic rather than about anything having run.
+  *    Now the restore is complete iff `setPose` returned true, and that is what the DOM marker and
+  *    the `window.atlas` event report.
+  *
+  * ⚠️ THERE IS NO EXPIRY CLOCK, and that is deliberate. The pending state is cleared by: the next
+  * scene-ready (whether it matches or not), any human camera intent, a newer tab click, and unmount.
+  * If the scene NEVER becomes ready the restore simply never runs — and it cannot go stale while it
+  * waits, because the signature guard means it can only ever write into the exact view that armed
+  * it. A timer would add a failure mode (a slow machine losing a legitimate restore) to buy nothing.
   */
- const poseJob = useRef(0);
- const cancelPoseRestore = useCallback(() => { poseJob.current += 1; }, []);
+ interface PendingPose {sig: string; want: {x: number; y: number; z: number; tx: number; ty: number; tz: number}}
+ const pendingPose = useRef<PendingPose | null>(null);
+ /** ABORT, and SAY SO. The marker is how an oracle (and a reviewer) can tell an abort from a restore
+  *  that never armed — three rounds of review were argued partly from invisible state. It is only
+  *  written when something really was pending, so it never manufactures an event. */
+ const abortPoseRestore = useCallback(() => {
+  if (!pendingPose.current) return;
+  pendingPose.current = null;
+  document.documentElement.dataset.atlasPose = 'aborted';
+  emitAtlas({type: 'pose-restore', state: 'aborted'});
+ }, []);
+ /**
+  * THE SIGNATURE — the scene identity plus the renderer's re-frame key, read from `ctlRef` (which
+  * `dispatch` writes SYNCHRONOUSLY) rather than from `ctl`, so a tab that dispatches and arms in one
+  * tick reads its own result instead of the previous render's.
+  */
+ const poseSig = () => {
+  const c = ctlRef.current;
+  return `${c.blob}|${c.render.view}|${c.render.reset}`;
+ };
  useEffect(() => {
-  // A pointer in the FIELD is the reader taking the camera. Capture phase, because OrbitControls
-  // stops propagation on its own canvas.
-  const onDown = () => cancelPoseRestore();
-  window.addEventListener('pointerdown', onDown, true);
-  // UNMOUNT invalidates too: the loop closes over `navOf()`, which after unmount is a renderer that
-  // no longer exists.
-  return () => { window.removeEventListener('pointerdown', onDown, true); cancelPoseRestore(); };
- }, [cancelPoseRestore]);
+  const onGesture = () => abortPoseRestore();
+  window.addEventListener('atlas-nav-gesture', onGesture);
+  // UNMOUNT clears it too: the restore closes over `navOf()`, which after unmount is a renderer
+  // that no longer exists.
+  return () => { window.removeEventListener('atlas-nav-gesture', onGesture); abortPoseRestore(); };
+ }, [abortPoseRestore]);
 
  const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null, urlVisible?: SystemId[]) => {
   /**
-   * ⚠️ AN INCOMING SCENE CANCELS A PENDING RESTORE — codex round 14's M1, second entry point.
-   *
-   * This is the URL / hash / mount path, and it dispatches `apply-scene` directly, so nothing on
-   * the tab lane could see it. codex executed it: a hash navigation to scene B, then the old tab's
-   * outstanding frame writing A's pose under B.
-   *
-   * ⚠️ AND IT IS DELIBERATELY **NOT** IN `dispatch`. `applyTab` dispatches its own `apply-scene`
-   * and would invalidate the very job it is about to arm — the ordering trap codex named ("a tab's
-   * own dispatch must complete before its replacement restore captures the current generation").
-   * The cancel belongs on the ENTRY POINTS that represent a new intent, not on the shared verb.
+   * ⚠️ THERE IS NO `cancelPoseRestore()` HERE ANY MORE — and its absence is the S5a-2 fix, not an
+   * omission. Rounds 14 and 15 both failed on this lane: a cancel added here left `clearSceneState`
+   * and the legacy hash branch uncovered, because the list of scene-changing entry points is not
+   * closeable by reading the file. This path dispatches through the controller, so it moves `blob`
+   * and/or `render.reset` and a pending restore's signature stops matching — see the pending-pose
+   * block above. The same sentence covers every caller that has not been written yet.
    */
-  cancelPoseRestore();
   /**
    * ⚠️ AND WHEN THE SCENE LOSES, THE LINK MUST STILL WIN — codex round 5, Medium 3, and it is a
    * REGRESSION THIS FIX INTRODUCED. The first version merely DECLINED to apply the scene's language,
@@ -618,7 +679,7 @@ export default function V2() {
   else if (sc.lang) applyLang(sc.lang);
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [dispatch, cancelPoseRestore]);
+ }, [dispatch]);
 
  /**
   * LEAVING A SCENE, on purpose. `#scene=` with an empty value is how the snapshot renderer gets a
@@ -827,13 +888,13 @@ export default function V2() {
   return false;
  }, [dispatch, snapshot]),
  /**
-  * EVERY command cancels a pending restore, including the ones `useShell` answers itself.
-  *
-  * Round 13 hung this off the handler above, which only sees the commands `useShell` DECLINES —
-  * so `home`, `fit` and the drag-mode commands bypassed it entirely (codex round 14, M1). The
-  * second hook fires for all of them, before any branch returns.
+  * CAMERA INTENT aborts a pending restore — `home`/`fit` (from the keyboard, the pill or the pad)
+  * and any held camera key. NOT every command: the named views and Reset abort through the
+  * controller signature instead, and the key map / Settings / a dock toggle do not abort at all,
+  * which is round 15's second Low. The classification lives in `keys.ts`'s `POSE_CMDS` with a test
+  * that fails when a new `Command` is added without a verdict.
   */
- cancelPoseRestore);
+ abortPoseRestore);
  /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
   *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
   *  callbacks would put a hook after a conditional return path in a file this size. */
@@ -886,22 +947,22 @@ export default function V2() {
   *
   * `apply-scene` is a CAMERA INTENT: it bumps `render.reset`, which is exactly what makes the
   * renderer re-frame (`app/scene.tsx`: `if(s.view!==lastView||s.reset!==lastReset){manual=false;…}`)
-  * and then run its focus fit. A pose written BEFORE that lands survives one frame.
+  * and then run its focus fit. A pose written BEFORE that lands survives one frame — so the pose is
+  * not written here at all. It is ARMED here and applied once on the renderer's own readiness
+  * barrier, by which time the refit has already run. See the pending-pose block above for why three
+  * rounds of "cancel at every caller" had to be replaced by a signature.
   *
-  * ⚠️ SO THE POSE IS RE-APPLIED ACROSS FRAMES UNTIL IT STICKS, rather than once after a guessed
-  * delay. Each application sets `manual=true`, and the studio branch absorbs the focus key without
-  * fitting while `manual` holds — so the retry does not fight the fit, it outlives it.
+  * ⚠️ THE SIGNATURE IS TAKEN **AFTER** THE DISPATCH, which is the ordering trap codex named in round
+  * 14 from the other direction: a tab's own `apply-scene` moves `blob` and `reset`, so a signature
+  * captured before it would never match and the restore would abort on its own arrival.
   *
-  * ⚠️ AND "IT STUCK" MEANS IT SURVIVED A FRAME IT WAS NOT WRITTEN IN — codex round 13. The old loop
-  * read the pose back IMMEDIATELY after writing it, which proves the setter works and nothing else:
-  * of course the value is there, it was just put there. The loop now reads FIRST. A frame that
-  * finds the pose already correct is a frame in which nothing overwrote it, and two of those in a
-  * row is the evidence. Only then does it stop.
+  * ⚠️ AND THE PENDING STATE IS CLEARED ON THE FIRST LINE, unconditionally — before the decode, the
+  * dispatch and the `cam` validation. A pose-less tab, an undecodable blob and a REFUSED tab must
+  * all still supersede an older restore; the early `return`s for those three cases are exactly what
+  * made round 13's defect reachable.
   */
  const applyTab = useCallback((tab: {blob: string; cam: number[] | null}) => {
-  // FIRST LINE, unconditionally: this click supersedes any restore still in flight.
-  cancelPoseRestore();
-  const job = poseJob.current;
+  pendingPose.current = null;
   const sc = decodeScene(tab.blob);
   // A stored blob can be from an older build, hand-edited, or truncated by a full disk. `null` here
   // is the honest answer and the tab simply does nothing rather than throwing inside a click.
@@ -909,31 +970,56 @@ export default function V2() {
   if (!dispatch({type: 'apply-scene', scene: sc, blob: tab.blob})) return;
   const cam = tab.cam;
   if (!cam || cam.length !== 6) return;
-  const want = {x: cam[0], y: cam[1], z: cam[2], tx: cam[3], ty: cam[4], tz: cam[5]};
-  const until = performance.now() + 1200;
-  const near = (got: {x: number; y: number; z: number; tx: number; ty: number; tz: number}) =>
-   Math.abs(got.x - want.x) < 1e-3 && Math.abs(got.y - want.y) < 1e-3
-   && Math.abs(got.z - want.z) < 1e-3 && Math.abs(got.tx - want.tx) < 1e-3
-   && Math.abs(got.ty - want.ty) < 1e-3 && Math.abs(got.tz - want.tz) < 1e-3;
-  let held = 0;
-  const tick = () => {
-   // THE GENERATION GUARD. A newer tab, a camera command, a pointer in the field or an unmount has
-   // moved the counter on, and this loop is writing about a scene nobody is looking at any more.
-   if (poseJob.current !== job) return;
-   const nav = navOf();
-   if (!nav) { if (performance.now() < until) requestAnimationFrame(tick); return; }
-   // READ BEFORE WRITE: a frame that finds the pose already right is a frame that did not overwrite
-   // it. Two consecutive such frames is survival; the write's own read-back never was.
-   if (near(nav.pose())) {
-    if (++held >= 2) return;
-   } else {
-    held = 0;
-    nav.setPose(want);
-   }
-   if (performance.now() < until) requestAnimationFrame(tick);
+  /**
+   * ⚠️ A HAND ALREADY ON THE CAMERA MEANS THE RESTORE NEVER ARMS. The abort covers a key pressed
+   * DURING the pending window, and this covers the other order: a reader holding W who clicks a tab
+   * keeps holding W, so `onHold` does not fire again and nothing would have aborted the restore that
+   * was armed underneath them. Found by measuring the browser rather than by reading the code — the
+   * oracle row for the held key was racing the readiness barrier, and removing the race is what
+   * exposed this ordering.
+   *
+   * Read from the dispatcher's OWN held set (`shellRef`), not from a second count: it is the same set
+   * `onHold` announces, so the two halves of this rule cannot disagree.
+   */
+  if ((shellRef.current?.held.size ?? 0) > 0) {
+   document.documentElement.dataset.atlasPose = 'aborted';
+   emitAtlas({type: 'pose-restore', state: 'aborted'});
+   return;
+  }
+  pendingPose.current = {
+   sig: poseSig(),
+   want: {x: cam[0], y: cam[1], z: cam[2], tx: cam[3], ty: cam[4], tz: cam[5]},
   };
-  requestAnimationFrame(tick);
- }, [dispatch, cancelPoseRestore]);
+  document.documentElement.dataset.atlasPose = 'pending';
+ }, [dispatch]);
+
+ /**
+  * CONSUMING THE PENDING POSE — once, on the barrier, and it reports what actually happened.
+  *
+  * Four outcomes, all of them named in the DOM (`data-atlas-pose`) and on the `window.atlas` stream,
+  * because "restored" was previously inferred from coordinate arithmetic and round 15 showed that
+  * inference succeeding with zero setter calls:
+  *   `applied` — `setPose` returned true. This is the ONLY success.
+  *   `stale`   — the view moved between arming and readiness; the restore is dropped, never written.
+  *   `norenderer` — the readiness barrier fired without `__atlasNav`; nothing to write through.
+  *   `refused` — `setPose` rejected the six numbers (a non-finite coordinate out of `localStorage`).
+  *
+  * CLEARED FIRST, unconditionally: a barrier that does not match consumes the pending state rather
+  * than leaving it armed for a later scene it was never about.
+  */
+ poseRestoreRef.current = () => {
+  const p = pendingPose.current;
+  if (!p) return;
+  pendingPose.current = null;
+  const state = (() => {
+   if (p.sig !== poseSig()) return 'stale';
+   const nav = navOf();
+   if (!nav) return 'norenderer';
+   return nav.setPose(p.want) ? 'applied' : 'refused';
+  })();
+  document.documentElement.dataset.atlasPose = state;
+  emitAtlas({type: 'pose-restore', state});
+ };
 
  /**
   * ── S1 / RC3: A STUDIO `?select=` LINK OPENS FRAMED ON ITS STRUCTURE ──────────────────────────
@@ -1198,14 +1284,20 @@ export default function V2() {
    {stage && focused && <div className="v2-stage-name"><b>{t.name(focused.id, focused.name)}</b><i>{t.secondary(focused.id, focused.name) || focused.name}</i></div>}
    {/* THE FIELD OVERLAYS — caption, navigation pill, key pad, legend. Inside the field because
        that is what they float over, and rendered only in the studio because the phone has the
-       margin instead. `?stage=1` strips them with the rest of the chrome. */}
+       margin instead. `?stage=1` strips them with the rest of the chrome.
+
+       THE PILL'S Fit AND Home ARE THE THIRD SUBSCRIBER to `abortPoseRestore` (the engine's
+       `atlas-nav-gesture` and the dispatcher's held set are the other two): they reach `__atlasNav`
+       directly rather than through a command, so `POSE_CMDS` inside `useShell` cannot see them —
+       the same class of miss as round 14's `onCommand` hook, closed here by routing them through the
+       one abort function rather than by noticing it again in a later round. */}
    {shell.studio && !stage && <StudioField
     tr={tr} caption={caption} state={state} dispatch={dispatch}
     structures={basket.length} pieces={state.selected.length} onKeys={shell.setKeysOpen}
     navMode={shell.navMode} onNavMode={shell.setNavMode}
     held={shell.held} press={shell.press} release={shell.release}
-    onFit={() => { (window as unknown as {__atlasNav?: {fit(): string}}).__atlasNav?.fit(); }}
-    onHome={() => { (window as unknown as {__atlasNav?: {home(): void}}).__atlasNav?.home(); }}
+    onFit={() => { abortPoseRestore(); (window as unknown as {__atlasNav?: {fit(): string}}).__atlasNav?.fit(); }}
+    onHome={() => { abortPoseRestore(); (window as unknown as {__atlasNav?: {home(): void}}).__atlasNav?.home(); }}
     onSnapshot={snapshot}
    />}
   </div>

@@ -77,6 +77,42 @@ export const CAMERA_CMDS: ReadonlySet<Command> = new Set<Command>([
  'fit', 'home', 'mode-orbit', 'mode-pan',
 ]);
 
+/**
+ * ── S5a-2: THE COMMANDS THAT MOVE THE CAMERA **WITHOUT** PASSING THROUGH THE CONTROLLER ─────────
+ *
+ * This set exists for exactly one consumer: a pending pose restore (app/v2/page.tsx), which aborts
+ * on human camera intent. It does NOT duplicate `CAMERA_CMDS` above — that set answers a different
+ * question (which commands have a studio-only SURFACE, guard 7) and the two memberships are not the
+ * same fact, so they are not the same constant.
+ *
+ * ⚠️ WHY THE NAMED VIEWS AND `reset` ARE **NOT** HERE. They are controller dispatches (`set-view`,
+ * `reset-view`), and every controller camera intent bumps `render.reset` (controller.ts's `intent()`
+ * — "the ONLY way `reset` is ever bumped"). A pending restore captures the controller's signature at
+ * arm time and aborts the moment it differs, so those abort BY CONSTRUCTION, with no enumeration to
+ * keep in step. `home` and `fit` are answered inside `useShell` against `__atlasNav` and leave the
+ * controller untouched — they are invisible to that signature, and so they are listed here.
+ *
+ * ⚠️ AND WHY THE MODES ARE NOT HERE EITHER. `mode-orbit`/`mode-pan` swap which OrbitControls gesture
+ * a drag performs; they move nothing. Cancelling a restore on them (or on `keymap`, which is what
+ * round 15 measured as its second Low) is the opposite defect from the one this set fixes: a restore
+ * abandoned by a reader who asked for no camera change at all.
+ *
+ * `NEUTRAL_CMDS` is the complement, written out rather than implied, so that
+ * `test/v2-shell.test.mjs` can assert the two sets together cover EVERY member of `Command` parsed
+ * out of this file's own source. A command added without a verdict fails that test.
+ */
+export const POSE_CMDS: ReadonlySet<Command> = new Set<Command>(['home', 'fit']);
+/** Commands that are NOT a statement about where the camera is. The complement of `POSE_CMDS`,
+ *  including the controller-routed camera commands (see the note above: they abort via the
+ *  signature, not via this list). */
+export const NEUTRAL_CMDS: ReadonlySet<Command> = new Set<Command>([
+ 'escape', 'keymap',
+ 'view-three-quarter', 'view-front', 'view-side', 'view-back', 'reset',
+ 'mode-orbit', 'mode-pan',
+ 'find', 'settings', 'panel-1', 'panel-2', 'panel-3', 'panel-4', 'panel-5',
+ 'side-toggle', 'dock-toggle', 'snapshot', 'stage',
+]);
+
 export interface HoldAxis {pan?: [number, number]; orbit?: [number, number]; dolly?: number}
 export const HOLD: Record<string, HoldAxis> = {
  KeyW: {pan: [0, 1]}, KeyS: {pan: [0, -1]}, KeyA: {pan: [-1, 0]}, KeyD: {pan: [1, 0]},

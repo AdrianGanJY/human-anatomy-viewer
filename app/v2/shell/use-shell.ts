@@ -8,7 +8,7 @@
  * and cheap: two matchMedia listeners and a localStorage read.
  */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {HOLD, HOLD_CODES, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
+import {HOLD, HOLD_CODES, POSE_CMDS, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
 import {effectiveDocks, readDocks, readPinyin, readScenes, writeDocks, writePinyin, writeScenes, SCENES_CAP, type DockKey, type SceneTab} from './store.ts';
 import {loadPinyin, pinyinOf} from '../pinyin.ts';
@@ -150,8 +150,25 @@ export function useShell(
   * A second hook rather than a re-ordering: "something happened that the page may need to know
   * about" is a different question from "does the page want to handle this", and folding them
   * together is what produced a cancellation that covered only the commands this hook declines.
+  *
+  * ══ S5a-2 — AND IT IS NOW "CAMERA INTENT", NOT "ANY COMMAND" ═══════════════════════════════════
+  *
+  * Round 15 measured the other half of the same design error: opening the keyboard-help overlay
+  * (`keymap`) cancelled a pending restore — `job=2`, zero writes, the pose never restored — and that
+  * is not a camera request. A hook that fires for EVERY command is too broad in exactly the way the
+  * enumeration it replaced was too narrow.
+  *
+  * So it fires for:
+  *   · `POSE_CMDS` (`home`, `fit`) — the only commands that move the camera WITHOUT the controller,
+  *     and therefore the only ones a pending restore's controller signature cannot already see;
+  *   · any HELD camera key going down (below, in `onHold`) — `HOLD_CODES` is a camera-only map by
+  *     construction, so there is nothing to classify there. This is round 15's second entry point:
+  *     `installDispatcher` routes held keys through `onHold`, never through `cmdRef`, so a reader
+  *     holding W fought the restore frame by frame.
+  * The named views and `reset` are deliberately absent — they dispatch through the controller, which
+  * bumps `render.reset`, which is what the signature is watching. See `POSE_CMDS` in `keys.ts`.
   */
- onAnyCommand?: (cmd: KeyCommand) => void,
+ onCameraIntent?: (why: KeyCommand | 'held') => void,
 ): ShellState {
  const vp = useViewport();
  const tier = tierOf(vp.w, vp.h, vp.coarse);
@@ -268,8 +285,9 @@ export function useShell(
  const dispRef = useRef<Dispatcher | null>(null);
 
  cmdRef.current = (cmd: KeyCommand) => {
-  // FIRST, for every command, before any branch can return. See `onAnyCommand`.
-  anyRef.current?.(cmd);
+  // FIRST, before any branch can return — but ONLY for a command that moves the camera outside the
+  // controller. See `onCameraIntent` and `POSE_CMDS`.
+  if (POSE_CMDS.has(cmd)) anyRef.current?.(cmd);
   if (cmd === 'escape') {
    // TOP OVERLAY FIRST. The overlays handle their own Escape when focus is inside them; this is
    // the case where focus has left the panel (a click on the scrim's edge, say) and the key still
@@ -312,15 +330,22 @@ export function useShell(
  };
  const onCommandRef = useRef(onCommand);
  onCommandRef.current = onCommand;
- const anyRef = useRef(onAnyCommand);
- anyRef.current = onAnyCommand;
+ const anyRef = useRef(onCameraIntent);
+ anyRef.current = onCameraIntent;
 
  useEffect(() => {
   const d = installDispatcher({
    modalOpen: () => modalRef.current,
    run: (cmd) => cmdRef.current?.(cmd) ?? false,
    holdCodes: HOLD_CODES,
-   onHold: setHoldN,
+   /**
+    * ⚠️ A HELD CAMERA KEY IS CAMERA INTENT — round 15's second M1 entry point, and it is reported
+    * HERE because this is the only seam it has: `installDispatcher` announces held keys through
+    * `onHold` and never through `run`/`cmdRef`, so `POSE_CMDS` above cannot see W going down.
+    * `HOLD` is a camera-only map (pan / orbit / dolly), so "the set became non-empty" IS "a reader
+    * is driving the camera" — no classification, and nothing to keep in step when a key is added.
+    */
+   onHold: (n: number) => { setHoldN(n); if (n > 0) anyRef.current?.('held'); },
    // Guard 7, through a ref for the same reason `modalOpen` is: the dispatcher is installed once.
    cameraEnabled: () => studioRef.current,
   });

@@ -585,7 +585,31 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    * and by every navigation command, and it is CLEARED by the explicit framing commands only.
    */
   let manual=false;
-  controls.addEventListener('start',()=>{manual=true;});
+  /**
+   * ── L31 v2.1b+c, S5a-2: THE GESTURE IS ANNOUNCED, so a pending pose restore can YIELD to a hand ──
+   *
+   * A tab's pose restore must outlive the ENTRY FIT (which moves the camera and is not a human) while
+   * yielding to a READER (who also moves the camera). Those two are indistinguishable from the pose
+   * alone, which is why three rounds of review could not close this by looking at coordinates. They
+   * are perfectly distinguishable by SOURCE — and OrbitControls already emits exactly the signal that
+   * means "a person just grabbed this camera": `start` fires on pointerdown / touch / wheel and on
+   * nothing the renderer does to itself (`studioHome`, the frame loop's fit and `setPose` all move
+   * the camera WITHOUT it).
+   *
+   * ⚠️ A WINDOW EVENT RATHER THAN A FIELD ON `__atlasNav`, because the consumer needs a PUSH. The
+   * restore is armed and then waits for the scene-ready signal; there is no loop left to poll a
+   * counter in (that loop was the previous design, and its clock is what this one removes).
+   *
+   * ⚠️ PLATE-INVISIBLE, like `setPose` beside it: `workers/snap` renders from the scene and never
+   * touches the controls, so `start` cannot fire during a plate — and a `dispatchEvent` with no
+   * listener is a no-op in any case. Additive; no existing line changed. `deploy.ps1`'s render-path
+   * guard still forces a SITE_BUILD bump and `plate-goldens.mjs compare` is what proves no plate
+   * moved (opus-plan-review-2.md RC2).
+   */
+  controls.addEventListener('start',()=>{
+   manual=true;
+   try{window.dispatchEvent(new Event('atlas-nav-gesture'));}catch{/* a document without a window cannot have a reader */}
+  });
   /**
    * THE UNION OF WHAT IS ACTUALLY DRAWN - the box Home frames and the box the studio default fit
    * uses.

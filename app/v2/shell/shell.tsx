@@ -678,12 +678,39 @@ export default function Shell(p: ShellProps) {
   * worse than pointing at no line, because it is a claim.
   */
  const lineOf = (text: string, e: unknown): number | null => {
-  const msg = String((e as Error)?.message ?? '');
-  const pos = /position (\d+)/.exec(msg);
-  if (pos) return text.slice(0, Number(pos[1])).split('\n').length;
-  // Some engines say "line X column Y" instead of a position; take it when it is offered.
-  const line = /line (\d+)/i.exec(msg);
-  if (line) return Number(line[1]);
+  /**
+   * ⚠️ THE READER'S OWN TEXT IS INSIDE THE MESSAGE, AND IT USED TO SUPPLY THE LOCATION — codex round
+   * 15, Low 1. V8 quotes the offending input back verbatim:
+   *
+   *     JSON.parse('{\n "line 99": \n @}')
+   *     → Unexpected token '@', "{\n "line 99": \n @}" is not valid JSON
+   *
+   * An unrestricted `/line (\d+)/` read **99** out of the reader's own string for a token on line 3,
+   * and `/position (\d+)/` read a position out of the draft `\n\nposition 0`. A confidently wrong
+   * pointer, manufactured from the text it claims to be pointing into.
+   *
+   * ⚠️ STRIPPING THE QUOTED RUN IS NOT ENOUGH, which is why this does not do that. The quoted input
+   * contains its own `"` characters, so the runs pair up wrongly and a draft keyed
+   * `{"line 5 column 3": @}` still leaks a location through the gap. The location is taken ONLY from
+   * the engine's own trailing metadata instead — ANCHORED AT THE END of the message, which is where
+   * every engine puts it and where the quoted-input family cannot reach, because that family always
+   * ends with `is not valid JSON` (V8) or `of the JSON data` (SpiderMonkey's own form, below).
+   *
+   * Measured on Node v23.7.0 / V8 — all four families, and the two round-15 spoofs:
+   *     {"a":1,\n}        → Expected double-quoted property name in JSON at position 10 (line 3 column 1)
+   *     {"a":1} x         → Unexpected non-whitespace character after JSON at position 8 (line 1 column 9)
+   *     {\n "a":          → Unexpected end of JSON input                     (no location — null)
+   *     bad\n\n           → Unexpected token 'b', "bad\n\n" is not valid JSON (no location — null)
+   * The parenthesised `(line L column C)` is preferred over the position when the engine offers it:
+   * it is the engine's own count, so it cannot disagree with the draft the way a recomputation can.
+   */
+  const msg = String((e as Error)?.message ?? '').trim();
+  // V8: `… at position N` optionally followed by the engine's own line/column, at the very end.
+  const v8 = /at position (\d+)(?: \(line (\d+) column \d+\))?$/.exec(msg);
+  if (v8) return v8[2] ? Number(v8[2]) : text.slice(0, Number(v8[1])).split('\n').length;
+  // SpiderMonkey: `… at line L column C of the JSON data`.
+  const moz = /at line (\d+) column \d+ of the JSON data$/i.exec(msg);
+  if (moz) return Number(moz[1]);
   // NO CLAIM. Round 13 returned the LAST line here, on the theory that a position-less error means
   // truncation. codex round 14 executed `bad\n\n` and `NaN\n\n`, whose invalid token is on
   // line 1, and got line 3. A line number is a claim about where to look, and a wrong one is worse
