@@ -609,14 +609,35 @@ for (const vp of SWEEP) {
      * and the row would have gone green while measuring something else. So the panel is OPENED, the
      * way a reader opens it, and the same assertion is then made against the same surface.
      */
-    await page.evaluate(() => {
-      if (document.querySelector('.v2-side') || !document.querySelector('.v2-tablet')) return false;
-      const b = [...document.querySelectorAll('.v2-tools button')]
-        .find((x) => /^(Selection|所选结构|所選結構)$/.test((x.getAttribute('aria-label') || '').trim()));
-      if (!b || b.getAttribute('aria-pressed') === 'true') return false;
-      b.click(); return true;
-    });
-    await page.waitForTimeout(500);
+    /**
+     * ⚠️ A REAL POINTER, NOT `.click()` — AND THAT IS A CLS FIX, NOT A STYLE PREFERENCE.
+     *
+     * The tablet's INLINE sheet is a grid column: opening it takes the field from 1024 to 724 px and
+     * the legend, anchored bottom-right of the field, moves 300 px with it. A programmatic `.click()`
+     * does not set `hadRecentInput`, so the layout-shift observer counted MY DRIVER's shift as the
+     * page's: 0.0193 at 1024x768, deterministic across four sweeps, attributed to `div.v2-legend`
+     * and immune to every CSS fix I threw at it — because the CSS was never the cause. An isolated
+     * probe that never opened the panel measured 0.0004.
+     *
+     * A real press is also what the row is about: a reader opening a panel IS recent input, and the
+     * shift it causes is excluded by the spec's own definition rather than by my say-so.
+     */
+    const clickTool = async (re) => {
+      const at = await page.evaluate((rx) => {
+        if (document.querySelector('.v2-side') || !document.querySelector('.v2-tablet')) return null;
+        const b = [...document.querySelectorAll('.v2-tools button')]
+          .find((x) => new RegExp(rx).test((x.getAttribute('aria-label') || '').trim()));
+        if (!b) return null;
+        const r = b.getBoundingClientRect();
+        return {x: r.x + r.width / 2, y: r.y + r.height / 2, pressed: b.getAttribute('aria-pressed') === 'true'};
+      }, re);
+      if (!at) return null;
+      await page.mouse.move(at.x, at.y);
+      await page.mouse.down(); await page.mouse.up();
+      return at;
+    };
+    const titlePanel = await page.evaluate(() => !!document.querySelector('.v2-tablet'));
+    if (titlePanel) { await clickTool('^(Selection|所选结构|所選結構)$'); await page.waitForTimeout(600); }
     let titleText = '';
     try { titleText = ((await page.textContent(TITLE_SEL[variant], {timeout: 30000})) || '').trim(); } catch { /* absent */ }
     /**
@@ -625,12 +646,7 @@ for (const vp of SWEEP) {
      * immediately below would then measure subject area against a field the tier does not have at
      * rest. A driver that opens a panel owns closing it.
      */
-    await page.evaluate(() => {
-      const b = [...document.querySelectorAll('.v2-tools button')]
-        .find((x) => /^(Selection|所选结构|所選結構)$/.test((x.getAttribute('aria-label') || '').trim()));
-      if (b && b.getAttribute('aria-pressed') === 'true') b.click();
-    });
-    await page.waitForTimeout(500);
+    if (titlePanel) { await clickTool('^(Selection|所选结构|所選結構)$'); await page.waitForTimeout(600); }
     // In zh-Hans the title is the Chinese name, so assert against what the app itself resolves
     // for the expected id rather than against a hard-coded translation.
     const expected = await page.evaluate(async (id) => {
@@ -2319,13 +2335,38 @@ if (variant === 'v2') {
         const m = document.querySelector('.v2-pop');
         if (!m) return null;
         const items = [...m.querySelectorAll('button')];
+        /**
+         * ⚠️ AN ANCESTOR WITH `overflow:hidden` ONLY CLIPS WHAT IS IN ITS CONTAINING BLOCK. The
+         * first version of this walk reported the fixed-position menu as "clipped by .v2-tools" —
+         * geometrically outside it, and not clipped by it at all, because a `position:fixed`
+         * element's containing block is the VIEWPORT. That is a false red of exactly the kind this
+         * row exists to prevent in the other direction, and `elementFromPoint` said so at the same
+         * moment (0 items unhittable).
+         *
+         * So the walk STOPS at the first fixed-positioned element, unless an ancestor above it
+         * creates a containing block for fixed descendants (`transform` / `filter` / `perspective` /
+         * `will-change` / `contain`), in which case that ancestor genuinely can clip it.
+         */
         const clipped = (el) => {
           const r = el.getBoundingClientRect();
+          // `escaped` = "this element's containing block is above the ancestor we are looking at",
+          // which is true from the moment we pass a fixed-positioned element and stays true until an
+          // ancestor creates a containing block for fixed descendants.
+          let escaped = getComputedStyle(el).position === 'fixed';
           for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
             const cs = getComputedStyle(a);
-            if ([cs.overflowY, cs.overflowX].every((v) => !v || v === 'visible')) continue;
-            const ar = a.getBoundingClientRect();
-            if (r.top < ar.top - 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.right > ar.right + 1) return a.className || a.tagName;
+            const makesCB = cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
+              || /transform|filter|perspective/.test(cs.willChange || '')
+              || /paint|layout|strict|content/.test(cs.contain || '');
+            if (makesCB) escaped = false;
+            const clips = ![cs.overflowY, cs.overflowX].every((v) => !v || v === 'visible');
+            if (clips && !escaped) {
+              const ar = a.getBoundingClientRect();
+              if (r.top < ar.top - 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.right > ar.right + 1) {
+                return a.className || a.tagName;
+              }
+            }
+            if (cs.position === 'fixed') escaped = true;
           }
           return null;
         };

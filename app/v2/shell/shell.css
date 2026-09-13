@@ -778,3 +778,16 @@ body.v2-stage .v2.v2-studio.v2-tablet{grid-template-columns:1fr;grid-template-ro
  .v2-chip.is-loading .v2-sub,.v2-skel,.v2-wash{animation:none!important}
  .v2-skip{transition:none}
 }
+
+/* ⚠️ THE COARSE FLOOR DID NOT REACH INSIDE AN OVERLAY — found by S6's own target sweep, which is
+   the first instrument in this project to measure a page with a modal OPEN. The existing rules are
+   scoped `.v2-studio .v2-modal-x`, and an overlay is a fixed scrim on `<body>`, OUTSIDE `.v2`
+   entirely — so at 768x1024 the Settings modal reported `关闭@56x36`, `方向键@69x36`, `完整@56x36`.
+   The segmented control has always been 36 px tall and nothing had ever looked at it on a touch
+   screen. Scoped to the pointer, not to the tier, which is the split `v2.css` already makes. */
+@media (pointer:coarse){
+ .v2-modal-x{min-width:44px;min-height:44px}
+ .v2-seg button{height:44px;padding:0 16px}
+ .v2-modal .v2-tbtn,.v2-modal-body button,.v2-sheet-foot button{min-height:44px}
+ .v2-modal-body .v2-tick,.v2-modal-body .v2-eye{min-height:44px;min-width:44px}
+}
