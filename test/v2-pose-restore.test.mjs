@@ -35,6 +35,9 @@ import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneSelectIds} 
 import {SYSTEMS} from '../app/anatomy.ts';
 import {isLang} from '../app/i18n/ui.ts';
 import {POSE_CMDS, NEUTRAL_CMDS} from '../app/v2/shell/keys.ts';
+// The REAL declaration reader — a stub here made every scene look undeclared, which is exactly
+// the fact codex round 19's M2 turns on.
+import {sceneDeclaresLang} from '../app/v2/scene-lang.ts';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const read = (f) => readFileSync(ROOT + f, 'utf8').replace(/\r\n/g, '\n');
@@ -71,6 +74,15 @@ const program = () => [
   // function the handler needs from it is extracted like everything else rather than re-typed.
   cut(SELECTION, 'export function sameIds(', '}').replace(/^export /, ''),
   cut(PAGE, ' const bumpEpoch = useCallback(', ', []);'),
+  /**
+   * THE REAL `dispatch` — codex round 19, Low 1. The harness used to supply its own, including its
+   * own `if (out.epoch) bumpEpoch()`, so deleting production dispatch's entire epoch branch left all
+   * 37 cases green. Everything the page does to the controller now goes through the shipped
+   * function: the refusal path, the session-hidden clear, the synchronous `ctlRef` write and the
+   * generation. Its collaborators are recorded by the adapters below, so the log still reads.
+   */
+  cut(PAGE, ' const dispatch = useCallback((cmd: Command): boolean => {', '\n }, []);'),
+  cut(PAGE, ' const resolveArrivalLang = useCallback(', ', []);'),
   cut(PAGE, ' const abortPoseRestore = useCallback(', ', []);'),
   cut(PAGE, ' const poseSig = () => {', '\n };'),
   cut(PAGE, ' const applySceneState = useCallback(', ' }, [dispatch]);'),
@@ -91,6 +103,7 @@ const program = () => [
   'const onHold = ' + cut(SHELL, '   onHold: (n: number) =>', '},').replace(/^\s*onHold:\s*/, '').replace(/,$/, '') + ';',
   'globalThis.api = {applyTab, applySceneState, clearSceneState, reapply, onSceneReady, runCmd: cmdRef.current, onHold, abortPoseRestore};',
   'globalThis.bumpEpoch = bumpEpoch;',
+  'globalThis.dispatch = dispatch;',
 ].join('\n');
 
 /**
@@ -149,24 +162,25 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
       removeEventListener: (k) => listeners.delete(k),
       dispatchEvent: (e) => listeners.get(e.type)?.(e),
     },
-    dispatch: (cmd) => {
-      const out = reduce(ctl, cmd);
-      if (out.rejected) { log.push(`refused ${out.rejected.key}`); return false; }
-      ctl = out.state;
-      // The page bumps its generation synchronously whenever the controller opens a new one — through
-      // the PRODUCTION `bumpEpoch`, so both halves of it (the ref and the renderer's prop) are live.
-      if (out.epoch) ctx.bumpEpoch();
-      log.push(`dispatch ${cmd.type} -> scene=${ctl.scene?.caption?.title ?? null} reset=${ctl.render.reset} gen=${ctx.sceneGen.current}`);
-      return true;
+    // `dispatch` is NOT here: it is extracted from the page (see `program`). These are the
+    // collaborators it calls, and they are where the log comes from.
+    setCtl: (next) => {
+      log.push(`dispatch -> scene=${next.scene?.caption?.title ?? null} reset=${next.render.reset} gen=${ctx.sceneGen.current}`);
     },
+    setRefused: (r) => { if (r) log.push(`refused ${r.key}`); },
+    mounted: {current: true},
     // Collaborators this test does not assert about. Named no-ops rather than second implementations:
     // if one ever becomes load-bearing for the restore, this list is where it shows up as a throw.
-    known: () => true, applyLang: () => {}, emitAtlas: (e) => { if (e.type === 'pose-restore') log.push(`emit ${e.state}`); },
-    // NOTE: no `setEpoch` here — it is defined above and records what the RENDERER would receive.
-    // A second no-op entry silently shadowed it once, which is how the generation stopped moving.
-    setRefused: () => {}, setHidden: () => {}, setDetent: () => {},
+    known: () => true, applyLang: (l) => { ctx.langSeen = l; log.push(`lang ${l}`); }, langSeen: null, emitAtlas: (e) => { if (e.type === 'pose-restore') log.push(`emit ${e.state}`); },
+    // NOTE: no `setEpoch` or `setRefused` here — both are defined above. A second no-op entry
+    // silently shadowed `setEpoch` once, which is how the generation stopped moving.
+    // `hidden` is a REAL set: production `dispatch` clears it on an arrival, and the no-op guard
+    // reads it, so a stub would hide both behaviours (codex round 19).
+    hiddenRef: {current: new Set()},
+    setHidden: (f) => { ctx.hiddenRef.current = typeof f === 'function' ? f(ctx.hiddenRef.current) : f; },
+    setDetent: () => {},
     markScene: () => {}, markSceneReady: () => {}, markSettled: () => {}, setLegacyCaption: () => {},
-    sceneDeclaresLang: () => null, readUrlState: null,
+    sceneDeclaresLang, readUrlState: null,
     keysOpen: false, settingsOpen: false, findOpen: false,
     setKeysOpen: () => {}, setSettingsOpen: () => {}, setFindOpen: () => {}, setNavMode: () => {},
     onCommandRef: {current: () => false}, anyRef: {current: null}, cmdRef: {},
@@ -188,7 +202,12 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     pose: () => pose, ctl: () => ctl, pending: () => ctx.pendingPose.current,
     tab,
     /** The page's own dispatch, for a command with no dedicated entry point in this harness. */
-    dispatchRaw: (cmd) => ctx.dispatch(cmd),
+    dispatchRaw: (cmd) => ctx.dispatch(cmd),   // the EXTRACTED dispatch, exposed on the VM global
+    /** A session-only hide, as the tree's eye performs it — production `dispatch` clears these on an
+     *  arrival, which is why an otherwise identical scene is still a change (codex round 19). */
+    hide: (id) => { ctx.hiddenRef.current = new Set([...ctx.hiddenRef.current, id]); },
+    hidden: () => ctx.hiddenRef.current,
+    lang: () => ctx.langSeen,
     /** Move the address bar between navigations. `readUrlState` reads BOTH halves (url-state.ts:123),
      *  which is the whole subject of codex round 18. */
     setUrl: ({search = '', hash = ''} = {}) => { ctx.location.search = search; ctx.location.hash = hash; },
@@ -544,6 +563,92 @@ test('a LEGACY hash restating the CURRENT selection opens no generation either',
   assert.ok(s.gen() > gen, 'a different selection opens a generation');
 });
 
+// ════ 3d. codex ROUND 19 — THE COMPARISON IS THE REDUCER'S ANSWER, NOT A READING OF THE URL ═══════
+
+test('M1 (round 19): a DUPLICATE spelling of the current system set is still the same view', () => {
+  /**
+   * `#system=skeletal,skeletal`. Round 18 compared sorted ARRAYS, so a duplicate read as a change and
+   * destroyed a valid restore (codex: `1 → 2, stale, 0 setters`) — while the renderer uses a Set.
+   * The comparison runs through `reduce` now, so the spelling cannot matter.
+   */
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const gen = s.gen();
+  s.setUrl({search: `?scene=${t.blob}`, hash: '#system=skeletal,skeletal'});
+  s.api().reapply();
+  assert.equal(s.gen(), gen, `a duplicate spelling is not a transition; log: ${s.log.join(' -> ')}`);
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied');
+  assert.equal(s.pose().x, 1);
+});
+
+test('M1 (round 19): the SAME blob with a different RENDER state IS a transition', () => {
+  /**
+   * Blob equality is not state equality. `set-isolate` off leaves the blob untouched (isolate is a
+   * render field, not a scene field), so re-applying that scene — which `window.atlas.applyScene`
+   * does by writing `location.hash` — must put isolation back. Round 18 dropped it silently:
+   * codex measured `{"isolate":false,"generation":[1,1]}` here against `{"isolate":true,"generation":2}`
+   * through `applySceneState`.
+   */
+  const s = scenario();
+  const iso = encodeScene(normalizeScene({
+    structures: [{id: 'FMA22359'}], caption: {title: 'iso'}, rest: {include: 'none'},
+  }));
+  s.dispatchRaw({type: 'apply-scene', scene: decodeScene(iso), blob: iso});
+  assert.equal(s.ctl().render.isolate, true, 'the scene arrived isolated');
+  s.dispatchRaw({type: 'set-isolate', on: false});
+  assert.equal(s.ctl().blob, iso, 'and turning it off left the blob unchanged — the precondition');
+  const gen = s.gen();
+  s.setUrl({hash: `#scene=${iso}`});
+  s.api().reapply();
+  assert.equal(s.ctl().render.isolate, true, 'the re-applied scene restores isolation');
+  assert.ok(s.gen() > gen, 'and it is a real transition, so it opens a generation');
+});
+
+test('M1 (round 19): an identical scene arriving while something is HIDDEN by hand is a change', () => {
+  // An accepted arrival clears the session-only hidden set (dispatch). Treating that as a no-op left
+  // the overrides live under a link that says otherwise.
+  const s = scenario();
+  const t = s.tab('A', null);
+  s.dispatchRaw({type: 'apply-scene', scene: decodeScene(t.blob), blob: t.blob});
+  s.hide('FMA22359');
+  const gen = s.gen();
+  s.setUrl({hash: `#scene=${t.blob}`});
+  s.api().reapply();
+  assert.equal(s.hidden().size, 0, 'the arrival cleared the session override');
+  assert.ok(s.gen() > gen, 'so it was a transition');
+});
+
+test('M2 (round 19): the no-op path resolves the language by the SAME rule as an arrival', () => {
+  /**
+   * A scene that DECLARES `zh-Hans`, reached by a link saying `lang=en`. codex measured `zh-Hans` on
+   * arrival and `en` on the same-scene hash — the same two declarations resolving two ways.
+   */
+  const declares = encodeScene(normalizeScene({
+    structures: [{id: 'FMA22359'}], caption: {title: 'zh'}, lang: 'zh-Hans',
+  }));
+  const arrival = scenario();
+  arrival.api().applySceneState(decodeScene(declares), declares, 'en');
+  const sameScene = scenario();
+  sameScene.dispatchRaw({type: 'apply-scene', scene: decodeScene(declares), blob: declares});
+  sameScene.setUrl({hash: `#scene=${declares}&lang=en`});
+  sameScene.api().reapply();
+  assert.equal(sameScene.lang(), arrival.lang(),
+    `the same declarations must resolve the same way: arrival=${arrival.lang()} no-op=${sameScene.lang()}`);
+  assert.equal(arrival.lang(), 'zh-Hans', "and the scene's own declaration is what wins");
+});
+
+test('a scene that declares NO language still lets an explicit lang= through on the no-op path', () => {
+  // The other half of the same rule — and the r5 regression it was written for.
+  const s = scenario();
+  const t = s.tab('A', null);
+  s.dispatchRaw({type: 'apply-scene', scene: decodeScene(t.blob), blob: t.blob});
+  s.setUrl({hash: `#scene=${t.blob}&lang=zh-Hant`});
+  s.api().reapply();
+  assert.equal(s.lang(), 'zh-Hant');
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -609,8 +714,8 @@ const mutations = [
   {
     name: "the hash handler's no-op early return",
     mutate: (s) => s.replace(
-      "    if (incoming === c.blob && sameVisible(u.visible)) { if (u.lang) applyLang(u.lang); return; }",
-      ''),
+      "    if (noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible})) {",
+      '    if (false) {'),
     // codex round 17: a skip-link jump discarding a valid restore.
     /**
      * THE WARM-TAB FORM, which is what round 18 corrected: the scene lives in the QUERY, so the skip
@@ -656,6 +761,53 @@ const mutations = [
       s.api().reapply();
       s.ready();
       return {ok: s.marks.atlasPose === 'stale', saw: `marker=${s.marks.atlasPose} · ${s.log.join(' -> ')}`};
+    },
+  },
+  {
+    name: 'the session-hidden guard on the no-op path',
+    mutate: (s) => s.replace('    if (hiddenRef.current.size) return false;', ''),
+    // An identical scene arriving while something is hidden by hand must clear the override.
+    defect: (mk) => {
+      const s = mk();
+      const t = s.tab('A', null);
+      s.dispatchRaw({type: 'apply-scene', scene: decodeScene(t.blob), blob: t.blob});
+      s.hide('FMA22359');
+      s.setUrl({hash: `#scene=${t.blob}`});
+      s.api().reapply();
+      return {ok: s.hidden().size === 1, saw: `hidden=${[...s.hidden()].join(',') || '(none)'}`};
+    },
+  },
+  {
+    name: "the no-op comparison's use of the REDUCER (blob equality is not state equality)",
+    mutate: (s) => s.replace(
+      '    const out = reduce(c, cmd);',
+      "    const out = {state: cmd.type === 'apply-scene' ? {...c, blob: cmd.blob} : c};"),
+    // codex's isolate-off case: the same blob, a different render state, silently dropped.
+    defect: (mk) => {
+      const s = mk();
+      const iso = encodeScene(normalizeScene({
+        structures: [{id: 'FMA22359'}], caption: {title: 'iso'}, rest: {include: 'none'},
+      }));
+      s.dispatchRaw({type: 'apply-scene', scene: decodeScene(iso), blob: iso});
+      s.dispatchRaw({type: 'set-isolate', on: false});
+      s.setUrl({hash: `#scene=${iso}`});
+      s.api().reapply();
+      return {ok: s.ctl().render.isolate === false, saw: `isolate=${s.ctl().render.isolate}`};
+    },
+  },
+  {
+    name: 'the shared arrival-language resolution',
+    mutate: (s) => s.replace('     resolveArrivalLang(u.scene, blob, u.lang);', '     if (u.lang) applyLang(u.lang);'),
+    // Round 18's line, restored: a declared scene language loses to the link's lang= on this path only.
+    defect: (mk) => {
+      const s = mk();
+      const declares = encodeScene(normalizeScene({
+        structures: [{id: 'FMA22359'}], caption: {title: 'zh'}, lang: 'zh-Hans',
+      }));
+      s.dispatchRaw({type: 'apply-scene', scene: decodeScene(declares), blob: declares});
+      s.setUrl({hash: `#scene=${declares}&lang=en`});
+      s.api().reapply();
+      return {ok: s.lang() === 'en', saw: `lang=${s.lang()}`};
     },
   },
   {

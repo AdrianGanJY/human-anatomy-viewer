@@ -1052,9 +1052,25 @@ for (const vp of SWEEP) {
      * still fails, with the measurement, after the bound rather than after a guess. `polling: 60`
      * for the same reason as the held-key helper: Chromium throttles rAF in a background page.
      */
+    /**
+     * ⚠️ S5a-2 — AND THE 9 s BOUND WAS STILL A CLOCK. It went red again at 1366×1024 in two of three
+     * full sweeps (`verify-ux-8.log`, `verify-ux-10.log`) and green on a re-run in isolation, which
+     * is the same nondeterminism this comment was already written about — one bound further out.
+     *
+     * The product fact that settles it: `find.tsx`'s result memo lists `lanes` in its dependencies,
+     * so a dictionary arriving mid-session RE-RUNS the search on its own. A late dictionary therefore
+     * cannot leave a permanently empty list, and an empty list after the dictionaries are in is a
+     * REAL failure. So the wait is on the product's own loading state — `.v2-find-note[role=status]`,
+     * which `find.tsx:398` renders while `loading` — and only then on the rows it must produce. The
+     * clock that remains is a backstop against a hang, not the thing being measured.
+     */
+    const dictsIn = await barePage.waitForFunction(
+      () => !document.querySelector('.v2-find-note[role="status"]'),
+      undefined, {timeout: 30000, polling: 60},
+    ).then(() => true).catch(() => false);
     const crossReady = await barePage.waitForFunction(
       () => document.querySelectorAll('.v2-find-list .v2-result').length > 0,
-      undefined, {timeout: 9000, polling: 60},
+      undefined, {timeout: 15000, polling: 60},
     ).then(() => true).catch(() => false);
     const enCross = await barePage.evaluate(() => {
       const rows = [...document.querySelectorAll('.v2-find-list .v2-result')];
@@ -1077,7 +1093,10 @@ for (const vp of SWEEP) {
       'focused, and the query landed in it');
     check(vp.name, 'in an ENGLISH interface, 胸骨 returns matches AND a row shows the 胸骨体 it matched',
       enCross.lang === 'en' && enCross.n >= 1 && enCross.body.length >= 1,
-      `lang=${enCross.lang}, ${enCross.n} rows${crossReady ? '' : ' (the 9 s wait for a first row TIMED OUT)'}, first: ${enCross.first ?? '(none)'}; 胸骨体 row: ${enCross.body[0] ?? 'ABSENT'}`,
+      `lang=${enCross.lang}, ${enCross.n} rows`
+        + `${dictsIn ? '' : ' (the palette was STILL LOADING after 30 s — the dictionaries never arrived)'}`
+        + `${crossReady ? '' : ' (dictionaries in, but no row rendered within 15 s)'}`
+        + `, first: ${enCross.first ?? '(none)'}; 胸骨体 row: ${enCross.body[0] ?? 'ABSENT'}`,
       'lang=en, >= 1 row, and 胸骨体 rendered');
     await barePage.screenshot({path: join(outDir, `${label}-find-en-${vp.name}.png`), timeout: SHOT_MS});
     await barePage.keyboard.press('Escape');

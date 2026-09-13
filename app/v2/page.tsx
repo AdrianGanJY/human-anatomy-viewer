@@ -220,6 +220,10 @@ export default function V2() {
   * reader's memory of having hidden anything.
   */
  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+ /** Read synchronously by the hashchange handler: an arrival CLEARS this set, so an otherwise
+  *  identical scene arriving while something is hidden by hand is a real change (codex round 19). */
+ const hiddenRef = useRef(hidden);
+ hiddenRef.current = hidden;
  const hide = useCallback((id: string, on: boolean) => {
   setHidden((cur) => {
    // `'*'` is the sidebar foot's Reset — one call rather than a loop, so the render-only set can
@@ -658,6 +662,26 @@ export default function V2() {
   return () => { window.removeEventListener('atlas-nav-gesture', onGesture); abortPoseRestore(); };
  }, [abortPoseRestore]);
 
+ /**
+  * ── THE ARRIVAL LANGUAGE, IN ONE PLACE — codex round 19, M2 ───────────────────────────────────
+  *
+  * A scene that DECLARES a language wins over the link's `lang=` (a teaching plate authored in
+  * Chinese is a statement about the plate); a scene that does not declare one lets the reader's
+  * explicit `lang=` through. Round 18's no-op path applied `u.lang` unconditionally, so the SAME
+  * pair of declarations resolved differently depending on whether the scene happened to compare
+  * equal — codex measured `zh-Hans` on arrival and `en` on the same-scene hash. One function, used
+  * by both paths, is the only way those two cannot drift again.
+  *
+  * "Declared" is read off the WIRE object, not the normalised scene: `normalizeScene` defaults
+  * `lang` to `'en'`, so the normalised form cannot tell "said English" from "said nothing" — and in
+  * that tie the reader's explicit choice wins, which is the side that cannot surprise anybody.
+  */
+ const resolveArrivalLang = useCallback((sc: Scene, blob: string, urlLang?: Lang | null) => {
+  if (urlLang && !sceneDeclaresLang(blob)) applyLang(urlLang);
+  else if (sc.lang) applyLang(sc.lang);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+ }, []);
+
  const applySceneState = useCallback((sc: Scene, blob: string, urlLang?: Lang | null, urlVisible?: SystemId[]) => {
   /**
    * ⚠️ THERE IS NO `cancelPoseRestore()` HERE ANY MORE — and its absence is the S5a-2 fix, not an
@@ -685,10 +709,8 @@ export default function V2() {
    * choice to storage. A refusal that changes anything the reader can see is not a refusal, and
    * "anything" includes the language.
    */
-  const declared = sceneDeclaresLang(blob);
   if (!dispatch({type: 'apply-scene', scene: sc, blob, visible: urlVisible})) return;
-  if (urlLang && !declared) applyLang(urlLang);
-  else if (sc.lang) applyLang(sc.lang);
+  resolveArrivalLang(sc, blob, urlLang);
   emitAtlas({type: 'scene', blob, ids: sceneSelectIds(sc), focus: sceneFocusId(sc)});
   // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [dispatch]);
@@ -770,29 +792,78 @@ export default function V2() {
     * The round-16 directional rule is untouched: an older barrier preserves a newer pending restore,
     * a newer one discards an older restore. This changes only WHICH navigations are a generation.
     */
+   /**
+    * ⚠️ THE COMPARISON IS THE **REDUCER'S OWN ANSWER**, not a reading of the URL — codex round 19.
+    *
+    * Round 18's version compared hand-picked fields, and codex broke it in both directions with two
+    * cases I would not have thought of:
+    *   · `#system=skeletal,skeletal` — a DUPLICATE spelling of the current set. Sorted-array equality
+    *     said "different" (the renderer uses a Set), so another spelling of the same view opened a
+    *     generation and destroyed a valid restore: `1 → 2, stale, 0 setters`.
+    *   · BLOB EQUALITY IS NOT STATE EQUALITY. Turning "Hide others" off leaves the blob unchanged
+    *     (`set-isolate`, controller.ts:841 — `isolate` is a RENDER field, not a scene field), so
+    *     re-applying that same scene through `window.atlas.applyScene` — which writes `location.hash`
+    *     and therefore comes through here — must restore `isolate:true` and was being DROPPED.
+    *     Measured: `{"isolate":false,"generation":[1,1]}` here against `{"isolate":true,"generation":2}`
+    *     through `applySceneState`.
+    *
+    * Both are the same mistake: a second opinion about what the controller would do. So the question
+    * is asked of the controller. `reduce` is PURE (contract rule 1), so the candidate command can be
+    * run against the current state and the RESULT compared — every field a reader can see, minus
+    * `render.reset`, which is exactly the re-frame this is deciding not to perform. Duplicates,
+    * `rest.include`, alias/`synthesize()` forms, omitted legacy fields and every future command shape
+    * are covered because the reducer computes them, not this function.
+    *
+    * ⚠️ AND A LIVE SESSION OVERRIDE IS NOT A NO-OP. An accepted arrival CLEARS the session-hidden set
+    * (`dispatch`, "AN ARRIVING VIEW CLEARS THE SESSION-ONLY HIDDEN SET"), so an identical scene
+    * arriving while something is hidden by hand really does change the picture. codex found the
+    * overrides surviving the no-op path; the guard below sends that case to `dispatch`.
+    */
    const c = ctlRef.current;
-   const sameVisible = (want?: SystemId[]) => want === undefined || sameIds([...want].sort(), [...c.render.visible].sort());
-   /** The legacy fields, compared against what the controller is drawing. `undefined` in the URL
-    *  means "not stated", which cannot be a change. */
-   const sameLegacy = (sel: readonly string[]) =>
-    !c.scene && sameIds([...sel].sort(), [...c.picks].sort()) && sameVisible(u.visible)
-    && (u.view === undefined || u.view === c.render.view)
-    && (u.isolate === undefined || u.isolate === c.render.isolate)
-    && (u.explode === undefined || u.explode === c.render.explode);
+   /**
+    * WHAT THE READER CAN SEE — and `visibleIntent` is deliberately NOT in it.
+    *
+    * The intent is PROVENANCE ("a human stated this system set"), not a picture: it is what the
+    * serialiser writes back as `system=`, and `render.visible` beside it is what is actually drawn.
+    * Including it would make `#system=skeletal` a transition whenever the set it names is already the
+    * one on screen — which is codex's own first row, the one that must stay a no-op. The cost is
+    * stated rather than hidden: a hash that merely restates the drawn set no longer records its
+    * authority, so the debounced writer may drop `system=` from the address bar while continuing to
+    * draw exactly that set. Nothing the reader looks at changes, and the alternative is the defect
+    * this whole round exists to remove.
+    *
+    * `reset` is excluded for the same reason it is the signature's third field: it IS the re-frame,
+    * and not re-framing is the decision being made here.
+    */
+   const unchanged = (next: V2State) =>
+    next.blob === c.blob && next.focusId === c.focusId
+    && sameIds(next.picks, c.picks)
+    && next.render.view === c.render.view && next.render.isolate === c.render.isolate
+    && next.render.explode === c.render.explode
+    && sameIds([...new Set(next.render.visible)].sort(), [...new Set(c.render.visible)].sort());
+   /** True when the controller would end up exactly where it already is. A REFUSAL is not a no-op:
+    *  it has a message to render, and `dispatch` is what renders it. */
+   const noop = (cmd: Command) => {
+    if (hiddenRef.current.size) return false;
+    const out = reduce(c, cmd);
+    return !out.rejected && unchanged(out.state);
+   };
 
    if (u.scene) {
-    // CANONICAL, not literal: the controller re-encodes on arrival (R:27), so a link carrying a
-    // non-canonical spelling of the scene on screen is the same picture and not a transition.
-    const incoming = encodeScene(normalizeScene(u.scene));
-    if (incoming === c.blob && sameVisible(u.visible)) { if (u.lang) applyLang(u.lang); return; }
+    const blob = u.sceneBlob ?? encodeScene(u.scene);
+    if (noop({type: 'apply-scene', scene: u.scene, blob, visible: u.visible})) {
+     // Not a transition — but the language still resolves, by the SAME rule the accepted path uses.
+     resolveArrivalLang(u.scene, blob, u.lang);
+     return;
+    }
    } else if (u.clearScene) {
-    if (sameLegacy(u.select?.filter(known) ?? [])) {
+    if (noop({type: 'clear-scene', url: {...u, select: u.select?.filter(known)}})) {
      setLegacyCaption({title: u.title, note: u.note});
      if (u.lang) applyLang(u.lang);
      return;
     }
    } else if (u.select?.length) {
-    if (sameLegacy(u.select.filter(known))) {
+    if (noop({type: 'apply-legacy', url: {...u, select: u.select.filter(known)}})) {
      setLegacyCaption({title: u.title, note: u.note});
      if (u.lang) applyLang(u.lang);
      return;
