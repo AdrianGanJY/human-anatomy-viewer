@@ -32,7 +32,14 @@ interface Props {atlas:Atlas;state:SceneState;onSelect:(id:string,add?:boolean)=
   *   the whole atlas can land first, which reported 33 MB / 15 chunks for a 9 MB / 4 chunk
   *   barrier at one viewport out of four (measured 2026-09-07 — a flake, and therefore the
   *   worst kind of number to publish). */
- onSceneReady?:(armedAt:number)=>void;
+ /**  @param drawnEpoch WHICH GENERATION THIS BARRIER IS ABOUT — the `sceneEpoch` value that was
+  *   live when the barrier armed and drew. Added at S5a-2 (codex round 16): the page's pose restore
+  *   was consuming whatever was pending when a barrier fired, and a `scene-ready` SUBSCRIBER that
+  *   opens another tab arms the next generation's restore INSIDE the older callback — which then
+  *   ate it, applying it before that scene's own fit had run. "Which scene was drawn" is knowable
+  *   only here; the page cannot infer it from controller state, because by then the controller has
+  *   already moved on. */
+ onSceneReady?:(armedAt:number,drawnEpoch:number)=>void;
  /** L31 v2.1a — THE SCENE GENERATION, and the ids that generation requires.
   *
   *  `onSceneReady` above fires ONCE, for the priority set frozen at mount. A page that re-drives
@@ -922,7 +929,10 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    if(dirty){renderer.render(scene,camera);targets=(amount>.45||s.render)?computeTargets():[];
     dirty=false;still=0;if(settled){settled=false;markSettled(false);}
     // THE PHASE BARRIER, published only now that the CURRENT generation's set has been DRAWN.
-    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyWanted=false;sceneReadyCb.current?.(sceneReadyAt);}
+    // ⚠️ `lastEpoch` RATHER THAN `epochRef.current`: this barrier belongs to the generation the loop
+    //    armed for, and an epoch change cancels a pending barrier (above) rather than re-labelling
+    //    it — so the two agree today, and if they ever stop agreeing this is the one that is true.
+    if(sceneReadyPending&&!sceneReadyFired){sceneReadyFired=true;sceneReadyPending=false;sceneReadyWanted=false;sceneReadyCb.current?.(sceneReadyAt,lastEpoch??0);}
    }
    // L30 P4: SETTLED. Three consecutive frames with nothing left to draw means the camera
    // fit has finished flying (OrbitControls damping keeps `dirty` true while it moves) and

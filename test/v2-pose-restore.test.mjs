@@ -66,12 +66,19 @@ const program = () => [
   cut(PAGE, ' const clearSceneState = useCallback(', ' }, [known, dispatch]);'),
   cut(PAGE, '  const reapply = () => {', '\n  };'),
   cut(PAGE, ' const applyTab = useCallback(', ' }, [dispatch]);'),
-  cut(PAGE, ' poseRestoreRef.current = () => {', '\n };'),
+  cut(PAGE, ' poseRestoreRef.current = (drawnGen: number) => {', '\n };'),
+  /**
+   * THE REAL READINESS CALLBACK — codex round 16, Low 1. Without this the suite supplied its own
+   * call to `poseRestoreRef.current()`, so DELETING the production invocation left all 19 cases
+   * green (codex executed that mutation). The barrier is now driven the way the renderer drives it,
+   * and `mutations` below includes deleting that line.
+   */
+  cut(PAGE, ' const onSceneReady = useCallback(', ' }, [sampleBytes]);'),
   // The keyboard dispatcher body — the real `POSE_CMDS` filter, not a re-typed `if`.
   cut(SHELL, ' cmdRef.current = (cmd: KeyCommand) => {', '\n };'),
   // The `onHold` wiring, turned from an object property into a callable.
   'const onHold = ' + cut(SHELL, '   onHold: (n: number) =>', '},').replace(/^\s*onHold:\s*/, '').replace(/,$/, '') + ';',
-  'globalThis.api = {applyTab, applySceneState, clearSceneState, reapply, poseRestore: poseRestoreRef.current, runCmd: cmdRef.current, onHold, abortPoseRestore};',
+  'globalThis.api = {applyTab, applySceneState, clearSceneState, reapply, onSceneReady, runCmd: cmdRef.current, onHold, abortPoseRestore};',
 ].join('\n');
 
 /**
@@ -106,6 +113,18 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     location: {search, hash},
     pendingPose: {current: null},
     poseRestoreRef: {current: null},
+    // The page's synchronous generation counter, and the collaborators `onSceneReady` needs. The
+    // barrier is now driven through the REAL callback, so the production `poseRestoreRef.current(...)`
+    // line is load-bearing for this suite (codex round 16, Low 1).
+    sceneGen: {current: 0},
+    // The page's own bump, as `reapply` calls it. One writer for the generation, as in production.
+    bumpEpoch: () => { ctx.sceneGen.current += 1; },
+    mark: () => {},
+    performance: {now: () => 0},
+    modelBytes: () => ({done: 0, requests: 0}),
+    markSceneReady: () => {},
+    setPhase: () => {},
+    sampleBytes: () => {},
     // The dispatcher's OWN held set, as `applyTab` reads it through the shell ref.
     shellRef: {current: {held: new Set(Array.from({length: held}, (_, i) => `Key${i}`))}},
     ctlRef: {get current() { return ctl; }, set current(v) { ctl = v; }},
@@ -121,7 +140,9 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
       const out = reduce(ctl, cmd);
       if (out.rejected) { log.push(`refused ${out.rejected.key}`); return false; }
       ctl = out.state;
-      log.push(`dispatch ${cmd.type} -> scene=${ctl.scene?.caption?.title ?? null} reset=${ctl.render.reset}`);
+      // The page bumps its generation synchronously whenever the controller opens a new one.
+      if (out.epoch) ctx.sceneGen.current += 1;
+      log.push(`dispatch ${cmd.type} -> scene=${ctl.scene?.caption?.title ?? null} reset=${ctl.render.reset} gen=${ctx.sceneGen.current}`);
       return true;
     },
     // Collaborators this test does not assert about. Named no-ops rather than second implementations:
@@ -150,9 +171,18 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     log, marks, api: () => ctx.api, nav,
     pose: () => pose, ctl: () => ctl, pending: () => ctx.pendingPose.current,
     tab,
+    /** The page's own dispatch, for a command with no dedicated entry point in this harness. */
+    dispatchRaw: (cmd) => ctx.dispatch(cmd),
     gesture: () => ctx.window.dispatchEvent({type: 'atlas-nav-gesture'}),
-    /** The renderer's readiness barrier — the one place a pending pose becomes a pose. */
-    ready: () => ctx.api.poseRestore(),
+    /**
+     * THE RENDERER'S READINESS BARRIER, driven through the REAL `onSceneReady`. `gen` defaults to
+     * the page's current generation, which is what the renderer publishes when nothing has moved
+     * since the barrier armed; a case that needs an OLDER barrier passes one explicitly.
+     */
+    ready: (gen = ctx.sceneGen.current) => ctx.api.onSceneReady(0, gen),
+    gen: () => ctx.sceneGen.current,
+    /** Subscribe to the public event stream, as `tools.ts` delivers it: synchronously. */
+    onEvent: (f) => { ctx.emitAtlas = (e) => { if (e.type === 'pose-restore') log.push(`emit ${e.state}`); f(e); }; },
     newCamera: () => { pose = {x: 99, y: 99, z: 99, tx: 0, ty: 0, tz: 0, manual: false}; log.push('new camera x=99'); },
   };
 }
@@ -334,6 +364,51 @@ test('a refused pose reports `refused`, not `applied`', () => {
   assert.ok(s.log.includes('emit refused'));
 });
 
+// ════ 3b. codex ROUND 16 — THE BARRIER MUST CONSUME ITS OWN GENERATION ════════════════════════════
+
+test("M1 (round 16): a `scene-ready` SUBSCRIBER that opens tab B does not lose B's pose to A's barrier", () => {
+  /**
+   * codex's executed sequence. `scene-ready` is emitted SYNCHRONOUSLY (tools.ts), so a subscriber
+   * can open tab B inside scene A's readiness callback: B dispatches and arms its pose, A's callback
+   * then resumes and consumed it — and the SIGNATURE could not see the mistake, because it compares
+   * B against the controller, which is now B. B's pose was applied at A's barrier, before B's own
+   * fit had run, and B's next frame cleared it. Measured by codex as
+   * `setPose x=7 controller=B rendererReset=1 controllerReset=2 ... B frame: manual=false needsFit=true`.
+   */
+  const s = scenario();
+  // A arrives through the URL path and is the generation that will draw.
+  const a = s.tab('A', null);
+  s.api().applySceneState(decodeScene(a.blob), a.blob);
+  const genA = s.gen();
+  let opened = false;
+  s.onEvent((e) => {
+    if (e.type !== 'scene-ready' || opened) return;
+    opened = true;
+    s.api().applyTab(s.tab('B', [7, 7, 7, 7, 7, 7]));
+  });
+  s.ready(genA);
+  assert.equal(s.log.filter((l) => l.startsWith('setPose')).length, 0,
+    `A's barrier must not write B's pose; log: ${s.log.join(' -> ')}`);
+  assert.ok(s.pending(), "B's pending restore SURVIVES the older callback rather than being dropped");
+  // ...and B's OWN barrier applies it.
+  s.ready();
+  assert.equal(s.pose().x, 7, `B's pose arrives at B's barrier; log: ${s.log.join(' -> ')}`);
+  assert.equal(s.marks.atlasPose, 'applied');
+});
+
+test('a barrier from a SUPERSEDED generation discards the pending restore rather than keeping it', () => {
+  // The other direction of the same rule: a restore whose generation was replaced before it ever
+  // drew has no barrier coming, and leaving it armed would be a restore with no owner.
+  const s = scenario();
+  armA(s);
+  const stale = s.gen();
+  s.api().applyTab(s.tab('B', null));   // supersedes; B carries no pose
+  armA(s);                               // arm again, at the newer generation
+  s.ready(stale + 5);                    // a barrier from a generation NEWER than the pending one
+  assert.equal(s.pending(), null);
+  assert.equal(s.marks.atlasPose, 'stale');
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -345,15 +420,55 @@ const mutations = [
   {
     name: 'the signature check',
     mutate: (s) => s.replace("if (p.sig !== poseSig()) return 'stale';", ''),
-    // The stale write codex measured on the legacy-hash branch: A's pose applied under a view that
-    // is no longer A's, over a newer camera.
+    /**
+     * RESET, INSIDE THE SAME GENERATION — the case that isolates the signature from the generation
+     * guard beside it. `reset-view` returns `epoch:false` (measured) but bumps `render.reset`, so the
+     * barrier that fires is the tab's OWN and only the signature can tell that the reader has since
+     * asked for something else. The legacy-hash case no longer isolates it: after round 16 the
+     * generation guard catches that one too, and a sensitivity arm that two guards satisfy proves
+     * neither.
+     */
     defect: (mk) => {
-      const s = mk({hash: '#select=FMA22359&view=back'});
+      const s = mk();
       armA(s);
-      s.api().reapply();
+      s.dispatchRaw({type: 'reset-view'});
       s.newCamera();
       s.ready();
       return {ok: s.pose().x === 1, saw: `pose.x=${s.pose().x} · ${s.log.join(' -> ')}`};
+    },
+  },
+  {
+    name: 'the generation guard',
+    mutate: (s) => s.replace('  if (drawnGen < p.gen) return;', ''),
+    // codex round 16's sequence: B's pose eaten at A's barrier.
+    defect: (mk) => {
+      const s = mk();
+      const a = s.tab('A', null);
+      s.api().applySceneState(decodeScene(a.blob), a.blob);
+      const genA = s.gen();
+      let opened = false;
+      s.onEvent((e) => {
+        if (e.type !== 'scene-ready' || opened) return;
+        opened = true;
+        s.api().applyTab(s.tab('B', [7, 7, 7, 7, 7, 7]));
+      });
+      s.ready(genA);
+      return {ok: s.pose().x === 7, saw: `pose.x=${s.pose().x} · ${s.log.join(' -> ')}`};
+    },
+  },
+  {
+    name: "the barrier's own call into the restore",
+    mutate: (s) => s.replace('  poseRestoreRef.current?.(drawnEpoch);', ''),
+    /**
+     * codex round 16, Low 1: it deleted this exact line and all 19 cases stayed green, because the
+     * suite called the restore itself. Every case now goes through the real `onSceneReady`, so the
+     * production wiring is load-bearing — this arm is the proof of that.
+     */
+    defect: (mk) => {
+      const s = mk();
+      armA(s);
+      s.ready();
+      return {ok: s.pose().x !== 1, saw: `pose.x=${s.pose().x} · marker=${s.marks.atlasPose}`};
     },
   },
   {

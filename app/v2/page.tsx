@@ -121,6 +121,16 @@ export default function V2() {
  /** THE SCENE GENERATION. Bumped on every re-drive, read by the renderer's re-armable barrier —
   *  see the `sceneEpoch` prop in app/scene.tsx for why one number is the whole contract (R:29). */
  const [epoch, setEpoch] = useState(0);
+ /**
+  * ⚠️ S5a-2, codex round 16: THE SAME NUMBER, SYNCHRONOUSLY. `setEpoch` is React state, so between a
+  * dispatch and the next render `epoch` still holds the PREVIOUS generation — and a pose restore
+  * armed in that window would stamp itself with the generation it is replacing. `bumpEpoch` moves
+  * the ref first and hands its value to `setEpoch`, so the two can never disagree and the renderer's
+  * `sceneEpoch` prop is always exactly `sceneGen.current`. (Same reasoning as `ctlRef` beside
+  * `setCtl`: the ref is the fact, the state is the render of it.)
+  */
+ const sceneGen = useRef(0);
+ const bumpEpoch = useCallback(() => { sceneGen.current += 1; setEpoch(sceneGen.current); }, []);
  const [bytes, setBytes] = useState({done: 0, total: 0});
  // A REFUSED ARRIVAL OPENS THE MARGIN. The alert renders inside `.v2-margin-scroll`, which is
  // hidden at the phone's peek detent — so a link whose view was refused would have opened looking
@@ -314,8 +324,8 @@ export default function V2() {
   * `ctlRef`) — and it keeps the ONE call site for "a pending pose becomes a pose" visible here, in
   * the barrier, rather than hidden inside a timer somewhere else.
   */
- const poseRestoreRef = useRef<(() => void) | null>(null);
- const onSceneReady = useCallback((armedAt: number) => {
+ const poseRestoreRef = useRef<((drawnGen: number) => void) | null>(null);
+ const onSceneReady = useCallback((armedAt: number, drawnEpoch: number) => {
   mark('sceneReady');
   // FREEZE THE BYTE COUNT AT THE BARRIER, in the DOM, before anything can await.
   // The first oracle run read the byte total AFTER waiting for the marker and got 15.7 MB / 7
@@ -331,8 +341,10 @@ export default function V2() {
   sampleBytes();
   emitAtlas({type: 'scene-ready', ms: Math.round(performance.now())});
   // AND THE PENDING POSE, LAST: the barrier is the one moment at which the scene is drawn and its
-  // fit has run, so a pose written now is the reader's and not a frame's.
-  poseRestoreRef.current?.();
+  // fit has run, so a pose written now is the reader's and not a frame's. It carries the generation
+  // this barrier DREW, because `scene-ready` above is emitted synchronously and a subscriber can
+  // arm the next generation's restore before this line runs (codex round 16).
+  poseRestoreRef.current?.(drawnEpoch);
  }, [sampleBytes]);
 
  // ─── the one door into the controller ─────────────────────────────────────────────────────
@@ -391,7 +403,7 @@ export default function V2() {
   if (arrival) setHidden((cur) => (cur.size ? new Set<string>() : cur));
   ctlRef.current = out.state;
   setCtl(out.state);
-  if (out.epoch) { markSceneReady(false); markSettled(false); setEpoch((n) => n + 1); }
+  if (out.epoch) { markSceneReady(false); markSettled(false); bumpEpoch(); }
   return true;
  }, []);
 
@@ -618,7 +630,7 @@ export default function V2() {
   * waits, because the signature guard means it can only ever write into the exact view that armed
   * it. A timer would add a failure mode (a slow machine losing a legitimate restore) to buy nothing.
   */
- interface PendingPose {sig: string; want: {x: number; y: number; z: number; tx: number; ty: number; tz: number}}
+ interface PendingPose {sig: string; gen: number; want: {x: number; y: number; z: number; tx: number; ty: number; tz: number}}
  const pendingPose = useRef<PendingPose | null>(null);
  /** ABORT, and SAY SO. The marker is how an oracle (and a reviewer) can tell an abort from a restore
   *  that never armed — three rounds of review were argued partly from invisible state. It is only
@@ -723,7 +735,7 @@ export default function V2() {
    // `markSceneReady(phase === 'atlas')` — a line with two opposite failure modes (R:29): between
    // the barrier and full load it published `false` and nothing ever restored it, and before the
    // first barrier the pending barrier belonged to the scene being superseded.
-   setEpoch((n) => n + 1);
+   bumpEpoch();
    /**
     * ⚠️ THE WARM BRANCH CARRIES `system=` AND `lang=` THROUGH ONE TRANSACTION — codex rounds 6 and 7,
     * which took three attempts between them and are worth recording as a set:
@@ -988,6 +1000,9 @@ export default function V2() {
   }
   pendingPose.current = {
    sig: poseSig(),
+   // WHICH GENERATION THIS RESTORE IS FOR. Read from the REF, which the dispatch above has already
+   // moved; `epoch` (the state) still holds the previous one until React re-renders.
+   gen: sceneGen.current,
    want: {x: cam[0], y: cam[1], z: cam[2], tx: cam[3], ty: cam[4], tz: cam[5]},
   };
   document.documentElement.dataset.atlasPose = 'pending';
@@ -1007,10 +1022,35 @@ export default function V2() {
   * CLEARED FIRST, unconditionally: a barrier that does not match consumes the pending state rather
   * than leaving it armed for a later scene it was never about.
   */
- poseRestoreRef.current = () => {
+ poseRestoreRef.current = (drawnGen: number) => {
   const p = pendingPose.current;
   if (!p) return;
+  /**
+   * ⚠️ A BARRIER ONLY CONSUMES ITS **OWN** GENERATION — codex round 16's M1, and it is a defect the
+   * signature could not see, because the signature describes the CONTROLLER's current state and not
+   * the scene the renderer actually drew.
+   *
+   * The sequence codex executed: a `scene-ready` subscriber (the event is emitted synchronously,
+   * `tools.ts`) opens tab B inside scene A's readiness callback. B dispatches and arms its pose;
+   * A's callback then resumes and consumes it — the signature MATCHES, because it compares B
+   * against the controller, which is now B. B's pose was applied at A's barrier, before B's own fit
+   * had run, and B's next frame cleared it. The restore was not stale; it was eaten early.
+   *
+   * ⚠️ AND THE TWO DIRECTIONS ARE NOT THE SAME ANSWER, which is the whole content of the rule:
+   *   · an OLDER barrier (`drawnGen < p.gen`) **preserves** the pending state and returns. The
+   *     restore belongs to a generation that has not drawn yet, and clearing here would turn
+   *     codex's "eaten early" into "silently dropped" — the same defect wearing the other coat.
+   *   · a NEWER barrier (`drawnGen > p.gen`) **discards** it as stale. Its generation was superseded
+   *     before it ever drew, so nothing will ever be the barrier it was waiting for; leaving it
+   *     armed would be a restore with no owner.
+   */
+  if (drawnGen < p.gen) return;
   pendingPose.current = null;
+  if (drawnGen > p.gen) {
+   document.documentElement.dataset.atlasPose = 'stale';
+   emitAtlas({type: 'pose-restore', state: 'stale'});
+   return;
+  }
   const state = (() => {
    if (p.sig !== poseSig()) return 'stale';
    const nav = navOf();
