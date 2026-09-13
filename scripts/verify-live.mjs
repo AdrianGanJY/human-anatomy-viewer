@@ -459,7 +459,30 @@ try {
   await page.setViewportSize({width: 1280, height: 900});
   await page.waitForTimeout(600);
 
-  check('no console/page errors', consoleErrors.length === 0, consoleErrors.join(' | '));
+/**
+ * ⚠️ ONE NAMED EXPECTED VIOLATION, AND IT IS THE CSP WORKING — L31 v2.1b+c, S5b.
+ *
+ * Cloudflare injects its own Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`)
+ * into HTML responses AT THE EDGE, and `script-src 'self'` refuses it. Nothing in the app loads it,
+ * nothing in the app needs it, and the local sweep could not see it: the injection does not exist
+ * in `dist`, so it appears for the first time in production. 63 of 64 live assertions passed with
+ * the beacon blocked — the viewer is unaffected.
+ *
+ * THE POLICY IS NOT WIDENED FOR IT, deliberately. Adding a CDN to `script-src` on the one origin
+ * whose localStorage holds an OpenAI key is a real (if small) widening, and it is Adrian's call,
+ * not this script's: turning Web Analytics OFF for this Pages project keeps `'self'` and removes
+ * the noise. Until he rules, the beacon stays blocked and this row NAMES it.
+ *
+ * Narrow on purpose — the host AND the directive. Any other CSP violation, and every non-CSP
+ * console error, still fails. A blanket "ignore CSP errors" here would hide the next real one.
+ */
+const EXPECTED_CSP_VIOLATION = /static\.cloudflareinsights\.com.*violates the following Content Security Policy directive: "script-src 'self'"/;
+  const unexpected = consoleErrors.filter((e) => !EXPECTED_CSP_VIOLATION.test(e));
+  const beacon = consoleErrors.length - unexpected.length;
+  check("no console/page errors (beyond the CSP refusing Cloudflare's injected beacon)",
+    unexpected.length === 0,
+    unexpected.length ? unexpected.join(' | ')
+      : `none${beacon ? ` (${beacon} expected script-src refusals of the edge-injected beacon)` : ''}`);
 } catch (e) {
   check('script completed without throwing', false, String(e).slice(0, 400));
   try { await page.screenshot({path: join(outDir, `${label}-FAILURE.png`)}); } catch {}

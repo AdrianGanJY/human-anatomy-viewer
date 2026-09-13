@@ -94,7 +94,33 @@ export function installCapture({ renderer, scene, camera, host }: InstallOptions
       // Absolute over the WebGL canvas. `.scene canvas{width:100%;height:100%}` in
       // globals.css already sizes it; position and pointer-events are what stop it
       // becoming layout and stop it eating the explorer's orbit gestures.
-      out.setAttribute('style', 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1');
+      /**
+       * ⚠️ CSSOM PROPERTIES, NOT `setAttribute('style', …)` — L31 v2.1b+c, S5b, and this line was a
+       * LIVE REGRESSION for about twenty minutes.
+       *
+       * S5b shipped `style-src 'self'` with no `'unsafe-inline'`, measured against `dist`: zero
+       * `<style>` blocks and zero `style="` attributes in the built HTML, and React writes through
+       * the CSSOM, which CSP does not govern. Both halves of that were true and the conclusion was
+       * still wrong, because this module is not React — it is imperative DOM code, and a style
+       * ATTRIBUTE is governed by `style-src-attr`, which falls back to `style-src`.
+       *
+       * So the browser silently dropped this declaration, the overlay was never positioned over the
+       * WebGL canvas, and the renderer's screenshot captured the canvas UNDERNEATH instead of the
+       * supersampled overlay. Caught by `verify-render` H4 on the live host: `screenshot holes
+       * 0.61% speckle 11.8` against the hook's own capture, identical on three consecutive runs —
+       * deterministic, which is what said "not a flake, go and find it".
+       *
+       * The lesson, exactly: "no inline styles" was measured over the BUILT OUTPUT, and the defect
+       * was in code that writes styles at RUNTIME. A grep over `dist/*.html` cannot see it. The
+       * policy is not widened for one line; the line uses the CSSOM like everything else does.
+       */
+      out.style.position = 'absolute';
+      out.style.left = '0';
+      out.style.top = '0';
+      out.style.width = '100%';
+      out.style.height = '100%';
+      out.style.pointerEvents = 'none';
+      out.style.zIndex = '1';
       const ctx = out.getContext('2d');
       if (!ctx) return '';
       ctx.imageSmoothingEnabled = true;

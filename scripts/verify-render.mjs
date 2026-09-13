@@ -404,7 +404,21 @@ try {
   check('E1 three loads of the identical URL produce the same picture',
     new Set(digests).size === 1, digests.join(' | '));
 
-  check('E2 no console errors while rendering plates', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || 'clean');
+  /**
+   * ⚠️ ONE NAMED EXPECTED VIOLATION — L31 v2.1b+c, S5b, and it is the CSP doing its job.
+   *
+   * Cloudflare injects its Web Analytics beacon into HTML AT THE EDGE, so it does not exist in
+   * `dist` and no local sweep can see it; `script-src 'self'` refuses it in production. The plates
+   * render correctly without it. Narrow on purpose — the HOST and the DIRECTIVE — so any other CSP
+   * violation, and every non-CSP console error, still fails. See verify-live.mjs for the same note
+   * and for why the policy is NOT widened to admit it.
+   */
+  const EXPECTED_CSP_VIOLATION = /static\.cloudflareinsights\.com.*violates the following Content Security Policy directive: "script-src 'self'"/;
+  const unexpectedErrors = consoleErrors.filter((e) => !EXPECTED_CSP_VIOLATION.test(e));
+  check("E2 no console errors while rendering plates (beyond the CSP refusing Cloudflare's injected beacon)",
+    unexpectedErrors.length === 0,
+    unexpectedErrors.slice(0, 2).join(' | ')
+      || `clean (${consoleErrors.length - unexpectedErrors.length} expected beacon refusals)`);
 
   // ── H. SMOOTH TRANSLUCENCY (P4a.1) ─────────────────────────────────────────
   // The page is on the forward-bend plate, settled. `__atlasCapture` draws ONE frame with

@@ -13,7 +13,7 @@
  */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {readFileSync, readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -98,4 +98,62 @@ test('the /* rule covers every path, and the excluded static paths are still sam
   // Those four are served straight from the CDN, so the middleware never sees them. They are all
   // same-origin subresources (`'self'`), which is why no directive needs widening for them.
   assert.deepEqual(routes.exclude, ['/models/*', '/assets/*', '/i18n/*', '/favicon.svg']);
+});
+
+/**
+ * ══ NOTHING MAY WRITE A STYLE **ATTRIBUTE** — the guard this policy actually needed ═══════════
+ *
+ * S5b shipped `style-src 'self'` without `'unsafe-inline'`, on a measurement that was true and
+ * incomplete: the BUILT HTML has zero `<style>` blocks and zero `style="` attributes, and React
+ * writes through the CSSOM, which CSP does not govern. Both halves correct; the conclusion wrong.
+ *
+ * `app/capture.ts` is not React. It did `setAttribute('style', 'position:absolute;…')` on the plate
+ * overlay — a style ATTRIBUTE, governed by `style-src-attr`, which falls back to `style-src`. The
+ * browser dropped the declaration silently, the overlay was never positioned over the WebGL canvas,
+ * and the renderer screenshotted the canvas underneath. Live for about twenty minutes; caught by
+ * `verify-render` H4 against production, identical on three consecutive runs.
+ *
+ * TWO failures of method, and this test answers both:
+ *   · the check was run over the BUILT OUTPUT, and the defect was in code that writes styles at
+ *     RUNTIME — a grep over `dist/*.html` can never see it;
+ *   · the grep was QUOTE-SHAPED (`'style'` / `"style"`), and the minifier emitted
+ *     `setAttribute(`style`, …)`. It matched nothing and read as clean.
+ *
+ * So this reads SOURCE (where the quote form is ours) and accepts all three quotes.
+ */
+test('no source file writes a style ATTRIBUTE — style-src has no unsafe-inline', () => {
+  const offenders = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(ROOT + dir, {withFileTypes: true})) {
+      if (e.isDirectory()) { walk(`${dir}/${e.name}`); continue; }
+      if (!/\.(ts|tsx|js|jsx|mjs)$/.test(e.name)) continue;
+      const rel = `${dir}/${e.name}`;
+      const src = readFileSync(ROOT + rel, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      // All three quote forms, any whitespace, and `cssText` — which is CSSOM and therefore
+      // allowed, but is listed here because it is the obvious "fix" someone reaches for and it
+      // belongs in a reviewer's eye-line rather than in a surprise.
+      if (/setAttribute\s*\(\s*(['"`])style\1/.test(src)) offenders.push(`${rel} (setAttribute style)`);
+    }
+  };
+  for (const dir of ['app', 'web', 'functions']) walk(dir);
+  assert.deepEqual(offenders, [],
+    'a style ATTRIBUTE is blocked by style-src without unsafe-inline — assign the properties'
+    + ' individually (el.style.position = …), which goes through the CSSOM and is not governed by CSP');
+});
+
+test('and the SHIPPED bundle carries none either, in any quote form', (t) => {
+  // The source check above is the durable one. This is the belt: it reads `dist` when a build
+  // happens to be present (it is absent in a review snapshot, and that is a SKIP with a reason,
+  // never a silent pass).
+  let files;
+  try { files = readdirSync(ROOT + 'dist/assets').filter((f) => f.endsWith('.js')); }
+  catch { t.skip('no dist/ in this tree — the source assertion above is the one that always runs'); return; }
+  assert.ok(files.length > 0, 'dist/assets exists but has no JS — that is not a pass');
+  const hits = [];
+  for (const f of files) {
+    const src = readFileSync(`${ROOT}dist/assets/${f}`, 'utf8');
+    for (const m of src.matchAll(/setAttribute\s*\(\s*(['"`])style\1/g)) hits.push(`${f} @ ${m.index}`);
+  }
+  assert.deepEqual(hits, [], 'the built bundle writes a style attribute the CSP will drop');
 });
