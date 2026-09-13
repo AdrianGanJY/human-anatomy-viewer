@@ -436,10 +436,10 @@ test('M1: the session spend survives the panel, and an interrupted request is co
       {status: 200, headers: {'content-type': 'text/event-stream'}}));
     await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: ok});
     await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: ok});
-    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0});
+    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0, attempts: 2});
     // codex's sequence ended here with an unmount and a reopen reporting 0 · 0 + 0. The counter is
     // module-scoped now, so there is no component lifetime for it to be lost to.
-    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0},
+    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0, attempts: 2},
       'reading it twice is reading the same session');
 
     // An aborted request: tokens were sent, OpenAI billed, and there is no usage frame.
@@ -474,5 +474,101 @@ test('M1: a missing key is NOT counted as spend — nothing left the browser', a
     await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
       fetchImpl: stubFetch(async () => new Response('', {status: 200}))}).catch(() => {});
   });
-  assert.deepEqual(readSpend(), {replies: 0, prompt: 0, completion: 0, incomplete: 0});
+  assert.deepEqual(readSpend(), {replies: 0, prompt: 0, completion: 0, incomplete: 0, attempts: 0});
+});
+
+// ════ codex ROUND 23 — the four executed sequences, as cases ══════════════════════════════════
+
+test('r23 M1: a request that never reached transport is an ATTEMPT, not spend', async () => {
+  resetSpend();
+  await withKey(stored(), async () => {
+    // (a) an already-aborted signal. codex counted this as one INTERRUPTED request — i.e. as money.
+    const f = stubFetch(okStream(sseStream(frames(['a']), 8)));
+    const ac = new AbortController();
+    ac.abort();
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, signal: ac.signal, fetchImpl: f}).catch(() => {});
+    assert.equal(f.calls.length, 0, 'and it never reached the fetch at all');
+    assert.deepEqual(readSpend(), {replies: 0, prompt: 0, completion: 0, incomplete: 0, attempts: 1});
+  });
+  resetSpend();
+  // (b) a key `fetch` would refuse to put in a header.
+  await withKey(stored({key: 'sk-bad\r\nX-Evil: 1'}), async () => {
+    const f = stubFetch(okStream(sseStream(frames(['a']), 8)));
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: f}).catch(() => {});
+    assert.equal(f.calls.length, 0, 'a header-injection-shaped key is refused before transport');
+    assert.deepEqual(readSpend(), {replies: 0, prompt: 0, completion: 0, incomplete: 0, attempts: 1});
+  });
+  resetSpend();
+});
+
+test('r23 M1: usage that ARRIVED is kept even when the stream then fails', async () => {
+  resetSpend();
+  await withKey(stored(), async () => {
+    // The usage frame lands, then the reader errors. S5b reported 0 known tokens · 1 interrupted.
+    // ⚠️ ONE CHUNK PER `pull`, NOT enqueue-then-error in `start`: `error()` DISCARDS the queue, so
+    // the enqueue-then-error shape delivers nothing at all and would pass this case vacuously.
+    let served = false;
+    const body = new ReadableStream({
+      pull(c) {
+        if (served) { c.error(new Error('the socket went away')); return; }
+        served = true;
+        c.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify({choices: [{delta: {content: 'hi'}}]})}\n\n`
+          + `data: ${JSON.stringify({choices: [], usage: {prompt_tokens: 12, completion_tokens: 8}})}\n\n`));
+      },
+    });
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+      fetchImpl: okStream(body)}).catch(() => {});
+    const s = readSpend();
+    assert.equal(s.prompt, 12, 'OpenAI told us what it cost before the failure; we do not forget it');
+    assert.equal(s.completion, 8);
+    assert.equal(s.replies, 1);
+    assert.equal(s.incomplete, 0, 'it is not ALSO counted as an unknown');
+    assert.equal(s.attempts, 1);
+  });
+  resetSpend();
+});
+
+test('r23 M3: a CR-only SSE stream is read, not silently discarded', async () => {
+  resetSpend();
+  const text = `data: ${JSON.stringify({choices: [{delta: {content: 'hi'}}]})}\r\r`
+    + `data: ${JSON.stringify({choices: [], usage: {prompt_tokens: 12, completion_tokens: 8}})}\r\r`
+    + 'data: [DONE]\r\r';
+  for (const size of [1, 3, 64]) {
+    await withKey(stored(), async () => {
+      const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+        fetchImpl: okStream(sseStream(text, size))});
+      assert.equal(out.text, 'hi', `CR terminators at chunk size ${size}`);
+      assert.deepEqual(out.usage, {prompt: 12, completion: 8});
+    });
+  }
+  // And the three terminators agree with each other, which is the actual SSE requirement.
+  for (const [name, t] of [['LF', '\n\n'], ['CRLF', '\r\n\r\n'], ['CR', '\r\r']]) {
+    await withKey(stored(), async () => {
+      const body = `data: ${JSON.stringify({choices: [{delta: {content: 'x'}}]})}${t}data: [DONE]${t}`;
+      const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+        fetchImpl: okStream(sseStream(body, 1))});
+      assert.equal(out.text, 'x', `${name} one byte at a time`);
+    });
+  }
+  resetSpend();
+});
+
+test('r23 M4: the diff reads ids the way the controller accepts them', () => {
+  // A BARE STRING is an id (app/scene-codec.js:153). S5b's diff reported zero additions and the
+  // apply then selected it — a review screen describing a different edit from the one it commits.
+  assert.deepEqual(sceneDiff(null, {structures: ['B']}).added, ['B']);
+  // And a duplicate is ONE structure, because the normalizer deduplicates.
+  const d = sceneDiff(null, {structures: [{id: 'A'}, {id: 'A'}]});
+  assert.deepEqual(d.added, ['A']);
+  assert.equal(d.total, 1);
+  // Mixed forms, and a removal read through the same rule.
+  const now = {structures: [{id: 'A'}, {id: 'B'}]};
+  const out = sceneDiff(now, {structures: ['A', {id: 'C'}, 'C']});
+  assert.deepEqual(out.added, ['C']);
+  assert.deepEqual(out.removed, ['B']);
+  assert.equal(out.total, 2);
+  // Still no `String()` on an arbitrary object (round 22, Medium 3).
+  assert.doesNotThrow(() => sceneDiff(null, {structures: [{id: {toString: null}}, 'A']}));
+  assert.deepEqual(sceneDiff(null, {structures: [{id: {toString: null}}, 'A']}).added, ['A']);
 });

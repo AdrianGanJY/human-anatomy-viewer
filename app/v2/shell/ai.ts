@@ -246,12 +246,35 @@ export function sceneDiff(current: Scene | null, proposed: unknown): {added: str
    * from the count, and reaches `commitScene` to be refused there like any other invalid scene —
    * which is the one place allowed to have an opinion about what a scene is.
    */
+  /**
+   * ⚠️ THE SAME ID REPRESENTATION THE CONTROLLER ACCEPTS — codex round 23, Medium 4. This reads a
+   * proposal to tell a human what "Apply to view" will do, so a diff that disagrees with the
+   * application is worse than no diff: it is a review screen that describes a different edit.
+   *
+   * codex executed both directions. `{"structures":["B"]}` reported ZERO additions and then applied
+   * and selected B, because `normalizeScene` (app/scene-codec.js:153) accepts a BARE STRING as an
+   * id and this function only read `.id`. Two `{id:"A"}` entries reported TWO additions and applied
+   * ONE, because that same normalizer deduplicates and this did not.
+   *
+   * `String()` is still never called on anything (round 22, Medium 3): an id that is not already a
+   * string is not an id, is dropped from the count, and reaches `commitScene` to be refused there.
+   */
   const ids = (s: unknown): string[] => {
     const st = (s as {structures?: unknown})?.structures;
     if (!Array.isArray(st)) return [];
-    return st
-      .map((x) => (x && typeof x === 'object' ? (x as {id?: unknown}).id : undefined))
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const x of st) {
+      const id = typeof x === 'string'
+        ? x
+        : (x && typeof x === 'object' && typeof (x as {id?: unknown}).id === 'string'
+          ? (x as {id: string}).id
+          : '');
+      if (!id || seen.has(id)) continue;  // the normalizer's own two rejections, in its own order
+      seen.add(id);
+      out.push(id);
+    }
+    return out;
   };
   const now = new Set(ids(current));
   const next = ids(proposed);
@@ -309,20 +332,72 @@ export function linkify(text: string): Segment[] {
  * They are counted as UNKNOWN rather than estimated: this module has no way to know the real
  * figure, and inventing one would be worse than admitting it.
  */
-export interface Spend {replies: number; prompt: number; completion: number; incomplete: number}
-const spend: Spend = {replies: 0, prompt: 0, completion: 0, incomplete: 0};
+/**
+ * ⚠️ AN ATTEMPT IS NOT A TRANSMISSION — codex round 23, Medium 1.
+ *
+ * It executed four sequences against the S5b counter. Two of them never put a byte on the wire — an
+ * already-aborted signal, and a header `Headers` refuses to construct — and both were counted as
+ * `incomplete`, i.e. as "we sent something and do not know what it cost". A spend indicator that
+ * inflates on a request that never left is the same species of lie as one that resets when you
+ * close the panel: it makes the number unusable, in the other direction.
+ *
+ * The third was worse. A stream that delivered its usage frame (12 + 8) and THEN failed reported
+ * `0 known tokens` — the usage was held in a local until the reader loop exited normally, so a
+ * failure discarded a figure OpenAI had already told us and would certainly bill.
+ *
+ * So: `attempts` counts every send that got past the key check; `incomplete` counts only sends that
+ * reached transport and produced no usage; usage that ARRIVED is committed no matter how the call
+ * ends. `transmitted` is decided by one fact — did `fetch` return a Response — and the ambiguous
+ * case (a rejection from `fetch` itself: DNS, CORS, a mid-flight socket failure) is counted as
+ * TRANSMITTED, because on a billing counter the honest direction of an unknown is "it may have cost
+ * something", not "it was free".
+ */
+export interface Spend {replies: number; prompt: number; completion: number; incomplete: number; attempts: number}
+const spend: Spend = {replies: 0, prompt: 0, completion: 0, incomplete: 0, attempts: 0};
 export const readSpend = (): Spend => ({...spend});
+
+/**
+ * ── SUBSCRIBE, DO NOT MEMOISE — codex round 23, Medium 2 ──────────────────────────────────────
+ *
+ * The numbers live here for the page's lifetime, and S5b had every panel read them through a
+ * `useMemo` keyed on a tick the panel itself bumped. codex executed the race: start a request in
+ * the dock, unmount it, mount the sheet before the abort settles, let the old request finish
+ * accounting — and the sheet showed a memoised ZERO indefinitely, because the only component that
+ * would ever bump the tick had been disposed. Whoever is mounted when a request finishes is not
+ * necessarily whoever started it, so the panel cannot be the one to notice.
+ */
+const spendListeners = new Set<() => void>();
+export function subscribeSpend(fn: () => void): () => void {
+  spendListeners.add(fn);
+  return () => { spendListeners.delete(fn); };
+}
+/** A STABLE SNAPSHOT for `useSyncExternalStore`, which compares by identity and would otherwise
+ *  re-render forever on the fresh object `readSpend()` returns. Replaced only when a count moves. */
+let spendSnapshot: Spend = {...spend};
+export const spendSnap = (): Spend => spendSnapshot;
+function publishSpend(): void {
+  spendSnapshot = {...spend};
+  for (const fn of [...spendListeners]) { try { fn(); } catch { /* a listener that throws is not this module's problem */ } }
+}
+
 /** Test-only: the counter is module-scoped for the reason above, which makes it survive between
  *  cases in a way a suite has to be able to undo. */
-export const resetSpend = (): void => { spend.replies = 0; spend.prompt = 0; spend.completion = 0; spend.incomplete = 0; };
-function countSpend(usage: AskResult['usage']): void {
+export const resetSpend = (): void => {
+  spend.replies = 0; spend.prompt = 0; spend.completion = 0; spend.incomplete = 0; spend.attempts = 0;
+  publishSpend();
+};
+function countAttempt(): void { spend.attempts += 1; publishSpend(); }
+/** @param usage the usage frame if one ARRIVED — even on a call that then failed.
+ *  @param transmitted false only when we know the request never reached transport. */
+function countSpend(usage: AskResult['usage'], transmitted: boolean): void {
   if (usage) {
     spend.replies += 1;
     spend.prompt += usage.prompt;
     spend.completion += usage.completion;
-  } else {
+  } else if (transmitted) {
     spend.incomplete += 1;
   }
+  publishSpend();
 }
 
 export interface AskOptions {
@@ -348,20 +423,38 @@ export async function ask(o: AskOptions): Promise<AskResult> {
    * COMPLETED reply from its usage frame; everything that left the browser and did not finish is
    * counted as UNKNOWN here. `ai.noKey` is the one exception: nothing left, so nothing was spent.
    */
+  const rec: CallRecord = {transmitted: false, usage: null};
   try {
-    return await askOnce(o);
+    return await askOnce(o, rec);
   } catch (e) {
-    if (!(e instanceof AiError && e.key === 'ai.noKey')) countSpend(null);
+    // `ai.noKey` is the one exception: nothing left the browser and nothing was attempted.
+    if (!(e instanceof AiError && e.key === 'ai.noKey')) countSpend(rec.usage, rec.transmitted);
     throw e;
   }
 }
 
-async function askOnce(o: AskOptions): Promise<AskResult> {
+/** What the call learned about itself, readable by `ask` after a throw. See the Spend note. */
+interface CallRecord {transmitted: boolean; usage: AskResult['usage']}
+
+async function askOnce(o: AskOptions, rec: CallRecord): Promise<AskResult> {
   // READ AT CALL TIME. `prefs` is function-local, is never returned, and is not closed over by
   // anything that outlives this call.
   const prefs = readOpenAi();
   if (!prefs) throw new AiError('ai.noKey', null, '');
+  countAttempt();
   const f = o.fetchImpl ?? fetch;
+  /**
+   * ⚠️ THE TWO KNOWN PRE-TRANSPORT REFUSALS ARE MADE HERE, WHERE THEY CAN BE TOLD APART from a
+   * network failure (codex round 23, Medium 1). Once control is inside `fetch`, a rejection is
+   * ambiguous and is counted as spend; before it, we know.
+   */
+  if (o.signal?.aborted) throw new AiError('ai.network', null, 'the request was cancelled before it was sent');
+  // A key carrying a newline, a NUL or anything outside the byte range a header field may hold is
+  // rejected by `fetch` BEFORE transport. Checked here so it is counted as "never sent" rather than
+  // as spend — and the message never quotes the key.
+  if (!/^[\t\x20-\x7e\x80-\xff]*$/.test(prefs.key)) {
+    throw new AiError('ai.network', null, 'the stored key cannot be sent as a header — re-paste it');
+  }
   let res: Response;
   try {
     res = await f(ENDPOINT, {
@@ -380,8 +473,11 @@ async function askOnce(o: AskOptions): Promise<AskResult> {
   } catch (e) {
     // A NETWORK failure, a CORS refusal or an abort. The thrown value is stringified and
     // sanitised; the REQUEST — which holds the header — is never touched again.
+    // AMBIGUOUS ⇒ TRANSMITTED: we are inside `fetch`, so the bytes may well have gone.
+    rec.transmitted = true;
     throw new AiError('ai.network', null, sanitise(String((e as Error)?.message ?? e)));
   }
+  rec.transmitted = true;
   if (!res.ok) {
     // Bounded, sanitised, and never the request. A 401 is the common one and its body is OpenAI's
     // own JSON; a proxy or a gateway can answer with anything at all, including HTML.
@@ -427,7 +523,18 @@ async function askOnce(o: AskOptions): Promise<AskResult> {
        * Normalising the buffer (not the chunks) is what makes it safe across a boundary that falls
        * BETWEEN the CR and the LF: the CR stays in the tail and is joined to its LF next round.
        */
+      /**
+       * ⚠️ AND A LONE CR IS A TERMINATOR TOO — codex round 23, Medium 3. The CRLF fix above split
+       * exclusively on LF, so a conforming CR-only stream produced the SAME silent empty answer the
+       * CRLF fix was written for: LF correct, CRLF correct, CR → empty answer and null usage.
+       *
+       * The trailing CR is held back rather than converted, because a CR at the very end of the
+       * buffer may be the first half of a CRLF that the next chunk completes — converting it here
+       * would turn one terminator into two and split a frame down the middle.
+       */
       buf = buf.replace(/\r\n/g, '\n');
+      const heldCR = buf.endsWith('\r');
+      buf = (heldCR ? buf.slice(0, -1) : buf).replace(/\r/g, '\n') + (heldCR ? '\r' : '');
       // A chunk boundary can fall anywhere, so the tail is kept rather than parsed — splitting on a
       // single '\n' would hand half a JSON object to the parser.
       const frames = buf.split('\n\n');
@@ -446,6 +553,9 @@ async function askOnce(o: AskOptions): Promise<AskResult> {
             if (typeof piece === 'string' && piece) { text += piece; o.onDelta(piece); }
             if (j.usage) {
               usage = {prompt: j.usage.prompt_tokens ?? 0, completion: j.usage.completion_tokens ?? 0};
+              // PUBLISHED THE MOMENT IT ARRIVES (codex round 23, Medium 1). A reader error after
+              // this frame used to discard a figure OpenAI had already told us.
+              rec.usage = usage;
             }
           } catch { /* a frame we cannot parse is a frame we ignore — never a thrown request */ }
         }
@@ -457,6 +567,6 @@ async function askOnce(o: AskOptions): Promise<AskResult> {
     try { await reader.cancel(); } catch { /* already closed */ }
     try { reader.releaseLock(); } catch { /* already released */ }
   }
-  countSpend(usage);
+  countSpend(usage, true);
   return {text, usage};
 }

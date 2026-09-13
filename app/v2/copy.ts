@@ -277,17 +277,15 @@ export const V2: Record<string, Row> = {
   'zh-Hans': '这个链接的视图编码后有 {n} 个字符，上限为 {max} 个',
   'zh-Hant': '這個連結的視圖編碼後有 {n} 個字元，上限為 {max} 個',
  },
- // ⚠️ THE ONE PAIR WHOSE DETAIL STAYS ENGLISH, AND IT IS SAID OUT LOUD RATHER THAN HIDDEN.
- // `validateScene` lives in `app/scene-codec.js` and produces ~17 English sentences of its own
- // ("focus.ids contains …, which is not in select, context or ghost", "unknown emphasis …"). That
- // file is inside `deploy.ps1`'s `renderPaths`, so keying it means a SITE_BUILD bump, a Worker
- // deploy and a plate-golden comparison — out of S4's scope by the kickoff's own terms.
- //
- // So the SENTENCE the reader reads is translated, and the codec's English is carried as a
- // labelled technical quotation under it (`refusal.detail`) rather than spliced into the middle of
- // a Chinese paragraph. That is honest in a way "some of it is translated" is not, and it is
- // reachable only by a malformed link or a hand-edited scene — never by the over-tick that made
- // this defect visible. Owner for keying the codec: whoever next opens the render path.
+ // ⚠️ THE PAIR WHOSE DETAIL USED TO STAY ENGLISH — AND NO LONGER DOES (S6).
+ // S4 left this note: `validateScene` lives in `app/scene-codec.js` and produced ~17 English
+ // sentences of its own, that file is inside `deploy.ps1`'s `renderPaths`, and keying it costs a
+ // SITE_BUILD bump + a Worker deploy + a plate-golden comparison, which S4 was not scoped for. The
+ // owner it named was "whoever next opens the render path". S6 opened it: the codec now returns
+ // `{key, vars}` (`sceneProblem`), its English table is unchanged for the MCP endpoint, and the
+ // seventeen keys are translated below. The SENTENCE and its DETAIL are now both in the reader's
+ // language; `refusal.detail` survives for the one remaining English island, `JSON.parse`'s own
+ // message in the Scene JSON dock.
  'refusal.sceneInvalid': {
   en: 'this view could not be applied',
   'zh-Hans': '这个视图无法应用',
@@ -297,6 +295,97 @@ export const V2: Record<string, Row> = {
   en: "this link's view could not be applied",
   'zh-Hans': '这个链接的视图无法应用',
   'zh-Hant': '這個連結的視圖無法套用',
+ },
+
+ // ── THE CODEC'S SEVENTEEN REFUSALS (S6) ───────────────────────────────────────────────────────
+ // Produced by `sceneProblem` (app/scene-codec.js) and resolved here. The English column is the
+ // sentence that file has always returned, kept identical so the MCP endpoint, the Worker and every
+ // oracle row that quotes it are untouched; the two Chinese columns are the point of the exercise.
+ // Reachable by a malformed link, a hand-edited scene, or a model proposal in the Ask dock.
+ 'scene.version': {
+  en: 'scene version {v} is not supported by this deployment (expected {expected})',
+  'zh-Hans': '本部署不支持第 {v} 版视图（需要第 {expected} 版）',
+  'zh-Hant': '本部署不支援第 {v} 版視圖（需要第 {expected} 版）',
+ },
+ 'scene.empty': {
+  en: 'the scene has no structures — pass at least one atlas id in select',
+  'zh-Hans': '这个视图没有任何结构 — 请在 select 中至少给出一个图谱编号',
+  'zh-Hant': '這個視圖沒有任何結構 — 請在 select 中至少給出一個圖譜編號',
+ },
+ 'scene.tooMany': {
+  en: 'the scene names {n} structures; the maximum is {max}. The viewer highlights a handful of related structures, not a whole system.',
+  'zh-Hans': '这个视图列出了 {n} 个结构，上限是 {max} 个。查看器用来突出少数相关结构，而不是整个系统。',
+  'zh-Hant': '這個視圖列出了 {n} 個結構，上限是 {max} 個。檢視器用來突出少數相關結構，而不是整個系統。',
+ },
+ 'scene.badId': {
+  en: 'not an atlas id: "{id}" — ids look like FMA22315',
+  'zh-Hans': '“{id}” 不是图谱编号 — 编号形如 FMA22315',
+  'zh-Hant': '「{id}」不是圖譜編號 — 編號形如 FMA22315',
+ },
+ 'scene.focusUnknown': {
+  en: 'focus.ids contains "{id}", which is not in select, context or ghost — focus can only frame structures the scene already carries',
+  'zh-Hans': 'focus.ids 中的 “{id}” 不在 select、context 或 ghost 里 — 取景只能对准这个视图已经包含的结构',
+  'zh-Hant': 'focus.ids 中的「{id}」不在 select、context 或 ghost 裡 — 取景只能對準這個視圖已經包含的結構',
+ },
+ 'scene.padding': {
+  en: 'padding must be between {min} and {max} — it is a camera DISTANCE multiplier, not a percentage',
+  'zh-Hans': 'padding 必须在 {min} 到 {max} 之间 — 它是相机距离的倍数，不是百分比',
+  'zh-Hant': 'padding 必須在 {min} 到 {max} 之間 — 它是相機距離的倍數，不是百分比',
+ },
+ 'scene.styleCount': {
+  en: 'styles has {n} entries; the maximum is {max}',
+  'zh-Hans': 'styles 有 {n} 条，上限是 {max} 条',
+  'zh-Hant': 'styles 有 {n} 條，上限是 {max} 條',
+ },
+ 'scene.styleUnknown': {
+  en: 'styles targets "{id}", which is not in the scene — add it to select, context or ghost first',
+  'zh-Hans': 'styles 指向的 “{id}” 不在这个视图里 — 请先把它加入 select、context 或 ghost',
+  'zh-Hant': 'styles 指向的「{id}」不在這個視圖裡 — 請先把它加入 select、context 或 ghost',
+ },
+ 'scene.emphasis': {
+  en: 'unknown emphasis "{v}" — one of {list} (normal is accepted as an alias for neutral)',
+  'zh-Hans': '未知的 emphasis “{v}” — 只能是 {list} 之一（normal 是 neutral 的别名）',
+  'zh-Hant': '未知的 emphasis「{v}」— 只能是 {list} 之一（normal 是 neutral 的別名）',
+ },
+ 'scene.opacity': {
+  en: 'styles["{id}"].opacity must be a number between 0 and 1',
+  'zh-Hans': 'styles["{id}"].opacity 必须是 0 到 1 之间的数字',
+  'zh-Hant': 'styles["{id}"].opacity 必須是 0 到 1 之間的數字',
+ },
+ 'scene.annCount': {
+  en: 'annotations has {n} entries; the maximum is {max}',
+  'zh-Hans': 'annotations 有 {n} 条，上限是 {max} 条',
+  'zh-Hant': 'annotations 有 {n} 條，上限是 {max} 條',
+ },
+ 'scene.annType': {
+  en: 'annotation {i} has type "{v}" — one of {list} (curved-arrow is an alias for rotation-arrow)',
+  'zh-Hans': '第 {i} 条标注的 type 是 “{v}” — 只能是 {list} 之一（curved-arrow 是 rotation-arrow 的别名）',
+  'zh-Hant': '第 {i} 條標註的 type 是「{v}」— 只能是 {list} 之一（curved-arrow 是 rotation-arrow 的別名）',
+ },
+ 'scene.annTarget': {
+  en: 'annotation {i} ({type}) is missing its target id',
+  'zh-Hans': '第 {i} 条标注（{type}）缺少目标编号',
+  'zh-Hant': '第 {i} 條標註（{type}）缺少目標編號',
+ },
+ 'scene.annUnknown': {
+  en: 'annotation {i} targets {id}, which is not in the scene — add it to select or context first',
+  'zh-Hans': '第 {i} 条标注指向的 {id} 不在这个视图里 — 请先把它加入 select 或 context',
+  'zh-Hant': '第 {i} 條標註指向的 {id} 不在這個視圖裡 — 請先把它加入 select 或 context',
+ },
+ 'scene.annDirection': {
+  en: 'annotation {i} has direction "{v}" — one of {list}',
+  'zh-Hans': '第 {i} 条标注的 direction 是 “{v}” — 只能是 {list} 之一',
+  'zh-Hant': '第 {i} 條標註的 direction 是「{v}」— 只能是 {list} 之一',
+ },
+ 'scene.annText': {
+  en: "annotation {i}'s text is {n} characters; the maximum is {max} — a label is two or three words",
+  'zh-Hans': '第 {i} 条标注的文字有 {n} 个字符，上限是 {max} 个 — 标签只写两三个词',
+  'zh-Hant': '第 {i} 條標註的文字有 {n} 個字元，上限是 {max} 個 — 標籤只寫兩三個詞',
+ },
+ 'scene.size': {
+  en: 'size {w}x{h} is outside {wmin}..{wmax} by {hmin}..{hmax} — the plate IS the page\'s viewport, and below {wmin}x{hmin} the page switches to its phone layout and frames the subject badly',
+  'zh-Hans': '尺寸 {w}x{h} 超出了 {wmin}..{wmax} 乘 {hmin}..{hmax} 的范围 — 图片就是页面的视口，小于 {wmin}x{hmin} 时页面会切换到手机版面，取景会变差',
+  'zh-Hant': '尺寸 {w}x{h} 超出了 {wmin}..{wmax} 乘 {hmin}..{hmax} 的範圍 — 圖片就是頁面的視口，小於 {wmin}x{hmin} 時頁面會切換到手機版面，取景會變差',
  },
  'refusal.detail': {
   en: 'Technical detail',
@@ -694,10 +783,16 @@ export function v2t(lang: Lang, key: string, vars?: Record<string, string | numb
  * there is no second renderer that could translate differently or forget to.
  *
  * `detail` is returned SEPARATELY rather than concatenated, because the two have different
- * standing: the sentence is translated copy, the detail is `validateScene`'s own English and is
- * labelled as such where it is drawn. A caller that ignores `detail` loses precision, never
- * correctness — which is the right failure mode for a surface with no room for it.
+ * standing: the sentence names what the reader tried to do, the detail names what the codec found
+ * wrong with it. A caller that ignores `detail` loses precision, never correctness — which is the
+ * right failure mode for a surface with no room for it.
+ *
+ * ⚠️ SINCE S6 THE DETAIL IS TRANSLATED TOO, and `Reason` no longer carries a raw string at all. It
+ * is a `{key, vars}` from `sceneProblem`, resolved through this same table, so a 简体 reader no
+ * longer gets a Chinese sentence with an English paragraph bolted underneath it. The one remaining
+ * English island in the app — `JSON.parse`'s engine message — is NOT a `Reason`: the Scene JSON
+ * dock renders it itself, through the same `refusal.detail` label and the same class.
  */
 export function reasonText(lang: Lang, r: Reason): {text: string; detail?: string} {
- return {text: v2t(lang, r.key, r.vars), detail: r.detail};
+ return {text: v2t(lang, r.key, r.vars), detail: r.problem ? v2t(lang, r.problem.key, r.problem.vars) : undefined};
 }

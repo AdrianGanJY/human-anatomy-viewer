@@ -131,7 +131,8 @@ import type {SceneState, SystemId, View} from '../anatomy';
 // The codec is imported at its REAL path with its REAL extension: `app/scene-codec.js` is plain ESM
 // with zero imports (it is shared with a Pages Function), so Node can load it as-is. The TYPES come
 // from `scene-model`, and a type import is erased before Node ever sees it.
-import {encodeScene, LIMITS, normalizeScene, sceneFocusId, sceneSelectIds, validateScene} from '../scene-codec.js';
+import {encodeScene, LIMITS, normalizeScene, sceneFocusId, sceneProblem, sceneSelectIds} from '../scene-codec.js';
+import type {SceneProblem} from './scene-problem';
 import type {Role, Scene} from '../scene-model';
 /**
  * `uniq` is deliberately NOT an import of `selection.ts`'s `dedupe`, and the reason is mechanical
@@ -281,18 +282,22 @@ export type Command =
  * (`reasonText`) turns that into words in the reader's language. This file remains UI-free: it
  * imports no copy table and cannot render anything.
  *
- * `detail` is the ONE escape hatch, and it exists for exactly one producer: `validateScene` in
- * `app/scene-codec.js` returns its own English sentences, that file is inside `deploy.ps1`'s
- * `renderPaths`, and keying it is a render-path change S4 is not scoped for. The detail is drawn as
- * a LABELLED English quotation beneath a translated sentence rather than spliced into it — see the
- * note beside `refusal.sceneInvalid`.
+ * `problem` is the ONE escape hatch, and it exists for exactly one producer: `sceneProblem` in
+ * `app/scene-codec.js`. S6 opened that render-path file and keyed its seventeen sentences, so the
+ * escape hatch now carries a KEY and its variables rather than an English paragraph — the detail
+ * beneath the sentence is translated like everything else.
  */
 export interface Reason {
  /** A `V2` copy key. Every value this file can emit is enumerated in `REFUSAL_KEYS` below. */
  key: string;
  vars?: Record<string, string | number>;
- /** Untranslated technical text from the codec, shown labelled. Never the whole message. */
- detail?: string;
+ /**
+  * THE CODEC'S OWN REFUSAL, KEYED — S6. Until S6 this was `detail?: string`, an English sentence
+  * from `validateScene` quoted verbatim beneath a translated one, because `app/scene-codec.js` is
+  * a render-path file S4 was not scoped to open. It is keyed now (`sceneProblem`), so a Chinese
+  * reader gets a Chinese reason and `RefusalText` no longer has an English island to label.
+  */
+ problem?: SceneProblem;
 }
 
 /**
@@ -329,8 +334,8 @@ const intent = (render: SceneState, patch: Partial<SceneState> = {}): SceneState
  */
 function commitScene(state: V2State, candidate: unknown, render: SceneState): Outcome {
  const next = normalizeScene(candidate) as Scene;
- const invalid = validateScene(next);
- if (invalid) return {state, rejected: {key: 'refusal.sceneInvalid', detail: invalid}};
+ const invalid = sceneProblem(next);
+ if (invalid) return {state, rejected: {key: 'refusal.sceneInvalid', problem: invalid}};
  const blob = encodeScene(next);
  if (blob.length > LIMITS.SCENE_MAX_B64) {
   // NOT A TRUNCATION. The encoded budget exists so the whole plate URL stays under the 2,000
@@ -414,7 +419,7 @@ export function initialState(
   visibleIntent: url.visible ?? render.visible};
  if (url.scene) {
   const scene = normalizeScene(url.scene) as Scene;
-  const invalid = validateScene(scene);
+  const invalid = sceneProblem(scene);
   const encoded = invalid ? '' : encodeScene(scene);
   if (!invalid && encoded.length <= LIMITS.SCENE_MAX_B64) {
    return {
@@ -439,9 +444,9 @@ export function initialState(
   return {
    state: {...blank, picks, render: legacySceneState(url, render)},
    // TWO DISTINCT REASONS, not one sentence with a branch inside it: an invalid scene carries the
-   // codec's English as a labelled detail, an over-long one carries its own numbers and needs none.
+   // codec's KEYED problem, an over-long one carries its own numbers and needs neither.
    rejected: invalid
-    ? {key: 'refusal.linkInvalid', detail: invalid}
+    ? {key: 'refusal.linkInvalid', problem: invalid}
     : {key: 'refusal.linkEncoded', vars: {n: encoded.length, max: LIMITS.SCENE_MAX_B64}},
   };
  }
@@ -466,8 +471,8 @@ export function reduce(state: V2State, cmd: Command): Outcome {
    // So the arrival goes through the same gate every edit does. A rejected link degrades to the
    // state the page already had, with a message — never to a page rendering a scene it cannot
    // serialise, and never to a truncation.
-   const invalidArrival = validateScene(scene);
-   if (invalidArrival) return {state, rejected: {key: 'refusal.linkInvalid', detail: invalidArrival}};
+   const invalidArrival = sceneProblem(scene);
+   if (invalidArrival) return {state, rejected: {key: 'refusal.linkInvalid', problem: invalidArrival}};
    const arrivalBlob = encodeScene(scene);
    if (arrivalBlob.length > LIMITS.SCENE_MAX_B64) {
     return {state, rejected: {key: 'refusal.linkEncoded', vars: {n: arrivalBlob.length, max: LIMITS.SCENE_MAX_B64}}};

@@ -38,9 +38,16 @@ try {
   # Nothing about that failure is visible: the picture is plausible, just old. This is the
   # tripwire. If any file that changes what a plate LOOKS like is newer than the last commit
   # that touched SITE_BUILD, the deploy stops.
+  # ⚠️ `app/capture.ts` IS IN THIS LIST BECAUSE IT DEMONSTRABLY CHANGES PLATE PIXELS, and it was
+  # missing for the whole of v2.1. S5b proved it in production, at cost: that file positions the
+  # snapshot overlay the renderer screenshots, S5b's CSP silently dropped the `style` ATTRIBUTE it
+  # used, and the Worker captured the WebGL canvas underneath instead -- `holes 0.61% speckle 11.8`,
+  # deterministic across three runs, against a historical `holes 0.04%`. A file whose EDIT can do
+  # that belongs in the tripwire, not beside it. (It was deliberately NOT added in S5b: adding it
+  # would have blocked the very deploy that carried the fix.)
   $renderPaths = @(
     'app/scene.tsx', 'app/page.tsx', 'app/globals.css', 'app/url-state.ts',
-    'app/scene-codec.js', 'app/anatomy.ts',
+    'app/scene-codec.js', 'app/anatomy.ts', 'app/capture.ts',
     'workers/snap/src/index.mjs', 'workers/snap/src/helpers.mjs'
   )
   $lastRender = (git log -1 --format=%ct -- $renderPaths) 2>$null

@@ -37,6 +37,7 @@ import assert from 'node:assert/strict';
 import {readFileSync, readdirSync} from 'node:fs';
 import {REFUSAL_KEYS} from '../app/v2/controller.ts';
 import {V2, v2t, reasonText} from '../app/v2/copy.ts';
+import {SCENE_PROBLEM_KEYS, formatProblem} from '../app/scene-codec.js';
 
 /**
  * ── WHY `typescript` IS IMPORTED CONDITIONALLY — S5b prelude ────────────────────────────────────
@@ -74,10 +75,27 @@ const CJK = /[㐀-鿿]/;
  *  abbreviation we would actually keep. */
 const LATIN_WORD = /[A-Za-z]{4,}/;
 
+/**
+ * ⚠️ CODE IDENTIFIERS ARE NOT ENGLISH — S6. The codec's refusals name FIELDS and ENUM VALUES the
+ * reader has to type back (`select`, `context`, `ghost`, `emphasis`, `rotation-arrow`), exactly as
+ * "JSON" and "MB" are already allowed above. Translating them would produce a sentence that reads
+ * beautifully and cannot be acted on. So they are stripped — by NAME, in a list — before the
+ * Latin-word test, rather than the test being loosened. Anything not on this list is still English.
+ */
+const CODE_TOKENS = [
+ 'select', 'context', 'ghost', 'focus', 'ids', 'padding', 'styles', 'opacity',
+ 'annotations', 'annotation', 'emphasis', 'direction', 'neutral', 'highlight', 'normal',
+ 'arrow', 'rotation-arrow', 'curved-arrow', 'label', 'callout', 'bracket', 'FMA', 'type',
+];
+/** Placeholders (`{list}`) and code tokens leave; everything else must answer for itself. */
+const prose = (s) => String(s ?? '')
+ .replace(/\{\w+\}/g, ' ')
+ .replace(new RegExp(`\\b(${CODE_TOKENS.join('|')})\\b`, 'gi'), ' ');
+
 /** THE PREDICATES, defined once and used by both the live checks and the tamper proof. */
 const missingRow = (table, key) => !table[key] || LANGS.some((l) => !table[key][l]);
 const untranslated = (table, key) =>
- ['zh-Hans', 'zh-Hant'].some((l) => !CJK.test(table[key]?.[l] ?? '') || LATIN_WORD.test(table[key]?.[l] ?? ''));
+ ['zh-Hans', 'zh-Hant'].some((l) => !CJK.test(table[key]?.[l] ?? '') || LATIN_WORD.test(prose(table[key]?.[l])));
 
 /**
  * -- THE SCANNER IS AN AST WALK NOW, NOT A REGEX -- codex round 12, Low 3 -----------------------
@@ -495,13 +513,40 @@ test('THE LIVE DEFECT, as an assertion: the over-tick refusal is Chinese in 简�
  assert.equal(reasonText('en', r).text, 'that is 838 structures and the maximum is 24 — remove some first');
 });
 
-test('a codec refusal translates its SENTENCE and quotes its English detail separately', () => {
- const r = {key: 'refusal.linkInvalid', detail: 'unknown emphasis "glow" — one of neutral, highlight'};
+test('S6: a codec refusal translates its SENTENCE **and** its detail', () => {
+ // S4 shipped this as "translates its sentence and quotes its English detail separately", because
+ // `validateScene` returned English and lived in a render-path file S4 could not open. S6 opened
+ // it: the detail is a KEY now, and a 简体 reader gets Chinese all the way down.
+ const r = {key: 'refusal.linkInvalid', problem: {key: 'scene.emphasis', vars: {v: 'glow', list: 'neutral, highlight'}}};
  const hans = reasonText('zh-Hans', r);
  assert.ok(CJK.test(hans.text) && !LATIN_WORD.test(hans.text), 'the sentence is Chinese');
- // The detail STAYS English on purpose — `validateScene` lives in a render-path file S4 may not
- // touch — and it is returned as its own field so the UI can label it rather than splice it in.
- assert.equal(hans.detail, r.detail);
+ assert.ok(CJK.test(hans.detail), `the detail is Chinese too: ${hans.detail}`);
+ assert.match(hans.detail, /glow/, 'and it still names the offending value');
+ // The ENGLISH rendering is byte-identical to the sentence `validateScene` has always returned, so
+ // no MCP response and no oracle row moves.
+ assert.equal(reasonText('en', r).detail,
+  'unknown emphasis "glow" — one of neutral, highlight (normal is accepted as an alias for neutral)');
+ // A reason with no codec problem has no detail at all — the field is not a leftover string.
+ assert.equal(reasonText('en', {key: 'refusal.nothing'}).detail, undefined);
+});
+
+test('S6: every codec problem key is translated, and its ENGLISH matches the codec byte for byte', () => {
+ // Claim 1 — the seventeen keys `sceneProblem` can emit are exactly the seventeen declared, and the
+ // declaration is what this file iterates. A new refusal in the codec with no row here fails HERE,
+ // which is the whole reason the list is exported rather than inferred.
+ const scanned = [...readFileSync(new URL('../app/scene-codec.js', import.meta.url), 'utf8')
+  .matchAll(/p\('(scene\.\w+)'/g)].map((m) => m[1]);
+ assert.deepEqual([...new Set(scanned)].sort(), [...SCENE_PROBLEM_KEYS].sort(),
+  'SCENE_PROBLEM_KEYS must be exactly what sceneProblem emits');
+ // Claim 2 — every one of them has a real row in all three languages.
+ assert.deepEqual(SCENE_PROBLEM_KEYS.filter((k) => missingRow(V2, k)), []);
+ assert.deepEqual(SCENE_PROBLEM_KEYS.filter((k) => untranslated(V2, k)), []);
+ // Claim 3 — THE ENGLISH DID NOT MOVE. The codec's own table and the copy table are two sources for
+ // one sentence, and the MCP endpoint reads the codec's. They are compared, not assumed.
+ for (const k of SCENE_PROBLEM_KEYS) {
+  assert.equal(v2t('en', k), formatProblem({key: k, vars: {}}, undefined) ?? '',
+   `the copy table's English for ${k} is not the codec's`);
+ }
 });
 
 test('RED PROOF — the predicates reject a tampered table', () => {

@@ -29,10 +29,10 @@
  *   · It may not retry. One press, one request, one answer. An automatic retry on a browser-held
  *     key is an unbounded bill with nobody watching it.
  */
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import {useCallback, useEffect, useRef, useState, useSyncExternalStore} from 'react';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
-import {AiError, ask, linkify, modelOf, proposedScene, readSpend, sceneDiff, systemMessage, withoutModelLang, withoutSceneBlock} from './ai.ts';
+import {AiError, ask, linkify, modelOf, proposedScene, sceneDiff, spendSnap, subscribeSpend, systemMessage, withoutModelLang, withoutSceneBlock} from './ai.ts';
 import {hasOpenAi, readOpenAiModel} from './store.ts';
 
 /** Broadcast by the Settings › AI panel when the key is saved or removed, so an OPEN dock changes
@@ -87,10 +87,14 @@ export default function AskPanel(p: AskProps) {
   const turns = p.state.turns, setTurns = p.state.setTurns;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{key: string; status: number | null; detail: string} | null>(null);
-  /** A TICK, not a copy. The numbers live in `ai.ts` for the page's lifetime; this only says
-   *  "read them again", so closing the dock cannot reset a spend the reader has really incurred. */
-  const [spendTick, setSpendTick] = useState(0);
-  const spend = useMemo(() => readSpend(), [spendTick]);
+  /**
+   * ⚠️ A SUBSCRIPTION, NOT A TICK — codex round 23, Medium 2. S5b read the module's numbers through
+   * a `useMemo` keyed on a counter THIS component bumped, which is only correct while the component
+   * that started a request is still the one mounted when it finishes. codex executed the case where
+   * it is not — dock unmounts, sheet mounts, the old request then completes — and the sheet showed
+   * a stale zero forever. `ai.ts` now publishes; every surface reads the same live number.
+   */
+  const spend = useSyncExternalStore(subscribeSpend, spendSnap, spendSnap);
   const [applied, setApplied] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   /**
@@ -121,12 +125,31 @@ export default function AskPanel(p: AskProps) {
    * On every turn change AND every delta, the log is pinned to its bottom. `scrollTop = scrollHeight`
    * rather than `scrollIntoView`, which would also scroll the PAGE (and on the phone, the sheet)
    * out from under the reader.
+   *
+   * ⚠️ BUT IT YIELDS TO A READER WHO SCROLLED UP — codex round 23, Medium 5. It executed the effect
+   * with a scroll adapter and watched a reader's position move from 40 to 1300 on the next update.
+   * Following the answer down is a courtesy while you are AT the bottom; the same move performed on
+   * someone who has deliberately scrolled back to re-read an earlier turn is the panel taking the
+   * page away from them. So the decision is made BEFORE the paint — was the log within `NEAR` of
+   * its bottom when this update arrived — and only then is it re-pinned.
+   *
+   * ⚠️ AND IT FIRES WHEN THE PROPOSAL APPEARS. Proposal cards are hidden while `busy`; completion
+   * reveals them WITHOUT changing `turns`, so the effect that exists to keep the Apply button in
+   * view was not running at the one moment the Apply button comes into existence. `busy` is in the
+   * dependency list for that reason, not for tidiness.
    */
   const logRef = useRef<HTMLDivElement | null>(null);
+  /** Within this many px of the bottom counts as "following". One line of text, roughly. */
+  const NEAR = 24;
+  const following = useRef(true);
+  const onLogScroll = useCallback(() => {
+    const el = logRef.current;
+    if (el) following.current = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+  }, []);
   useEffect(() => {
     const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [turns]);
+    if (el && following.current) el.scrollTop = el.scrollHeight;
+  }, [turns, busy]);
 
   /** The S5a hand-off, unchanged: the controller's blob, so the link carries this session's edits. */
   const link = () =>
@@ -178,9 +201,8 @@ export default function AskPanel(p: AskProps) {
     } finally {
       setBusy(false);
       abortRef.current = null;
-      // `ai.ts` has counted this request by now — completed from its usage frame, or as an
-      // UNKNOWN if it was aborted or failed. Re-read it either way.
-      setSpendTick((n) => n + 1);
+      // `ai.ts` has counted this request by now and PUBLISHED it to every mounted surface — this
+      // component no longer has to be alive for the number to move (Medium 2).
     }
   }, [q, busy, turns, p]);
 
@@ -245,7 +267,7 @@ export default function AskPanel(p: AskProps) {
     <div className={p.sheet ? 'v2-ai-sheetbody' : 'v2-pane-body'}>
       <p className="v2-note-sm"><b>{tr('ask.lead')}</b></p>
       {keyed && turns.length === 0 && <p className="v2-note-sm">{tr('ai.empty')}</p>}
-      {keyed && turns.length > 0 && <div className="v2-ai-log" ref={logRef} role="log" aria-live="polite">
+      {keyed && turns.length > 0 && <div className="v2-ai-log" ref={logRef} onScroll={onLogScroll} role="log" aria-live="polite">
         {turns.map((t, i) => <div key={i} className={`v2-ai-turn is-${t.role}`}>
           <b>{tr(t.role === 'user' ? 'ai.you' : 'ai.answer')}</b>
           <div className="v2-ai-text">{t.role === 'user' ? t.text : body(t.text)}</div>

@@ -210,4 +210,4 @@ bucket_name = "human-anatomy-snaps"
 # not deployed anything. Same rule as bc3: the id moves in its own commit, after the commit it is
 # about, and neither bc2 nor bc3 was ever served. Plate-invisible for the same reason (the Worker
 # renders from the scene and never mounts this callback's consumer); the goldens are the proof.
-SITE_BUILD = "l31v21bc4"
+SITE_BUILD = "l31v21bc5"

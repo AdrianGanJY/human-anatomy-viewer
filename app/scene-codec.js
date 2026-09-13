@@ -248,61 +248,128 @@ export function normalizeScene(input) {
 // ── validate ────────────────────────────────────────────────────────────────
 
 /**
- * Returns an error STRING naming the fix, or null. Every message follows the house style
- * already set in functions/mcp.js: say what is wrong AND what to do instead, because the
- * reader is a language model that will try again immediately.
+ * ══ EVERY REFUSAL THIS FILE CAN MAKE, AS A KEY — L31 v2.1b+c, S6 ══════════════════════════════
+ *
+ * `validateScene` used to return English sentences and nothing else, which was correct for its
+ * FIRST reader — `functions/mcp.js`, whose caller is a language model that will try again — and
+ * wrong for the second, a human reading the studio in 简体 or 繁體. S4 could not fix it (this file
+ * is inside `deploy.ps1`'s `renderPaths`, so keying it costs a SITE_BUILD bump, a Worker deploy and
+ * a plate-golden comparison) and said so in `app/v2/copy.ts` beside `refusal.sceneInvalid`, naming
+ * the owner as "whoever next opens the render path". S6 is that session.
+ *
+ * So the refusal is produced ONCE, as `{key, vars}`, and rendered twice:
+ *
+ *   · `validateScene` formats it through `PROBLEM_EN` below — the same sentences, byte for byte,
+ *     so no MCP response and no oracle row moves;
+ *   · `app/v2/copy.ts` resolves the same key into the reader's language, which is how a Chinese
+ *     interface stops quoting an English paragraph at somebody who cannot read it.
+ *
+ * The English table lives HERE rather than in copy.ts on purpose: this file has no UI dependency
+ * and must keep working inside the Worker and the MCP endpoint, neither of which has a language.
  */
-export function validateScene(scene) {
+export const SCENE_PROBLEM_KEYS = [
+  'scene.version', 'scene.empty', 'scene.tooMany', 'scene.badId', 'scene.focusUnknown',
+  'scene.padding', 'scene.styleCount', 'scene.styleUnknown', 'scene.emphasis', 'scene.opacity',
+  'scene.annCount', 'scene.annType', 'scene.annTarget', 'scene.annUnknown', 'scene.annDirection',
+  'scene.annText', 'scene.size',
+];
+
+/** The ENGLISH rendering — unchanged from the sentences that shipped. `{name}` is interpolated. */
+const PROBLEM_EN = {
+  'scene.version': 'scene version {v} is not supported by this deployment (expected {expected})',
+  'scene.empty': 'the scene has no structures — pass at least one atlas id in select',
+  'scene.tooMany': 'the scene names {n} structures; the maximum is {max}. The viewer highlights a handful of related structures, not a whole system.',
+  'scene.badId': 'not an atlas id: "{id}" — ids look like FMA22315',
+  'scene.focusUnknown': 'focus.ids contains "{id}", which is not in select, context or ghost — focus can only frame structures the scene already carries',
+  'scene.padding': 'padding must be between {min} and {max} — it is a camera DISTANCE multiplier, not a percentage',
+  'scene.styleCount': 'styles has {n} entries; the maximum is {max}',
+  'scene.styleUnknown': 'styles targets "{id}", which is not in the scene — add it to select, context or ghost first',
+  'scene.emphasis': 'unknown emphasis "{v}" — one of {list} (normal is accepted as an alias for neutral)',
+  'scene.opacity': 'styles["{id}"].opacity must be a number between 0 and 1',
+  'scene.annCount': 'annotations has {n} entries; the maximum is {max}',
+  'scene.annType': 'annotation {i} has type "{v}" — one of {list} (curved-arrow is an alias for rotation-arrow)',
+  'scene.annTarget': 'annotation {i} ({type}) is missing its target id',
+  'scene.annUnknown': 'annotation {i} targets {id}, which is not in the scene — add it to select or context first',
+  'scene.annDirection': 'annotation {i} has direction "{v}" — one of {list}',
+  'scene.annText': "annotation {i}'s text is {n} characters; the maximum is {max} — a label is two or three words",
+  'scene.size': 'size {w}x{h} is outside {wmin}..{wmax} by {hmin}..{hmax} — the plate IS the page\'s viewport, and below {wmin}x{hmin} the page switches to its phone layout and frames the subject badly',
+};
+
+/** `{name}` → `vars.name`. Shared with copy.ts's own interpolation by shape, not by code, because
+ *  this file may not import anything from the UI. */
+export function formatProblem(problem, table = PROBLEM_EN) {
+  if (!problem) return null;
+  const s = table[problem.key];
+  if (!s) return problem.key;  // a key with no row is a bug, and reads as one rather than as ''
+  return s.replace(/\{(\w+)\}/g, (m, k) => (problem.vars && problem.vars[k] !== undefined ? String(problem.vars[k]) : m));
+}
+
+/**
+ * Returns `{key, vars}` naming the first problem, or null. The KEYED half of `validateScene`;
+ * every message still follows the house style set in functions/mcp.js — say what is wrong AND what
+ * to do instead — the style just lives in a table now instead of in seventeen returns.
+ */
+export function sceneProblem(scene) {
   const L = LIMITS;
-  if (scene.v !== SCENE_V) return `scene version ${scene.v} is not supported by this deployment (expected ${SCENE_V})`;
-  if (!scene.structures.length) return 'the scene has no structures — pass at least one atlas id in select';
+  const p = (key, vars) => ({ key, vars });
+  if (scene.v !== SCENE_V) return p('scene.version', { v: scene.v, expected: SCENE_V });
+  if (!scene.structures.length) return p('scene.empty', {});
   if (scene.structures.length > L.MAX_STRUCTURES) {
-    return `the scene names ${scene.structures.length} structures; the maximum is ${L.MAX_STRUCTURES}. The viewer highlights a handful of related structures, not a whole system.`;
+    return p('scene.tooMany', { n: scene.structures.length, max: L.MAX_STRUCTURES });
   }
   for (const s of scene.structures) {
-    if (!isId(s.id)) return `not an atlas id: "${String(s.id).slice(0, 40)}" — ids look like FMA22315`;
+    if (!isId(s.id)) return p('scene.badId', { id: String(s.id).slice(0, 40) });
   }
   const known = new Set(scene.structures.map((s) => s.id));
   for (const id of scene.camera.focus) {
-    if (!known.has(id)) {
-      return `focus.ids contains "${id}", which is not in select, context or ghost — focus can only frame structures the scene already carries`;
-    }
+    if (!known.has(id)) return p('scene.focusUnknown', { id });
   }
   if (scene.camera.padding < L.PAD_MIN || scene.camera.padding > L.PAD_MAX) {
-    return `padding must be between ${L.PAD_MIN.toFixed(1)} and ${L.PAD_MAX.toFixed(1)} — it is a camera DISTANCE multiplier, not a percentage`;
+    return p('scene.padding', { min: L.PAD_MIN.toFixed(1), max: L.PAD_MAX.toFixed(1) });
   }
-  if (scene.styles.length > L.MAX_STYLES) return `styles has ${scene.styles.length} entries; the maximum is ${L.MAX_STYLES}`;
+  if (scene.styles.length > L.MAX_STYLES) return p('scene.styleCount', { n: scene.styles.length, max: L.MAX_STYLES });
   for (const s of scene.styles) {
-    if (!known.has(s.id)) return `styles targets "${s.id}", which is not in the scene — add it to select, context or ghost first`;
+    if (!known.has(s.id)) return p('scene.styleUnknown', { id: s.id });
     if (s.emphasis !== undefined && !EMPHASIS.includes(s.emphasis)) {
-      return `unknown emphasis "${s.emphasis}" — one of ${EMPHASIS.join(', ')} (normal is accepted as an alias for neutral)`;
+      return p('scene.emphasis', { v: s.emphasis, list: EMPHASIS.join(', ') });
     }
-    if (s.opacity !== undefined && !isNum(s.opacity)) return `styles["${s.id}"].opacity must be a number between 0 and 1`;
+    if (s.opacity !== undefined && !isNum(s.opacity)) return p('scene.opacity', { id: s.id });
   }
   if (scene.annotations.length > L.MAX_ANNOTATIONS) {
-    return `annotations has ${scene.annotations.length} entries; the maximum is ${L.MAX_ANNOTATIONS}`;
+    return p('scene.annCount', { n: scene.annotations.length, max: L.MAX_ANNOTATIONS });
   }
   for (let i = 0; i < scene.annotations.length; i++) {
     const a = scene.annotations[i];
     if (!ANNOTATION_TYPES.includes(a.type)) {
-      return `annotation ${i} has type "${a.type}" — one of ${ANNOTATION_TYPES.join(', ')} (curved-arrow is an alias for rotation-arrow)`;
+      return p('scene.annType', { i, v: a.type, list: ANNOTATION_TYPES.join(', ') });
     }
     const targets = a.type === 'arrow' ? [a.from, a.to] : [a.target];
     for (const t of targets) {
-      if (!t) return `annotation ${i} (${a.type}) is missing its target id`;
-      if (!known.has(t)) return `annotation ${i} targets ${t}, which is not in the scene — add it to select or context first`;
+      if (!t) return p('scene.annTarget', { i, type: a.type });
+      if (!known.has(t)) return p('scene.annUnknown', { i, id: t });
     }
     if (a.direction !== undefined && !DIRECTIONS.includes(a.direction)) {
-      return `annotation ${i} has direction "${a.direction}" — one of ${DIRECTIONS.join(', ')}`;
+      return p('scene.annDirection', { i, v: a.direction, list: DIRECTIONS.join(', ') });
     }
     if (a.text && a.text.length > L.MAX_ANNOTATION_TEXT) {
-      return `annotation ${i}'s text is ${a.text.length} characters; the maximum is ${L.MAX_ANNOTATION_TEXT} — a label is two or three words`;
+      return p('scene.annText', { i, n: a.text.length, max: L.MAX_ANNOTATION_TEXT });
     }
   }
   if (scene.size.w < L.W_MIN || scene.size.w > L.W_MAX || scene.size.h < L.H_MIN || scene.size.h > L.H_MAX) {
-    return `size ${scene.size.w}x${scene.size.h} is outside ${L.W_MIN}..${L.W_MAX} by ${L.H_MIN}..${L.H_MAX} — the plate IS the page's viewport, and below ${L.W_MIN}x${L.H_MIN} the page switches to its phone layout and frames the subject badly`;
+    return p('scene.size', {
+      w: scene.size.w, h: scene.size.h,
+      wmin: L.W_MIN, wmax: L.W_MAX, hmin: L.H_MIN, hmax: L.H_MAX,
+    });
   }
   return null;
+}
+
+/**
+ * Returns an error STRING naming the fix, or null — the English rendering of `sceneProblem`, and
+ * the shape every non-UI caller (the MCP endpoint, the Worker, the tests) still uses.
+ */
+export function validateScene(scene) {
+  return formatProblem(sceneProblem(scene));
 }
 
 // ── canonical encode / decode ───────────────────────────────────────────────

@@ -73,6 +73,7 @@ const REPO_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 import {join} from 'node:path';
 import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneFrameIds, structureOpacity} from '../app/scene-codec.js';
 import {POPULATION, attachRequestLedger, populationCheck, rowsByBarrier} from './request-ledger.mjs';
+import {retryVerdict, shouldRetry} from './lib/sweep-retry.mjs';
 
 const base = process.argv[2];
 const outDir = process.argv[3];
@@ -463,21 +464,24 @@ for (const vp of SWEEP) {
       })).catch(() => ({err: '', detail: ''}));
       return {ready, at, failed};
     };
+    const asVisit = (e) => ({ready: e.ready, err: e.failed.err, record: e.failed.detail});
     let entry = await enter();
-    if (entry.failed.err === 'atlas') {
-      const line = `[${vp.name}] ${label}: the ATLAS FAILED TO LOAD on the first visit`
-        + ` (${entry.failed.detail || 'no detail recorded'}) — retried ONCE`;
-      RETRIES.push(line);
-      console.log(`\n  RETRY  ${line}`);
+    let first = asVisit(entry);
+    let second = null;
+    if (shouldRetry(first)) {
       entry = await enter();
-      if (entry.failed.err === 'atlas') {
-        const again = `[${vp.name}] ${label}: AND THE RETRY FAILED TOO`
-          + ` (${entry.failed.detail || 'no detail recorded'}) — every row below is a REAL failure, not a flake`;
-        RETRIES.push(again);
-        console.log(`  RETRY  ${again}`);
-      } else {
-        RETRIES.push(`[${vp.name}] ${label}: the retry SUCCEEDED — treat this viewport's rows as second-attempt readings`);
-      }
+      second = asVisit(entry);
+    }
+    // ⚠️ THE VERDICT IS A PURE FUNCTION AND IT HAS A TEST — `scripts/lib/sweep-retry.mjs`,
+    // `test/sweep-retry.test.mjs`. codex round 23 Medium 6 executed the branch this used to contain
+    // inline and found that an atlas failure followed by a RENDERER failure announced "the retry
+    // SUCCEEDED" and passed the row below. Both halves of that are now the module's problem, and
+    // the module's problem is a test's problem.
+    const verdict = retryVerdict({first, second});
+    for (const line of verdict.lines) {
+      const l = `[${vp.name}] ${label}: ${line}`;
+      RETRIES.push(l);
+      console.log(`\n  RETRY  ${l}`);
     }
 
     /**
@@ -489,19 +493,13 @@ for (const vp of SWEEP) {
      * asserts over is a record that exists for whoever remembers to look.
      *
      * So every viewport asserts the record is EMPTY — with one carve-out, and it is a loud one: if
-     * this viewport announced a retry, the first visit's record is expected and the RETRY line is
-     * the evidence. Anything else is a failure this sweep saw and would otherwise have shrugged at.
+     * this viewport announced a retry, the FIRST visit's record is expected and the RETRY line is
+     * the evidence. The SECOND visit is held to the unretried bar exactly: empty record, readiness
+     * reached. Anything else is a NEW failure this sweep saw on the retry, and it goes red — which
+     * is what codex round 23 Medium 6 found it doing the opposite of.
      */
-    const failedRecord = await page.evaluate(
-      () => document.documentElement.dataset.atlasFailed || '',
-    ).catch(() => '');
-    const retriedHere = RETRIES.some((r) => r.startsWith(`[${vp.name}] ${label}`));
     check(vp.name, 'no request failed during this visit (the app\'s own record, not the console)',
-      failedRecord === '' || retriedHere,
-      failedRecord === ''
-        ? 'data-atlas-failed absent'
-        : `data-atlas-failed = ${failedRecord}${retriedHere ? ' (expected: a retry was announced above)' : ''}`,
-      'empty — or, if a retry was announced for this viewport, the first visit\'s record and nothing new');
+      verdict.ok, verdict.measured, verdict.want);
 
     // ── 3 BYTES ────────────────────────────────────────────────────────────────────────────
     let readyMs = entry.ready, barrierAt = entry.at;
@@ -6060,9 +6058,28 @@ if (variant === 'v2') {
   }
 
   // ── 4. A PROPOSED 25-STRUCTURE SCENE IS REFUSED, AND THE VIEW DOES NOT MOVE ──────────────────
-  {
+  /**
+   * ⚠️ EVERY VIEWPORT, AND EVERY CLIPPING ANCESTOR — codex round 23, Medium 5.
+   *
+   * S5b's reachability row compared the Apply button to `.v2-ai-log` at 1440×900 only. Two holes,
+   * both executed by codex: the predicate accepted a button at 650–690 whose ANCESTOR clipped at
+   * 600 (it only looked at one named element, and on the phone that element is no longer the
+   * scroller at all), and "is this control reachable" is a question about LAYOUT, so asking it at
+   * one width answers it for one width.
+   *
+   * So the predicate walks every ancestor whose computed overflow can clip, and the scenario runs
+   * at the phone, the tablet portrait and the desktop dock. The REFUSAL half still runs once, at
+   * 1440×900: it is a statement about the controller, which has no geometry.
+   */
+  const REACH_VPS = [
+    VP5B,
+    {name: 's5b-768', width: 768, height: 1024, dpr: 2, coarse: true},
+    {name: 's5b-390', width: 390, height: 844, dpr: 3, coarse: true},
+  ];
+  for (const reachVp of REACH_VPS) {
+    const isPrimary = reachVp === VP5B;
     const tooMany = {structures: Array.from({length: 25}, (_, i) => ({id: `FMA${20000 + i}`}))};
-    const {ctx, page} = await chatContext(VP5B, () => ({
+    const {ctx, page} = await chatContext(reachVp, () => ({
       status: 200,
       body: sse(['Try this view.\n\n```scene\n', JSON.stringify(tooMany), '\n```\n']),
     }));
@@ -6095,23 +6112,40 @@ if (variant === 'v2') {
           .find((x) => /Apply|应用|套用/.test(x.textContent || ''));
         if (!b) return {found: false};
         const r = b.getBoundingClientRect();
-        const log = b.closest('.v2-ai-log');
-        const lr = log ? log.getBoundingClientRect() : null;
+        // EVERY ancestor that can clip, not one named element. `overflow: visible` does not clip;
+        // anything else does, and a scroller the reader would have to FIND is the defect.
+        const clippers = [];
+        for (let el = b.parentElement; el && el !== document.documentElement; el = el.parentElement) {
+          const cs = getComputedStyle(el);
+          const clips = [cs.overflowY, cs.overflowX].some((v) => v && v !== 'visible');
+          if (!clips) continue;
+          const cr = el.getBoundingClientRect();
+          clippers.push({
+            tag: el.className || el.tagName,
+            ok: r.top >= cr.top - 1 && r.bottom <= cr.bottom + 1
+              && r.left >= cr.left - 1 && r.right <= cr.right + 1,
+            box: `${Math.round(cr.top)}–${Math.round(cr.bottom)}`,
+          });
+        }
         return {
           found: true,
           size: r.width > 0 && r.height > 0,
           inViewport: r.top >= 0 && r.bottom <= innerHeight,
-          inScroller: !lr || (r.top >= lr.top - 1 && r.bottom <= lr.bottom + 1),
-          where: `button ${Math.round(r.top)}–${Math.round(r.bottom)}`
-            + (lr ? ` · log ${Math.round(lr.top)}–${Math.round(lr.bottom)}` : ' · no inner scroller')
-            + ` · viewport 0–${innerHeight}`,
+          inScroller: clippers.every((c) => c.ok),
+          where: `button ${Math.round(r.top)}–${Math.round(r.bottom)} · viewport 0–${innerHeight}`
+            + (clippers.length
+              ? ` · clipping ancestors: ${clippers.map((c) => `${c.tag} ${c.box}${c.ok ? '' : ' ✗'}`).join(', ')}`
+              : ' · no clipping ancestor'),
         };
       });
-      check(VP5B.name, `[${S5B}] and the Apply button is REACHABLE, not merely present`,
+      check(reachVp.name, `[${S5B}] and the Apply button is REACHABLE, not merely present`,
         reach.found && reach.size && reach.inViewport && reach.inScroller,
         `found=${reach.found} · has size=${reach.size} · inside the viewport=${reach.inViewport}`
-        + ` · inside its scroll container=${reach.inScroller} · ${reach.where || '-'}`,
+        + ` · inside EVERY clipping ancestor=${reach.inScroller} · ${reach.where || '-'}`,
         'the one control here with a consequence must be visible without hunting for a nested scrollbar');
+      // The refusal half is a statement about the CONTROLLER, which has no geometry — once is
+      // enough, and it is asserted at the desktop dock. `finally` below closes the context.
+      if (!isPrimary) continue;
       const before = await page.evaluate(() => ({
         ids: window.atlas?.state?.().ids?.length ?? -1,
         blob: new URL(location.href).searchParams.get('scene') || '',
@@ -6138,7 +6172,7 @@ if (variant === 'v2') {
         + ` · a 24-bound message is on screen=${after.refusal}`,
         'the card appears, nothing applies on its own, and the click leaves picks and URL identical');
     } catch (e) {
-      check(VP5B.name, `[${S5B}] the proposal-refusal pass ran`, false, String(e).slice(0, 200), 'no throw');
+      check(reachVp.name, `[${S5B}] the proposal-refusal pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
   }
 
