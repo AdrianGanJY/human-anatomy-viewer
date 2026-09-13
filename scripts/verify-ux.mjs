@@ -5217,6 +5217,15 @@ if (variant === 'v2') {
     if (b.className.includes('is-on')) return 'already';
     b.click(); return 'opened';
   }`;
+  /**
+   * ⚠️ CALLED AS AN IIFE AT EVERY SITE, and the first version was not.
+   *
+   * `page.evaluate('() => {…}')` evaluates the string as an EXPRESSION and hands back the function
+   * — it does not call it. So `before` was `undefined` and the row died on `before.blob` with a
+   * TypeError, which the pass-ran guard reported honestly rather than letting the section vanish.
+   * The sibling helpers below were already written as `(${FN})(args)` and worked; this one was not,
+   * which is exactly the kind of inconsistency a shared-helper block invites.
+   */
   const READ = `() => {
     const q = window.__atlasNav?.pose();
     return {
@@ -5237,7 +5246,7 @@ if (variant === 'v2') {
       await page.waitForTimeout(2200);
       await page.evaluate(`(${OPEN_DOCK})('Scene JSON|场景 JSON|場景 JSON')`);
       await page.waitForTimeout(400);
-      const before = await page.evaluate(READ);
+      const before = await page.evaluate(`(${READ})()`);
       const did = await page.evaluate(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-json'));
@@ -5254,7 +5263,7 @@ if (variant === 'v2') {
         await wait(800);
         return {removed: removed.id, backToReadOnly: !document.querySelector('.v2-jsonbox')};
       })()`);
-      const after = await page.evaluate(READ);
+      const after = await page.evaluate(`(${READ})()`);
       const decoded = after.blob ? decodeScene(after.blob) : null;
       check(VP5.name, `[${S5_V}] a valid JSON edit applies THROUGH the controller — scene, selection and URL all move`,
         !did.error && before.ids > 0 && after.ids === before.ids - 1 && after.url !== before.url
@@ -5279,7 +5288,7 @@ if (variant === 'v2') {
       await page.waitForTimeout(2200);
       await page.evaluate(`(${OPEN_DOCK})('Scene JSON|场景 JSON|場景 JSON')`);
       await page.waitForTimeout(400);
-      const before = await page.evaluate(READ);
+      const before = await page.evaluate(`(${READ})()`);
       const out = await page.evaluate(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
         const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-json'));
@@ -5299,7 +5308,7 @@ if (variant === 'v2') {
           labelled: !!err?.querySelector('.v2-refusal-detail [lang="en"]'),
         };
       })()`);
-      const after = await page.evaluate(READ);
+      const after = await page.evaluate(`(${READ})()`);
       check(VP5.name, `[${S5_V}] an INVALID draft refuses with its LINE — picks, blob and camera identical`,
         !out.error && /\d/.test(out.err) && out.kept && out.labelled
           && before.ids === after.ids && before.blob === after.blob && before.cam === after.cam,
