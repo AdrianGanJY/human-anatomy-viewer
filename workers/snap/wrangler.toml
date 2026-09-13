@@ -204,4 +204,10 @@ bucket_name = "human-anatomy-snaps"
 # OrbitControls' `start`, which is a pointer / touch / wheel gesture. `workers/snap` renders from the
 # scene and never touches the controls, so it cannot fire during a plate — and a `dispatchEvent` with
 # no listener is a no-op. The goldens after the deploy are what proves it.
-SITE_BUILD = "l31v21bc3"
+# ⚠️ AND ONCE MORE, to `l31v21bc4`: codex round 16 found that a `scene-ready` subscriber could eat the
+# next generation's pose restore, and the fix needs the RENDERER to say which generation it drew --
+# `onSceneReady(armedAt, drawnEpoch)` in app/scene.tsx, another render-path edit in a round that has
+# not deployed anything. Same rule as bc3: the id moves in its own commit, after the commit it is
+# about, and neither bc2 nor bc3 was ever served. Plate-invisible for the same reason (the Worker
+# renders from the scene and never mounts this callback's consumer); the goldens are the proof.
+SITE_BUILD = "l31v21bc4"
