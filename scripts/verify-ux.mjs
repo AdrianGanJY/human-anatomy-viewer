@@ -5186,6 +5186,335 @@ if (variant === 'v2') {
   }
 }
 
+/**
+ * ═══ S5a — SCENE JSON · ASK · SCENE TABS ═══════════════════════════════════════════════════════
+ *
+ * Every row here asserts a ROUND TRIP, never the presence of a control. A dock that renders an
+ * Apply button and applies nothing is indistinguishable from one that works by any DOM reading, and
+ * all four of S4's instrument bugs were that family.
+ *
+ * ⚠️ REACT OWNS EVERY VALUE. Assigning `input.value` is SWALLOWED — the defect S4 hit with the tree
+ * filter, where a probe measured the unfiltered list and reported it as filtered. The native
+ * setter plus a bubbling `input` event is the only way in, and it is used everywhere below.
+ */
+{
+  const S5_V = 'S5a';
+  const VP5 = {name: 's5a-1440', width: 1440, height: 900, dpr: 1, coarse: false};
+  /** Type into a React-controlled field for real. */
+  const TYPE = `(sel, text) => {
+    const el = document.querySelector(sel);
+    if (!el) return false;
+    const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, text);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    return true;
+  }`;
+  /** Open a dock by its tools-row button, READING `is-on` first — a blind click closes it. */
+  const OPEN_DOCK = `(src) => {
+    const b = [...document.querySelectorAll('.v2-tools .v2-tbtn')]
+      .find((x) => new RegExp(src).test((x.textContent || '').trim()));
+    if (!b) return 'no-button';
+    if (b.className.includes('is-on')) return 'already';
+    b.click(); return 'opened';
+  }`;
+  const READ = `() => {
+    const q = window.__atlasNav?.pose();
+    return {
+      url: location.href,
+      ids: window.atlas?.state?.().ids?.length ?? -1,
+      blob: new URL(location.href).searchParams.get('scene') || '',
+      cam: q ? [q.x, q.y, q.z, q.tx, q.ty, q.tz].map((v) => v.toFixed(4)).join(',') : '',
+    };
+  }`;
+
+  // ── 1. A VALID EDIT GOES THROUGH THE CONTROLLER ────────────────────────────────────────────
+  {
+    const ctx = await newContext(VP5);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      await page.evaluate(`(${OPEN_DOCK})('Scene JSON|场景 JSON|場景 JSON')`);
+      await page.waitForTimeout(400);
+      const before = await page.evaluate(READ);
+      const did = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-json'));
+        const btn = (re) => [...(pane?.querySelectorAll('.v2-pane-foot button') ?? [])].find((b) => re.test((b.textContent || '').trim()));
+        btn(/Edit|编辑|編輯/)?.click();
+        await wait(300);
+        const box = document.querySelector('.v2-jsonbox');
+        if (!box) return {error: 'Edit produced no editor'};
+        const draft = JSON.parse(box.value);
+        const removed = draft.structures.pop();
+        (${TYPE})('.v2-jsonbox', JSON.stringify(draft, null, 1));
+        await wait(260);
+        btn(/Apply|应用|套用/)?.click();
+        await wait(800);
+        return {removed: removed.id, backToReadOnly: !document.querySelector('.v2-jsonbox')};
+      })()`);
+      const after = await page.evaluate(READ);
+      const decoded = after.blob ? decodeScene(after.blob) : null;
+      check(VP5.name, `[${S5_V}] a valid JSON edit applies THROUGH the controller — scene, selection and URL all move`,
+        !did.error && before.ids > 0 && after.ids === before.ids - 1 && after.url !== before.url
+          && !!decoded && !decoded.structures.some((x) => x.id === did.removed) && did.backToReadOnly,
+        did.error || `removed ${did.removed} · ids ${before.ids} -> ${after.ids} · url changed=${after.url !== before.url}`
+          + ` · the re-encoded blob carries ${decoded?.structures.length} structures and`
+          + ` ${decoded?.structures.some((x) => x.id === did.removed) ? 'STILL NAMES' : 'no longer names'} the removed one`
+          + ` · editor closed on success=${did.backToReadOnly}`,
+        'one fewer structure, a re-encoded blob in the URL, the removed id gone, and the draft put away');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the JSON apply pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 2. AN INVALID EDIT REFUSES AND NOTHING MOVES (spec.md X4) ──────────────────────────────
+  {
+    const ctx = await newContext(VP5);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      await page.evaluate(`(${OPEN_DOCK})('Scene JSON|场景 JSON|場景 JSON')`);
+      await page.waitForTimeout(400);
+      const before = await page.evaluate(READ);
+      const out = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-json'));
+        const btn = (re) => [...(pane?.querySelectorAll('.v2-pane-foot button') ?? [])].find((b) => re.test((b.textContent || '').trim()));
+        btn(/Edit|编辑|編輯/)?.click();
+        await wait(300);
+        if (!document.querySelector('.v2-jsonbox')) return {error: 'Edit produced no editor'};
+        (${TYPE})('.v2-jsonbox', '{\\n "v": 1,\\n "structures": [{"id": "FMA22359"\\n}');
+        await wait(260);
+        btn(/Apply|应用|套用/)?.click();
+        await wait(700);
+        const err = document.querySelector('.v2-json-err');
+        return {
+          err: (err?.textContent || '').trim(),
+          kept: (document.querySelector('.v2-jsonbox')?.value || '').includes('FMA22359'),
+          // The engine's English is a LABELLED quotation, never spliced into the sentence.
+          labelled: !!err?.querySelector('.v2-refusal-detail [lang="en"]'),
+        };
+      })()`);
+      const after = await page.evaluate(READ);
+      check(VP5.name, `[${S5_V}] an INVALID draft refuses with its LINE — picks, blob and camera identical`,
+        !out.error && /\d/.test(out.err) && out.kept && out.labelled
+          && before.ids === after.ids && before.blob === after.blob && before.cam === after.cam,
+        out.error || `error="${out.err.replace(/\s+/g, ' ').slice(0, 64)}" · draft retained=${out.kept}`
+          + ` · engine text quoted separately=${out.labelled}`
+          + ` · ids ${before.ids}->${after.ids} · blob identical=${before.blob === after.blob}`
+          + ` · camera identical=${before.cam === after.cam}`,
+        'a line number the reader can act on, the draft kept, and nothing about the view changed');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the JSON refusal pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 3. ASK — the link carries the PROMPT and the CONTROLLER's blob ─────────────────────────
+  {
+    const ctx = await newContext(VP5);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      await page.evaluate(`(${OPEN_DOCK})('^(Ask|提问|提問)$')`);
+      await page.waitForTimeout(400);
+      const ask = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        if (!(${TYPE})('.v2-askbox', 'Which muscle lengthens first?')) return {error: 'no Ask textarea'};
+        await wait(320);
+        const a = [...document.querySelectorAll('.v2-pane-foot a')].find((x) => /chatgpt/i.test(x.getAttribute('href') || ''));
+        return {href: a?.getAttribute('href') || '', target: a?.getAttribute('target') || '', rel: a?.getAttribute('rel') || '',
+          blob: new URL(location.href).searchParams.get('scene') || ''};
+      })()`);
+      const q = ask.href ? decodeURIComponent(new URL(ask.href).searchParams.get('q') || '') : '';
+      check(VP5.name, `[${S5_V}] the Ask link carries the prompt AND the controller's current scene`,
+        !ask.error && /chatgpt\.com/.test(ask.href) && q.includes('Which muscle lengthens first?')
+          && !!ask.blob && q.includes(`scene=${ask.blob}`)
+          && ask.target === '_blank' && /noopener/.test(ask.rel),
+        ask.error || `q carries the prompt=${q.includes('Which muscle lengthens first?')}`
+          + ` · q carries scene=${ask.blob.slice(0, 12)}…=${q.includes(`scene=${ask.blob}`)}`
+          + ` · target=${ask.target} rel=${ask.rel} · URL ${ask.href.length} chars`,
+        'both, in one q parameter, opened in a new tab with noopener');
+      // THE URL BUDGET, MEASURED. Not "browsers allow 2,000" from memory — this URL's own length
+      // against the bound `scene-codec.js` already enforces for the plate lane.
+      check(VP5.name, `[${S5_V}] and the whole Ask URL fits the same 2,000-character budget the plate lane uses`,
+        ask.href.length > 0 && ask.href.length < 2000,
+        `${ask.href.length} characters, of which the scene blob is ${ask.blob.length}`,
+        '< 2000');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the Ask pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 4. SCENE TABS — snapshot, drift, restore SIX coordinates ───────────────────────────────
+  {
+    const ctx = await newContext(VP5);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      const empty = await page.evaluate(() => ({
+        strips: document.querySelectorAll('.v2-tabs').length,
+        add: !!document.querySelector('.v2-status-btn'),
+      }));
+      check(VP5.name, `[${S5_V}] with no snapshots the strip is HIDDEN and the + stands alone`,
+        empty.strips === 0 && empty.add,
+        `.v2-tabs=${empty.strips} · .v2-status-btn present=${empty.add}`,
+        'a DELIBERATE change from S0, which reserved the strip with one tab and an inert +');
+
+      const saved = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        document.querySelector('.v2-status-btn')?.click();
+        await wait(600);
+        const q = window.__atlasNav.pose();
+        return {cam: [q.x, q.y, q.z, q.tx, q.ty, q.tz], stored: localStorage.getItem('atlas.scenes')};
+      })()`);
+      // DRIFT THE CAMERA SOMEWHERE IT WOULD NEVER BE BY ACCIDENT — the control arm. Without it,
+      // "the pose matches" is satisfied by a camera that never moved at all.
+      const drifted = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        for (let i = 0; i < 30; i++) { window.__atlasNav.orbit(0.05, 0.01); window.__atlasNav.dolly(1.02); }
+        await wait(500);
+        const q = window.__atlasNav.pose();
+        return [q.x, q.y, q.z, q.tx, q.ty, q.tz];
+      })()`);
+      const far = Math.hypot(...drifted.map((v, i) => v - saved.cam[i]));
+      const back = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const tab = [...document.querySelectorAll('.v2-tabs button.v2-tab')].find((b) => !b.className.includes('v2-tab-add'));
+        if (!tab) return {error: 'the snapshot produced no tab to click'};
+        tab.click();
+        await wait(2200);
+        const q = window.__atlasNav.pose();
+        return {cam: [q.x, q.y, q.z, q.tx, q.ty, q.tz]};
+      })()`);
+      const worst = back.cam ? Math.max(...back.cam.map((v, i) => Math.abs(v - saved.cam[i]))) : Infinity;
+      check(VP5.name, `[${S5_V}] a snapshot tab restores the camera pose — all SIX coordinates`,
+        !back.error && far > 0.05 && worst < 0.01,
+        back.error || `saved [${saved.cam.map((v) => v.toFixed(3)).join(', ')}] · drifted ${far.toFixed(3)} away`
+          + ` · restored to within ${worst.toFixed(5)} on the worst axis`,
+        'the camera really moved first (the control arm), then every coordinate came back within 0.01');
+      check(VP5.name, `[${S5_V}] and the snapshot is on disk in the RC12 shape`,
+        (() => { try {
+          const v = JSON.parse(saved.stored);
+          return v.v === 1 && Array.isArray(v.tabs) && v.tabs.length === 1
+            && typeof v.tabs[0].blob === 'string' && Array.isArray(v.tabs[0].cam) && v.tabs[0].cam.length === 6;
+        } catch { return false; } })(),
+        `atlas.scenes = ${(saved.stored || '(absent)').slice(0, 90)}…`,
+        '{v:1, tabs:[{blob, title, cam:[6 numbers]}]}');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the scene-tab pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 5. TABS SURVIVE A RELOAD, AND A CORRUPT VALUE STILL RENDERS (RC12) ─────────────────────
+  {
+    const ctx = await newContext(VP5);
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem('atlas.scenes', JSON.stringify({v: 1, tabs: [
+          {blob: 'not-a-real-blob', title: 'A', cam: [1, 2, 3, 0, 0, 0]},
+          {blob: 'also-not', title: 'B', cam: null},
+        ]}));
+      } catch { /* ignore */ }
+    });
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      const seen = await page.evaluate(() => ({
+        strips: document.querySelectorAll('.v2-tabs').length,
+        names: [...document.querySelectorAll('.v2-tabs button.v2-tab')].map((b) => (b.textContent || '').trim()),
+      }));
+      check(VP5.name, `[${S5_V}] the strip is restored from localStorage on a COLD visit`,
+        seen.strips === 1 && seen.names.includes('A') && seen.names.includes('B'),
+        `${seen.strips} strip(s), tabs=${JSON.stringify(seen.names)}`,
+        'both stored snapshots drawn from disk, with no click');
+      const bad = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const before = location.href;
+        [...document.querySelectorAll('.v2-tabs button.v2-tab')].find((b) => (b.textContent || '').trim() === 'A')?.click();
+        await wait(800);
+        return {changed: location.href !== before, alive: !!document.querySelector('.v2-field')};
+      })()`);
+      check(VP5.name, `[${S5_V}] a stored tab whose blob does not decode is INERT, not a crash`,
+        !bad.changed && bad.alive,
+        `url changed=${bad.changed} · the field is still rendered=${bad.alive}`,
+        'nothing happens, and the page is still there');
+    } catch (e) {
+      check(VP5.name, `[${S5_V}] the tab-durability pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 6. THE PHONE'S A8 AND A9 SHEETS (RC5: appended rows, geometry untouched) ───────────────
+  {
+    const vpPhone = {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true};
+    const ctx = await newContext(vpPhone);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2200);
+      const phone = await page.evaluate(`(async () => {
+        const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+        const geo = {
+          header: Math.round(document.querySelector('.v2-head')?.getBoundingClientRect().height ?? -1),
+          rail: Math.round(document.querySelector('.v2-rail')?.getBoundingClientRect().width ?? -1),
+          margin: Math.round(document.querySelector('.v2-margin')?.getBoundingClientRect().height ?? -1),
+        };
+        const byText = (re) => [...document.querySelectorAll('.v2-actions button')].find((b) => re.test((b.textContent || '').trim()));
+        const askBtn = byText(/^(Ask|提问|提問)$/), scenesBtn = byText(/^(Scenes|场景|場景)$/);
+        if (!askBtn || !scenesBtn) return {geo, error: 'invoker missing: ask=' + !!askBtn + ' scenes=' + !!scenesBtn};
+        askBtn.click();
+        await wait(560);
+        // DRIVE THE PRECONDITION: the hand-off carries no href until there is a question.
+        (${TYPE})('.v2-askbox', 'Which muscle lengthens first?');
+        await wait(340);
+        const askSheet = {
+          open: !!document.querySelector('.v2-modal, .v2-sheet'),
+          box: !!document.querySelector('.v2-askbox'),
+          link: [...document.querySelectorAll('a')].some((a) => /chatgpt\\.com/.test(a.getAttribute('href') || '')
+            && decodeURIComponent(a.getAttribute('href')).includes('Which muscle lengthens first?')),
+          // S5b's surface, deliberately absent at S5a.
+          bubbles: document.querySelectorAll('.v2-bubble, .v2-chat').length,
+        };
+        document.querySelector('.v2-modal-x, .v2-sheet-x')?.click();
+        await wait(480);
+        scenesBtn.click();
+        await wait(560);
+        const scenesSheet = {
+          open: !!document.querySelector('.v2-modal, .v2-sheet'),
+          empty: !!document.querySelector('.v2-empty-state'),
+          add: [...document.querySelectorAll('button')].some((b) => /^\\+/.test((b.textContent || '').trim())),
+        };
+        return {geo, askSheet, scenesSheet};
+      })()`);
+      check(vpPhone.name, `[${S5_V}] the A8 Ask sheet opens with the hand-off and NO answer bubbles`,
+        !phone.error && phone.askSheet?.open && phone.askSheet.box && phone.askSheet.link && phone.askSheet.bubbles === 0,
+        phone.error || `sheet=${phone.askSheet.open} textarea=${phone.askSheet.box}`
+          + ` · the link carries the typed prompt=${phone.askSheet.link} · answer bubbles=${phone.askSheet.bubbles}`,
+        'the sheet, the prompt box, the hand-off — and nothing that generates an answer (that is S5b)');
+      check(vpPhone.name, `[${S5_V}] the A9 Scenes sheet opens on an EMPTY STATE, not on nothing`,
+        !phone.error && phone.scenesSheet?.open && phone.scenesSheet.empty && phone.scenesSheet.add,
+        phone.error || `sheet=${phone.scenesSheet?.open} empty-state=${phone.scenesSheet?.empty} +=${phone.scenesSheet?.add}`,
+        'an explanation and a +, because a reachable sheet must never open blank');
+      check(vpPhone.name, `[${S5_V}] RC5: the phone geometry constants are exactly what S0 asserted`,
+        phone.geo.header === 56 && phone.geo.rail === 45 && phone.geo.margin === 108,
+        `header=${phone.geo.header} (want 56) · rail=${phone.geo.rail} (want 45) · margin=${phone.geo.margin} (want 108)`,
+        '56 / 45 / 108, unmoved by two new invokers in a wrapping row');
+    } catch (e) {
+      check(vpPhone.name, `[${S5_V}] the phone sheet pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+}
+
 await browser.close();
 
 const pass = results.filter((r) => r.state === 'pass').length;

@@ -12,9 +12,10 @@ import assert from 'node:assert/strict';
 import {isStudio, ladder, openDock, tierOf} from '../app/v2/shell/layout.ts';
 import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
-  defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes,
+  defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes, writeScenes,
 } from '../app/v2/shell/store.ts';
 import {CAMERA_CMDS, HOLD, HOLD_CODES, KEY_MAP} from '../app/v2/shell/keys.ts';
+import {V2, v2t} from '../app/v2/copy.ts';
 
 // ── tiers ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -200,18 +201,128 @@ test('a persisted dock set is validated, deduplicated, capped at two and unknown
 });
 
 test('a scene tab needs a blob, and a half-written camera pose is discarded rather than half-applied', () => {
+  // ⚠️ A SHORT FIXTURE, ON PURPOSE — S5a. This used to carry fifteen tabs, so its index assertions
+  // silently encoded the CAP DIRECTION as well as the validation rules, and the two claims could
+  // not be read apart. The cap has its own test below (and changed direction in S5a: newest last,
+  // oldest evicted, matching `addTab`). This one is only about what makes a tab valid.
   withStorage({'atlas.scenes': JSON.stringify({v: 1, tabs: [
     {blob: 'aaa', title: 'one', cam: [1, 2, 3, 4, 5, 6]},
     {blob: '', title: 'no blob', cam: null},
     {blob: 'bbb', cam: [1, 2, 3]},
-    ...Array.from({length: 12}, (_, i) => ({blob: `x${i}`, title: '', cam: null})),
   ]})}, () => {
     const s = readScenes();
-    assert.equal(s.tabs.length, 8, 'cap 8');
+    assert.equal(s.tabs.length, 2, 'the blobless tab is gone');
     assert.deepEqual(s.tabs[0].cam, [1, 2, 3, 4, 5, 6]);
-    assert.equal(s.tabs[1].blob, 'bbb', 'the blobless tab is gone');
+    assert.equal(s.tabs[1].blob, 'bbb');
     assert.equal(s.tabs[1].cam, null, 'a three-number pose is not a pose');
   });
+});
+
+test('S5a — an OVERSIZED stored list is capped from the same end the writer caps', () => {
+  withStorage({'atlas.scenes': JSON.stringify({v: 1, tabs:
+    Array.from({length: 15}, (_, i) => ({blob: `x${i}`, title: `t${i}`, cam: null})),
+  })}, () => {
+    const s = readScenes();
+    assert.equal(s.tabs.length, 8, 'cap 8');
+    assert.equal(s.tabs[0].blob, 'x7', 'the OLDEST seven went');
+    assert.equal(s.tabs[7].blob, 'x14', 'and the newest survived');
+  });
+});
+
+/**
+ * ══ S5a — THE SNAPSHOT CAP DROPS THE OLDEST, AND SAYS SO ON DISK ═══════════════════════════════
+ *
+ * `readScenes` already caps on the way IN (S0). This is the other end: a ninth snapshot must evict
+ * the FIRST, not refuse, and not silently keep nine in memory while writing eight. The two halves
+ * are asserted separately because a writer that slices and a reader that slices can disagree about
+ * WHICH end, and the symptom of that is a reader's oldest view quietly becoming their newest.
+ */
+/** `withStorage`'s `setItem` is a deliberate no-op — every S0 test only READS. A write-path claim
+ *  needs a stub that really stores, or "the write is capped" would be a statement about a function
+ *  that discarded its argument. */
+function withLiveStorage(fn) {
+  const prev = globalThis.localStorage;
+  const box = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (box.has(k) ? box.get(k) : null),
+    setItem: (k, v) => box.set(k, String(v)),
+    removeItem: (k) => box.delete(k),
+  };
+  try { return fn(); } finally { globalThis.localStorage = prev; }
+}
+
+test('S5a — a ninth snapshot evicts the OLDEST, in memory and on disk alike', () => {
+  const tab = (i) => ({blob: `b${i}`, title: `t${i}`, cam: null});
+  withLiveStorage(() => {
+    const nine = Array.from({length: 9}, (_, i) => tab(i));
+    writeScenes({v: 1, tabs: nine});
+    const back = readScenes();
+    assert.equal(back.tabs.length, 8, 'eight is the cap');
+    assert.equal(back.tabs[0].blob, 'b1', 'the OLDEST went, not the newest');
+    assert.equal(back.tabs[7].blob, 'b8', 'and the newest is still there');
+    // AND THE STORED STRING ITSELF, not only what the reader hands back: a writer that stored nine
+    // and a reader that returned eight would pass every assertion above and grow the key forever.
+    const raw = JSON.parse(globalThis.localStorage.getItem('atlas.scenes'));
+    assert.equal(raw.tabs.length, 8, 'the WRITE is capped, not just the read');
+    assert.equal(raw.tabs[0].blob, 'b1');
+  });
+});
+
+/**
+ * ══ S5a — THE NEW COPY IS REAL COPY IN ALL THREE LANGUAGES ═════════════════════════════════════
+ *
+ * S3 shipped a translated card wrapped around an English sentence and S4 spent a round removing it.
+ * The cheapest guard against the fifth occurrence is the one that runs without a browser: every key
+ * this group added has three columns, both Chinese columns carry CJK, and neither carries an
+ * English WORD.
+ *
+ * ⚠️ THE ALLOW-LIST IS EXPLICIT AND SHORT. "JSON" and "ChatGPT" are proper nouns that stay Latin in
+ * Chinese technical writing — they are named here rather than covered by a loose pattern, so a
+ * sentence that leaked through cannot hide behind them.
+ */
+test('S5a — every json / ask / tabs key is translated, and no English sentence leaked in', () => {
+  const KEYS = Object.keys(V2).filter((k) => /^(json|ask|tabs)\./.test(k));
+  assert.ok(KEYS.length >= 20, `the scan must FIND the rows (found ${KEYS.length})`);
+  const CJK = /[\u3400-\u9fff]/;
+  const PROPER = /JSON|ChatGPT|Realtime/g;
+  const bad = [];
+  for (const k of KEYS) {
+    const row = V2[k];
+    for (const l of ['en', 'zh-Hans', 'zh-Hant']) {
+      if (!row?.[l]) { bad.push(`${k}[${l}] missing`); continue; }
+    }
+    for (const l of ['zh-Hans', 'zh-Hant']) {
+      const v = String(row?.[l] ?? '');
+      if (!CJK.test(v)) bad.push(`${k}[${l}] has no CJK: ${v}`);
+      // Strip the proper nouns AND the `{placeholder}` names, then look for any remaining run of
+      // four Latin letters. The placeholders are identifiers, not prose — `{line}` and `{name}`
+      // are replaced by a number and a translated string before a reader ever sees them, and a
+      // scan that flags them reports a defect in its own pattern (it did, on the first run).
+      const rest = v.replace(PROPER, '').replace(/\{\w+\}/g, '');
+      if (/[A-Za-z]{4,}/.test(rest)) bad.push(`${k}[${l}] carries an English word: ${rest}`);
+    }
+  }
+  assert.deepEqual(bad, [], 'these rows are untranslated or carry English prose');
+});
+
+/** And the placeholders resolve — a `{line}` left unfilled is how X4's error reads as a template. */
+test('S5a — json.invalid and tabs.note fill their placeholders in every language', () => {
+  for (const l of ['en', 'zh-Hans', 'zh-Hant']) {
+    const inv = v2t(l, 'json.invalid', {line: 4});
+    assert.match(inv, /4/, `json.invalid must name the line in ${l}`);
+    assert.ok(!/\{\w+\}/.test(inv), `json.invalid left a placeholder in ${l}: ${inv}`);
+    // The ENGINE TEXT IS NOT IN THIS SENTENCE. It is drawn as a labelled quotation beside it, the
+    // same convention `refusal.detail` uses — so a Chinese reader never reads English prose inside
+    // a Chinese frame. This asserts the sentence stayed clean of it.
+    assert.ok(!/Expected|position|Unexpected/.test(inv), `json.invalid spliced engine English in ${l}: ${inv}`);
+    for (const n of [1, 5]) {
+      const note = v2t(l, 'tabs.note', {n});
+      assert.match(note, new RegExp(String(n)));
+      assert.ok(!/\{\w+\}/.test(note), `tabs.note left a placeholder in ${l}`);
+    }
+  }
+  // The English singular really differs, which is why `tabs.note` is in V2_ONE (RC13).
+  assert.notEqual(v2t('en', 'tabs.note', {n: 1}), v2t('en', 'tabs.note', {n: 2}).replace('2', '1'));
 });
 
 test('the OpenAI key is masked to its last four and never returned whole by the mask', () => {

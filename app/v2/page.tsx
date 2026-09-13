@@ -31,7 +31,7 @@ import {DEFAULT_VISIBLE,SYSTEMS,explanation,type Atlas,type Concept,type SceneSt
 import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
 import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
-import {encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
+import {decodeScene,encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type Reason, type V2State} from './controller';
@@ -40,7 +40,7 @@ import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {conceptAlpha,partAlphas,readEye,sceneAlphaMap,withSessionHidden,type EyeKind} from './visibility.ts';
 import {sceneDeclaresLang} from './scene-lang.ts';
 import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
-import Shell,{StudioField,StudioOverlays} from './shell/shell.tsx';
+import Shell,{PhoneSheets,StudioField,StudioOverlays} from './shell/shell.tsx';
 import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
@@ -777,6 +777,88 @@ export default function V2() {
   if (cmd === 'escape') { if (!stageRef.current) return false; setStage(false); return true; }
   return false;
  }, [dispatch, snapshot]));
+ /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
+  *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
+  *  callbacks would put a hook after a conditional return path in a file this size. */
+ const shellRef = useRef<typeof shell | null>(null);
+ shellRef.current = shell;
+
+ /**
+  * ══ S5a — SCENE TABS: A SNAPSHOT IS THE SCENE **AND** THE POSE ════════════════════════════════
+  *
+  * G6 said "the last N applied scene blobs". codex amended it, and the amendment is the whole
+  * feature: a tab must carry the CONTROLLER's current scene plus the LIVE camera pose, not the raw
+  * blob the page arrived with. Two reasons, both of which make the naive version useless:
+  *
+  *  1. THE ARRIVAL BLOB IS STALE THE MOMENT ANYTHING IS EDITED. `state.blob` is re-encoded by every
+  *     transaction (contract rule R:27); the URL's blob is what somebody sent you. Snapshotting the
+  *     arrival would hand back a view the reader has not been looking at since their first click.
+  *  2. THE POSE IS NOT IN THE SCENE. `scene.camera` carries a view, a focus set, a padding and an
+  *     explode amount — none of which can express where a reader actually orbited to. Six numbers
+  *     can, and `__atlasNav.pose()` has always been able to read them.
+  */
+ const navOf = () => (window as unknown as {__atlasNav?: {
+  pose(): {x: number; y: number; z: number; tx: number; ty: number; tz: number};
+  setPose(p: {x: number; y: number; z: number; tx: number; ty: number; tz: number}): boolean;
+ }}).__atlasNav ?? null;
+
+ /** The two phone sheets' open state. Here rather than in `useShell` because nothing above 768
+  *  renders them and no keyboard command opens them -- unlike the palette, which the dispatcher
+  *  owns because `modalOpen()` has to count it. */
+ const [askOpen, setAskOpen] = useState(false);
+ const [scenesOpen, setScenesOpen] = useState(false);
+
+ const snapshotScene = useCallback(() => {
+  const c = ctlRef.current;
+  if (!c.scene || !c.blob) return;
+  const nav = navOf();
+  const q = nav?.pose();
+  shellRef.current?.addTab({
+   blob: c.blob,
+   title: (c.scene.caption?.title || '').slice(0, 60),
+   // A pose is six numbers or it is nothing. A partial one would restore a camera to somewhere
+   // nobody has ever been, which is worse than not restoring it — `store.ts` rejects a tuple that
+   // is not six finite numbers on the way back in, and this is the matching half on the way out.
+   cam: q ? [q.x, q.y, q.z, q.tx, q.ty, q.tz] : null,
+  });
+ }, []);
+
+ /**
+  * APPLYING A TAB — the transaction first, the pose second, and the order is not a preference.
+  *
+  * `apply-scene` is a CAMERA INTENT: it bumps `render.reset`, which is exactly what makes the
+  * renderer re-frame (`app/scene.tsx`: `if(s.view!==lastView||s.reset!==lastReset){manual=false;…}`)
+  * and then run its focus fit. A pose written BEFORE that lands survives one frame.
+  *
+  * ⚠️ SO THE POSE IS RE-APPLIED ACROSS FRAMES UNTIL IT STICKS, rather than once after a guessed
+  * delay. Each application sets `manual=true`, and the studio branch absorbs the focus key without
+  * fitting while `manual` holds — so the retry does not fight the fit, it outlives it. The loop
+  * stops the moment a read-back agrees to within a millimetre, and gives up after ~1.2 s rather
+  * than spinning: a pose that cannot be restored is a finding, not something to retry forever.
+  */
+ const applyTab = useCallback((tab: {blob: string; cam: number[] | null}) => {
+  const sc = decodeScene(tab.blob);
+  // A stored blob can be from an older build, hand-edited, or truncated by a full disk. `null` here
+  // is the honest answer and the tab simply does nothing rather than throwing inside a click.
+  if (!sc) return;
+  if (!dispatch({type: 'apply-scene', scene: sc, blob: tab.blob})) return;
+  const cam = tab.cam;
+  if (!cam || cam.length !== 6) return;
+  const want = {x: cam[0], y: cam[1], z: cam[2], tx: cam[3], ty: cam[4], tz: cam[5]};
+  const until = performance.now() + 1200;
+  const tick = () => {
+   const nav = navOf();
+   if (nav?.setPose(want)) {
+    const got = nav.pose();
+    const near = Math.abs(got.x - want.x) < 1e-3 && Math.abs(got.y - want.y) < 1e-3
+      && Math.abs(got.z - want.z) < 1e-3 && Math.abs(got.tx - want.tx) < 1e-3
+      && Math.abs(got.ty - want.ty) < 1e-3 && Math.abs(got.tz - want.tz) < 1e-3;
+    if (near && performance.now() > until - 1000) return;
+   }
+   if (performance.now() < until) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+ }, [dispatch]);
 
  /**
   * ── S1 / RC3: A STUDIO `?select=` LINK OPENS FRAMED ON ITS STRUCTURE ──────────────────────────
@@ -936,6 +1018,7 @@ export default function V2() {
    dicts={dicts} visibleIntent={visibleIntent} hidden={hidden} onHide={hide} effectiveAlpha={effectiveAlpha} eyeState={eyeState}
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
    py={shell.py} pinyin={shell.pinyin} onPinyin={shell.setPinyin}
+   tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
       In the studio it is Ctrl+K's centred modal; below 768 it is `spec.md`'s A4 bottom sheet,
@@ -954,6 +1037,13 @@ export default function V2() {
   {/* HOSTED AT EVERY WIDTH. `?` is a keyboard explanation, not a studio control, so the map has to
       open on a narrow window too — and that is what gives `Overlay`'s SHEET presentation a
       reachable invoker at S0 rather than an untested branch waiting for S4. */}
+  {/* S5a: A8 + A9. Hosted at every width; the component renders nothing above 768. */}
+  <PhoneSheets
+   tr={tr} lang={lang} sheet={shell.sheet}
+   scene={scene} sceneBlob={sceneBlob} picks={picks} basket={basket}
+   askOpen={askOpen} onAsk={setAskOpen} scenesOpen={scenesOpen} onScenes={setScenesOpen}
+   tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
+  />
   <StudioOverlays
    t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}
    keysOpen={shell.keysOpen} onKeys={shell.setKeysOpen}
@@ -1111,6 +1201,15 @@ export default function V2() {
          this row select their button BY TEXT, not by index, so a fourth one cannot displace them. */}
      <button type="button" aria-haspopup="dialog" aria-expanded={shell.settingsOpen}
       onClick={() => shell.setSettingsOpen(true)}>{tr('settings.open')}</button>
+     {/* -- S5a: THE PHONE'S A8 AND A9 INVOKERS -------------------------------------------------
+         Same reasoning as S4's Settings button one line up: the sheets are hosted at every width
+         and `Overlay` already presents as a bottom sheet below 768, so what A8/A9 needed was a way
+         IN. Both are selected BY TEXT in every oracle, and `.v2-actions` wraps inside the already
+         scrolling `.v2-margin-scroll`, so the asserted geometry constants cannot move (RC5). */}
+     <button type="button" aria-haspopup="dialog" aria-expanded={askOpen}
+      onClick={() => setAskOpen(true)}>{tr('panel.ask')}</button>
+     <button type="button" aria-haspopup="dialog" aria-expanded={scenesOpen}
+      onClick={() => setScenesOpen(true)}>{tr('tabs.short')}</button>
     </div>
 
     {/* ⚠️ S3: THE VIEWS ROW AND THE DESCRIPTION STAND DOWN WHILE THE LAYERS PANEL IS OPEN, and that

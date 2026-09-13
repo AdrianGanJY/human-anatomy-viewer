@@ -62,7 +62,7 @@ declare const __ATLAS_DEPS__: string | undefined;
 const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
 import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
-import {DOCK_KEYS, type DockKey} from './store.ts';
+import {DOCK_KEYS, type DockKey, type SceneTab} from './store.ts';
 
 const ICON = {stroke: 'currentColor', fill: 'none', strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const};
 const Ico = ({d, size = 15}: {d: string; size?: number}) =>
@@ -152,6 +152,14 @@ export interface ShellProps {
  treeQuery: string; onTreeQuery(q: string): void;
  /** Sheet presentation below 768 — the phone path for the `?` map. */
  sheet: boolean;
+ /** ── S5a ────────────────────────────────────────────────────────────────────────────────────
+  *  The snapshot list (from `useShell`, shared with the phone's A9 sheet) and the two operations
+  *  the PAGE owns, because both need the controller: applying a tab is a transaction plus a camera
+  *  restore, and snapshotting reads the live pose off the renderer. */
+ tabs: SceneTab[];
+ tabsFull: boolean;
+ onSnapshot(): void;
+ onApplyTab(t: SceneTab): void;
 }
 
 const MB = (n: number) => (n / 1048576).toFixed(1);
@@ -636,31 +644,115 @@ export default function Shell(p: ShellProps) {
    </>}
  </div>;
 
+ /**
+  * ══ THE SCENE JSON DOCK — LIVE EDIT (S5a; spec.md D5 and X4) ══════════════════════════════════
+  *
+  * The canonical scene, pretty-printed, and an Edit mode that applies THROUGH THE CONTROLLER.
+  *
+  * ⚠️ NOTHING HERE VALIDATES A SCENE, and that is the design. `commitScene` already normalises,
+  * runs `validateScene` and checks the encoded length, and it returns the caller's state untouched
+  * on any failure — one atomic refusal, in one place, shared with every other edit. A second
+  * validator here would be a second opinion about the same question, and the day the two disagreed
+  * the dock would accept something the link cannot carry.
+  *
+  * So this component owns exactly two things the controller cannot: whether the text the reader
+  * typed is JSON AT ALL (the controller takes a value, not a string), and WHERE the typo is.
+  *
+  * ⚠️ THE DRAFT SURVIVES A REFUSAL — spec.md X4: "invalid draft retained, error adjacent, current
+  * field unchanged". Clearing the box on a bad parse destroys the reader's work at the exact moment
+  * they need to look at it.
+  */
+ const [draft, setDraft] = useState<string | null>(null);
+ const [jsonErr, setJsonErr] = useState<{text: string; detail?: string} | null>(null);
+ const [jsonFlash, setJsonFlash] = useState<'' | 'applied' | 'copied'>('');
+ const sceneText = p.scene ? JSON.stringify(p.scene, null, 1) : '';
+ /** `JSON.parse`'s message names a character POSITION; a reader needs a line. Derived from the
+  *  draft rather than from the message, because the message's wording is engine-specific and its
+  *  position is not. */
+ const lineOf = (text: string, e: unknown) => {
+  const m = /position (\d+)/.exec(String((e as Error)?.message ?? ''));
+  if (!m) return 1;
+  return text.slice(0, Number(m[1])).split('\n').length;
+ };
+ const applyDraft = () => {
+  if (draft === null) return;
+  let parsed: unknown;
+  try { parsed = JSON.parse(draft); } catch (e) {
+   // NOT A REFUSAL FROM THE CONTROLLER — the controller never saw this. Said in the dock, beside
+   // the box, so the two kinds of "no" do not get confused with one another.
+   setJsonErr({
+    text: tr('json.invalid', {line: lineOf(draft, e)}),
+    detail: String((e as Error)?.message ?? '').slice(0, 120),
+   });
+   return;
+  }
+  setJsonErr(null);
+  // The controller's own atomic refusal takes it from here: a `false` leaves picks, blob, camera
+  // and URL exactly as they were, and `p.refused` draws the reason in the Selection dock's card.
+  if (!p.dispatch({type: 'apply-scene', scene: parsed as Scene})) return;
+  setDraft(null);
+  setJsonFlash('applied');
+ };
+ const copyText = (text: string, flash: 'applied' | 'copied') => {
+  // `navigator.clipboard` is absent on an insecure origin and rejects without a gesture in some
+  // browsers. Either way the failure is silent to the reader unless it is said, so it is said.
+  navigator.clipboard?.writeText(text).then(() => setJsonFlash(flash)).catch(() => setJsonErr({text: tr('json.copyFailed')}));
+ };
  const jsonPane = <>
   <div className="v2-pane-body">
-   <p className="v2-note-sm">{tr('json.read')}</p>
+   <p className="v2-note-sm">{tr(draft === null ? 'json.read' : 'json.editing')}</p>
    {/* THE CANONICAL SCENE, from the controller — not the arrival blob, and not React state
        re-encoded. `null` when the page is not in scene mode, and it SAYS so rather than printing
        an empty object that reads as a scene with nothing in it. */}
-   {p.scene
-    ? <pre className="v2-json">{JSON.stringify(p.scene, null, 1)}</pre>
-    : <p className="v2-empty-state">{tr('json.none')}</p>}
+   {!p.scene
+    ? <p className="v2-empty-state">{tr('json.none')}</p>
+    : draft === null
+     ? <pre className="v2-json">{sceneText}</pre>
+     : <textarea className="v2-jsonbox" value={draft} spellCheck={false} aria-label={dockTitle.json}
+        aria-invalid={!!jsonErr} onChange={(e) => { setDraft(e.target.value); setJsonErr(null); }}/>}
+   {/* ADJACENT, not in a toast: X4 puts the error next to the draft it is about. */}
+   {jsonErr && <p className="v2-json-err" role="alert">
+    {jsonErr.text}
+    {jsonErr.detail && <span className="v2-refusal-detail">
+     <b>{tr('refusal.detail')}:</b> <span lang="en">{jsonErr.detail}</span>
+    </span>}
+   </p>}
   </div>
   <div className="v2-pane-foot">
-   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S5">{tr('json.copy')}</button>
-   <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S5">{tr('json.edit')}</button>
+   <button type="button" className="v2-tbtn" disabled={!p.scene}
+    onClick={() => copyText(draft ?? sceneText, 'copied')}>{tr('json.copy')}</button>
+   {draft === null
+    ? <button type="button" className="v2-tbtn" disabled={!p.scene}
+       onClick={() => { setDraft(sceneText); setJsonErr(null); setJsonFlash(''); }}>{tr('json.edit')}</button>
+    : <>
+      <button type="button" className="v2-tbtn is-on" onClick={applyDraft}>{tr('json.apply')}</button>
+      <button type="button" className="v2-tbtn"
+       onClick={() => { setDraft(null); setJsonErr(null); }}>{tr('json.revert')}</button>
+     </>}
    <span className="v2-grow"/>
-   <span className="v2-static">{tr('json.limit')}</span>
+   {/* THE BUDGET AS A LIVE NUMBER, not as a sentence about a maximum. The encoded length is the
+       bound the refusal is written against, so a reader editing toward it can see it coming. */}
+   <span className="v2-static">{jsonFlash
+    ? tr(jsonFlash === 'applied' ? 'json.applied' : 'json.copied')
+    : p.sceneBlob ? tr('json.chars', {n: p.sceneBlob.length}) : tr('json.limit')}</span>
   </div>
  </>;
 
  // THE ASK DOCK. The deep link is permitted at S0 by the kickoff, so this is LIVE — and it opens
  // ChatGPT in a new tab with the prompt and the scene link, generating no answer here. The in-app
  // chat (and its CSP, and its key handling) is S5b and is deliberately absent, not stubbed.
- const askHref = (q: string) => {
-  const link = `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
-  return `https://chatgpt.com/?q=${encodeURIComponent(`${q}\n\n${link}`)}`;
- };
+ /**
+  * THE PROMPT AND THE LINK ARE ONE STRING, built once (S5a).
+  *
+  * `askText` is what goes to ChatGPT and what "Copy prompt" puts on the clipboard — the same bytes
+  * through both routes, so a reader who pastes by hand gets what the button would have sent. The
+  * link is the CONTROLLER's blob, so it carries every edit made in this session rather than the
+  * blob the page arrived with.
+  */
+ const askLink = () =>
+  `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
+ const askText = (q: string) => `${q}\n\n${askLink()}`;
+ const askHref = (q: string) => `https://chatgpt.com/?q=${encodeURIComponent(askText(q))}`;
  const [ask, setAsk] = useState('');
  const askPane = <>
   <div className="v2-pane-body">
@@ -675,6 +767,12 @@ export default function Shell(p: ShellProps) {
    <a className={`v2-tbtn ${ask.trim() ? 'is-on' : ''}`} href={ask.trim() ? askHref(ask.trim()) : undefined}
     target="_blank" rel="noreferrer noopener" aria-disabled={!ask.trim()}
     style={ask.trim() ? undefined : {opacity: .45, pointerEvents: 'none'}}>{tr('ask.open')}</a>
+   {/* S5a. The hand-off has to work for someone whose assistant is not ChatGPT, and for someone
+       whose browser blocked the new tab. Same bytes as the link carries. */}
+   <button type="button" className="v2-tbtn" disabled={!ask.trim()}
+    onClick={() => copyText(askText(ask.trim()), 'copied')}>{tr('ask.copy')}</button>
+   <span className="v2-grow"/>
+   {jsonFlash === 'copied' && <span className="v2-static">{tr('ask.copied')}</span>}
   </div>
  </>;
 
@@ -704,16 +802,120 @@ export default function Shell(p: ShellProps) {
       pointers … On coarse screens use a 44 px Scenes trigger in Panels/More opening a sheet, never
       32 px touch tabs." A 28 px focusable tab on a 1366×1024 tablet is a target a finger cannot
       hit, and the coarse sweep said so. The coarse trigger arrives with S5a's sheet. */}
-  {!p.coarse && <div className="v2-tabs" role="group" aria-label={tr('tabs.short')}>
+  {/* ⚠️ THE STRIP HIDES ITSELF WHEN THERE IS ONLY THE CURRENT SCENE — spec.md §Geometry, and a
+      DELIBERATE visual change from S0, which reserved the region with one tab and an inert `+`.
+      Recorded in the worklog so it does not read as a regression: a one-tab tab strip is chrome
+      that teaches nothing, and the `+` moves into the tools row where a first snapshot is made.
+      With snapshots on disk the strip returns, current scene first. */}
+  {!p.coarse && p.tabs.length > 0 && <div className="v2-tabs" role="group" aria-label={tr('tabs.short')}>
    <span className="v2-tab is-on">{p.caption.title || tr('tabs.current')}</span>
-   <span className="v2-tab v2-inert" title="S5" tabIndex={0} aria-disabled="true">+ {tr('tabs.snapshot')}</span>
+   {p.tabs.map((t, i) => <button type="button" key={`${t.blob.slice(0, 12)}-${i}`} className="v2-tab"
+    title={`${t.title || tr('tabs.untitled')}${t.cam ? ` — ${tr('tabs.pose')}` : ''}`}
+    aria-label={tr('tabs.restore', {name: t.title || tr('tabs.untitled')})}
+    onClick={() => p.onApplyTab(t)}>{t.title || tr('tabs.untitled')}</button>)}
+   <button type="button" className="v2-tab v2-tab-add" disabled={!p.scene}
+    title={p.tabsFull ? tr('tabs.full') : tr('tabs.snapshot')}
+    aria-label={tr('tabs.snapshot')} onClick={p.onSnapshot}>+</button>
   </div>}
+  {/* The `+` at its OTHER home: with no snapshots yet the strip is gone, so the one control that
+      creates the first one lives in the status row on its own. */}
+  {!p.coarse && p.tabs.length === 0 && <button type="button" className="v2-status-btn" disabled={!p.scene}
+   title={p.scene ? tr('tabs.snapshot') : tr('tabs.noScene')}
+   onClick={p.onSnapshot}>+ {tr('tabs.snapshot')}</button>}
  </footer>;
 
  // THE GRID ITEMS ARE THE FRAGMENT'S CHILDREN. A React fragment emits no DOM node, so `bar`,
  // `tools`, `side`, `dock` and `status` are direct children of `.v2` and the `grid-area` on each
  // one resolves against it.
  return <>{bar}{tools}{side}{dock}{status}</>;
+}
+
+/**
+ * ══ THE PHONE'S A8 (Ask) AND A9 (Scenes) SHEETS — S5a ══════════════════════════════════════════
+ *
+ * `spec.md` A8/A9 draw both as 724 px bottom sheets over the 390×844 artboard, and the mock-forced
+ * amendment in the kickoff makes them this group's work rather than S6's: "build them in the same
+ * group as their desktop counterpart".
+ *
+ * ⚠️ THE SAME `Overlay`, NOT A SECOND SHEET. That primitive was written at S0 precisely so that S5
+ * would not invent a fifth handle height, a third focus trap and a first scroll leak — the 44 px
+ * handle, the safe-area padding, the visual-viewport keyboard sizing, the trap and the focus
+ * restore are its defaults. Nothing about the sheet is re-decided here.
+ *
+ * ⚠️ RC5 IS SATISFIED BY CONSTRUCTION, not by measurement afterwards. A sheet is a scrim ABOVE the
+ * margin; the header (56), the rail (45) and both detents (108 / min(48dvh,420)) are untouched
+ * because nothing here renders inside `.v2-margin`. The two invokers go into `.v2-actions`, which
+ * is `flex-wrap:wrap` inside the already-scrolling `.v2-margin-scroll`, and every oracle that
+ * reaches into that row selects its button BY TEXT — so two more cannot displace them.
+ *
+ * It is hosted at EVERY width and rendered only when `sheet` is true. One more instance of the
+ * lesson `StudioOverlays` carries: a surface that only exists at one tier is a surface whose only
+ * test is the one somebody remembers to write.
+ */
+export function PhoneSheets(p: {
+ tr: ShellProps['tr']; lang: Lang; sheet: boolean;
+ scene: Scene | null; sceneBlob: string; picks: string[]; basket: ShellProps['basket'];
+ askOpen: boolean; onAsk(v: boolean): void;
+ scenesOpen: boolean; onScenes(v: boolean): void;
+ tabs: SceneTab[]; tabsFull: boolean; onSnapshot(): void; onApplyTab(t: SceneTab): void;
+}) {
+ const {tr} = p;
+ const [ask, setAsk] = useState('');
+ const [copied, setCopied] = useState(false);
+ const link = () =>
+  `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
+ const text = (q: string) => `${q}\n\n${link()}`;
+
+ // A8 — the conversation hand-off. `spec.md`: "filled prompt, explicit external handoff,
+ // copy-prompt; no answer bubbles." The absence of answer bubbles is the S5a/S5b line, drawn here.
+ const askSheet = <Overlay open={p.askOpen} onClose={() => p.onAsk(false)} sheet
+  title={tr('panel.ask')} labelClose={tr('settings.close')}>
+  <p className="v2-note-sm"><b>{tr('ask.lead')}</b></p>
+  <textarea className="v2-askbox" value={ask} onChange={(e) => { setAsk(e.target.value); setCopied(false); }}
+   placeholder={tr('ask.placeholder')} aria-label={tr('panel.ask')}/>
+  <p className="v2-note-sm" style={{marginTop: 10}}>{tr('ask.context', {n: p.basket.length})}</p>
+  <p className="v2-note-sm">{tr('ask.note')}</p>
+  <div className="v2-sheet-foot">
+   <a className={`v2-tbtn ${ask.trim() ? 'is-on' : ''}`}
+    href={ask.trim() ? `https://chatgpt.com/?q=${encodeURIComponent(text(ask.trim()))}` : undefined}
+    target="_blank" rel="noreferrer noopener" aria-disabled={!ask.trim()}
+    style={ask.trim() ? undefined : {opacity: .45, pointerEvents: 'none'}}>{tr('ask.open')}</a>
+   <button type="button" className="v2-tbtn" disabled={!ask.trim()}
+    onClick={() => navigator.clipboard?.writeText(text(ask.trim())).then(() => setCopied(true)).catch(() => {})}>
+    {tr('ask.copy')}</button>
+   {copied && <span className="v2-static">{tr('ask.copied')}</span>}
+  </div>
+ </Overlay>;
+
+ // A9 — the local snapshots. `spec.md`: "three local snapshots, active scene, + cap 8, no
+ // close/delete feature." The cap is said BEFORE the button is pressed, not after it evicts.
+ const scenesSheet = <Overlay open={p.scenesOpen} onClose={() => p.onScenes(false)} sheet
+  title={tr('tabs.short')} labelClose={tr('settings.close')}>
+  {p.tabs.length === 0
+   ? <p className="v2-empty-state">{tr('tabs.empty')}</p>
+   : <>
+    <p className="v2-note-sm">{tr('tabs.note', {n: p.tabs.length})}</p>
+    <div className="v2-scenelist">
+     {p.tabs.map((t, i) => <button type="button" key={`${t.blob.slice(0, 12)}-${i}`} className="v2-scenerow"
+      onClick={() => { p.onApplyTab(t); p.onScenes(false); }}>
+      <b>{t.title || tr('tabs.untitled')}</b>
+      {/* WHETHER THE POSE CAME WITH IT, said per row. A snapshot taken before the renderer was
+          ready has no pose, and a row that promised one and did not restore it would read as a
+          broken control rather than as an honest one. */}
+      {t.cam && <span className="v2-sub">{tr('tabs.pose')}</span>}
+     </button>)}
+    </div>
+   </>}
+  <div className="v2-sheet-foot">
+   <button type="button" className="v2-tbtn is-on" disabled={!p.scene}
+    onClick={p.onSnapshot}>+ {tr('tabs.snapshot')}</button>
+   {p.tabsFull && <span className="v2-static">{tr('tabs.full')}</span>}
+   {!p.scene && <span className="v2-static">{tr('tabs.noScene')}</span>}
+  </div>
+ </Overlay>;
+
+ if (!p.sheet) return null;
+ return <>{askSheet}{scenesSheet}</>;
 }
 
 /**

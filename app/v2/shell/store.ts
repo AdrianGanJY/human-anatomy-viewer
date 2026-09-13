@@ -121,6 +121,18 @@ export interface ScenePrefs {v: 1; tabs: SceneTab[]}
 export const SCENES_KEY = 'atlas.scenes', SCENES_CAP = 8;
 const isCam = (v: unknown): v is SceneTab['cam'] =>
  Array.isArray(v) && v.length === 6 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
+/**
+ * ⚠️ THE CAP EVICTS THE **OLDEST**, AND BOTH ENDS SAY SO — S5a, found by its own test.
+ *
+ * S0 declared this shape with `.slice(0, SCENES_CAP)` on both the read and the write: keep the
+ * FIRST eight. S5a's `addTab` appends and keeps the LAST eight, because the strip reads left to
+ * right and a new snapshot has to appear where the eye already is. Nothing had ever written nine,
+ * so the disagreement was latent — and its symptom would have been the worst kind: press `+` on a
+ * full list and the snapshot you JUST took is the one silently discarded, while the eight stale
+ * ones stay. A test written to check "the cap bites" found it on its first run.
+ *
+ * One rule now, in one direction, at both ends: newest last, oldest evicted.
+ */
 export function readScenes(): ScenePrefs {
  const v = raw(SCENES_KEY);
  if (!isObj(v) || v.v !== 1 || !Array.isArray(v.tabs)) return {v: 1, tabs: []};
@@ -128,10 +140,10 @@ export function readScenes(): ScenePrefs {
   .filter(isObj)
   .filter((t) => typeof t.blob === 'string' && t.blob.length > 0)
   .map((t) => ({blob: t.blob as string, title: typeof t.title === 'string' ? t.title : '', cam: isCam(t.cam) ? t.cam : null}))
-  .slice(0, SCENES_CAP);
+  .slice(-SCENES_CAP);
  return {v: 1, tabs};
 }
-export const writeScenes = (p: ScenePrefs): void => put(SCENES_KEY, {v: 1, tabs: p.tabs.slice(0, SCENES_CAP)});
+export const writeScenes = (p: ScenePrefs): void => put(SCENES_KEY, {v: 1, tabs: p.tabs.slice(-SCENES_CAP)});
 
 // ── atlas.openai — S5b ───────────────────────────────────────────────────────────────────────────
 /**

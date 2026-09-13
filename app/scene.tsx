@@ -295,6 +295,37 @@ export default function AnatomyScene({atlas,state,onSelect,onProgress,onError,pr
    /** Read-only, for the oracle: the pose, and whether a human set it. */
    pose:()=>({x:camera.position.x,y:camera.position.y,z:camera.position.z,
     tx:controls.target.x,ty:controls.target.y,tz:controls.target.z,manual}),
+   /**
+    * ── L31 v2.1b+c, S5a: RESTORE A SAVED POSE — the write twin of `pose()` ──────────────────────
+    *
+    * A scene tab is "the controller's full scene PLUS the live camera pose" (G6 as codex amended
+    * it), and a manual pose is not expressible in the scene: `scene.camera` carries a view, a focus
+    * set, a padding and an explode amount, none of which can say where a reader actually orbited
+    * to. Six numbers can. `pose()` could already read them; nothing could write them back.
+    *
+    * ⚠️ `manual=true` IS HALF THE FUNCTION, not a side effect. With it false the frame loop's
+    * focus-fit re-frames on the next key change and the restored pose lasts one frame. With it true
+    * the studio branch ABSORBS the focus key without fitting (the `wantFit&&studioRef.current&&
+    * manual&&focusActive` arm above), which is the same rule that already protects a pose a human
+    * orbited to by hand. A restored pose IS a pose a human set; it is simply set from a tab.
+    *
+    * ⚠️ THIS IS A RENDER-PATH FILE AND THIS FUNCTION IS PLATE-INVISIBLE. `workers/snap` renders
+    * from the scene and never calls `__atlasNav`; nothing here runs during a plate. It is additive
+    * — no existing line changed — and the claim is checked rather than asserted: `deploy.ps1`'s
+    * guard forces a SITE_BUILD bump and a Worker deploy, and `plate-goldens.mjs compare` against
+    * v2.1a's `goldens-after.json` is what proves no plate moved (opus-plan-review-2.md RC2).
+    *
+    * Returns whether it applied, so a caller retrying across the post-apply refit can stop.
+    */
+   setPose:(p:{x:number;y:number;z:number;tx:number;ty:number;tz:number})=>{
+    // EVERY COORDINATE, VALIDATED. These six come from `localStorage`, where a half-written or
+    // hand-edited value is a real case; `camera.position.set(NaN,…)` produces a black frame with
+    // no error anywhere, which is the worst possible way to fail.
+    const v=[p?.x,p?.y,p?.z,p?.tx,p?.ty,p?.tz];
+    if(!v.every(n=>typeof n==='number'&&Number.isFinite(n)))return false;
+    camera.position.set(p.x,p.y,p.z);controls.target.set(p.tx,p.ty,p.tz);
+    controls.update();manual=true;dirty=true;return true;
+   },
   };
   // L30 P4a.1: `window.__atlasCapture({scale})` — one supersampled frame, area-averaged
   // down, painted over the live canvas so the renderer's screenshot (which is what carries

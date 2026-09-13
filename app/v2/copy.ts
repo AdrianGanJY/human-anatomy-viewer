@@ -350,6 +350,43 @@ export const V2: Record<string, Row> = {
  'ask.open':       {en: 'Ask in ChatGPT ↗', 'zh-Hans': '在 ChatGPT 中提问 ↗', 'zh-Hant': '在 ChatGPT 中提問 ↗'},
  'ask.context':    {en: 'Included: {n} structures and this scene link', 'zh-Hans': '包含：{n} 个结构和当前场景链接', 'zh-Hant': '包含：{n} 個結構與目前場景連結'},
 
+ // ══ L31 v2.1b+c, S5a — THE THREE LIVE REGIONS ═════════════════════════════════════════════════
+ // `spec.md` D5/X4 (Scene JSON), D6/A8 (Ask), D8/A9 (Scenes). Authored in all three languages for
+ // the same reason S0's were: a region whose words arrive later is a region nobody can react to.
+ 'json.apply':     {en: 'Apply edited', 'zh-Hans': '应用编辑', 'zh-Hant': '套用編輯'},
+ 'json.revert':    {en: 'Revert', 'zh-Hans': '还原', 'zh-Hant': '還原'},
+ 'json.editing':   {en: 'Editing a draft · the view is unchanged until Apply succeeds', 'zh-Hans': '正在编辑草稿 · 应用成功前视图不变', 'zh-Hant': '正在編輯草稿 · 套用成功前視圖不變'},
+ // X4: "invalid draft retained, error adjacent, current field unchanged". The LINE is the whole
+ // point -- `JSON.parse`'s own message names a position, and a reader who cannot find the typo
+ // cannot act on the refusal.
+ // ⚠️ THE ENGINE'S MESSAGE IS NOT SPLICED INTO THIS SENTENCE. `JSON.parse`'s text ("Expected ','
+ // or ']' after array element") is developer English that no translation table will ever carry, and
+ // interpolating it here would rebuild the exact defect S4 spent a round removing: a Latin sentence
+ // inside a translated frame. The LINE is the actionable half and it is translated; the engine text
+ // is drawn beside it as a labelled English quotation, through the same `refusal.detail` convention
+ // `app/v2/refusal.tsx` uses for `validateScene`'s sentences.
+ 'json.invalid':   {en: 'Not valid JSON at line {line}', 'zh-Hans': '第 {line} 行不是有效的 JSON', 'zh-Hant': '第 {line} 行不是有效的 JSON'},
+ 'json.applied':   {en: 'Applied', 'zh-Hans': '已应用', 'zh-Hant': '已套用'},
+ // The clipboard is absent on an insecure origin and can reject without a user gesture. Silent
+ // either way unless it is said.
+ 'json.copyFailed': {en: 'The clipboard is not available here — select the text and copy it', 'zh-Hans': '此处无法使用剪贴板 — 请手动选择文本复制', 'zh-Hant': '此處無法使用剪貼簿 — 請手動選擇文字複製'},
+ 'json.copied':    {en: 'Copied', 'zh-Hans': '已复制', 'zh-Hant': '已複製'},
+ 'json.chars':     {en: '{n} of 1,400 encoded characters', 'zh-Hans': '编码后 {n} / 1,400 个字符', 'zh-Hant': '編碼後 {n} / 1,400 個字元'},
+
+ 'ask.copy':       {en: 'Copy prompt', 'zh-Hans': '复制问题', 'zh-Hant': '複製問題'},
+ 'ask.copied':     {en: 'Prompt copied', 'zh-Hans': '问题已复制', 'zh-Hant': '問題已複製'},
+
+ // The strip HIDES itself when there is only one scene, so `tabs.empty` is what the phone's A9
+ // sheet says instead -- the sheet is reachable deliberately and must not open on nothing.
+ 'tabs.empty':     {en: 'No snapshots yet. Save this view to come back to it.', 'zh-Hans': '还没有快照。保存当前视图，稍后可以回到这里。', 'zh-Hant': '還沒有快照。儲存目前視圖，稍後可以回到這裡。'},
+ 'tabs.full':      {en: 'Eight snapshots is the maximum — the oldest is dropped', 'zh-Hans': '快照上限为 8 个 — 将移除最早的一个', 'zh-Hant': '快照上限為 8 個 — 將移除最早的一個'},
+ 'tabs.saved':     {en: 'Saved', 'zh-Hans': '已保存', 'zh-Hant': '已儲存'},
+ 'tabs.restore':   {en: 'Open {name}', 'zh-Hans': '打开{name}', 'zh-Hant': '開啟{name}'},
+ 'tabs.untitled':  {en: 'Untitled scene', 'zh-Hans': '未命名场景', 'zh-Hant': '未命名場景'},
+ 'tabs.note':      {en: '{n} snapshots on this device', 'zh-Hans': '本设备上有 {n} 个快照', 'zh-Hant': '本裝置上有 {n} 個快照'},
+ 'tabs.pose':      {en: 'with the camera where you left it', 'zh-Hans': '并恢复当时的视角', 'zh-Hant': '並恢復當時的視角'},
+ 'tabs.noScene':   {en: 'There is no scene to snapshot yet.', 'zh-Hans': '目前没有可快照的场景。', 'zh-Hant': '目前沒有可快照的場景。'},
+
  'tabs.short':     {en: 'Scenes', 'zh-Hans': '场景', 'zh-Hant': '場景'},
  'tabs.snapshot':  {en: 'Snapshot as a new tab', 'zh-Hans': '快照为新标签页', 'zh-Hant': '快照為新分頁'},
  'tabs.current':   {en: 'Current scene', 'zh-Hans': '当前场景', 'zh-Hant': '目前場景'},
@@ -511,6 +548,11 @@ export const V2_ONE: Record<string, string> = {
  // S3b round 7: the two new view-override rows interpolate {n} systems and their English singular
  // differs, so both belong here (RC13).
  'tree.viewOverridesShow': 'This view is showing {n} system its own way — your own set is unchanged',
+ // S5a: `tabs.note` interpolates {n} snapshots and its English singular differs, so it belongs here
+ // (RC13). `json.chars` also interpolates {n} — and is deliberately NOT here, because "1 of 1,400
+ // encoded characters" is already correct English. A singular row identical to its plural is not
+ // caution, it is a second copy of the same string waiting to drift.
+ 'tabs.note': '{n} snapshot on this device',
  'tree.viewOverridesHide': 'This view is hiding {n} system your set has on — your own set is unchanged',
  'status.ready': 'Scene ready · {mb} MB · {n} chunk',
  'status.all': 'Whole body loaded · {n} chunk',

@@ -10,7 +10,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {HOLD, HOLD_CODES, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
-import {effectiveDocks, readDocks, readPinyin, writeDocks, writePinyin, type DockKey} from './store.ts';
+import {effectiveDocks, readDocks, readPinyin, readScenes, writeDocks, writePinyin, writeScenes, SCENES_CAP, type DockKey, type SceneTab} from './store.ts';
 import {loadPinyin, pinyinOf} from '../pinyin.ts';
 
 /** A live viewport reading. `matchMedia` rather than a resize listener: the browser coalesces the
@@ -81,6 +81,23 @@ export interface ShellState {
   * indistinguishable to a row, which is correct — a row draws nothing in both cases.
   */
  py(id: string, shown: string): string | null;
+ /** ── S5a ─────────────────────────────────────────────────────────────────────────────────── */
+ /**
+  * THE SNAPSHOT TABS, from `localStorage['atlas.scenes']` (the shape S0 declared, RC12).
+  *
+  * They live HERE, in the hook the page calls at every width, for the same reason the pinyin
+  * setting does: the studio's bottom strip and the phone's A9 sheet are two presentations of ONE
+  * list. Two owners would be two lists with one key, and whichever rendered last would win.
+  *
+  * ⚠️ NO APPLY HERE. Applying a tab is a controller transaction plus a camera restore, and the
+  * controller lives in `page.tsx`. This hook owns the LIST; the page owns what a click does.
+  */
+ tabs: SceneTab[];
+ /** Append, newest last, capped at 8 by dropping the OLDEST — and persisted in the same call, so
+  *  there is no window where the rendered list and the stored list disagree. */
+ addTab(t: SceneTab): void;
+ /** True when a snapshot would evict one, so the control can say so BEFORE it is clicked. */
+ tabsFull: boolean;
 }
 
 export type NavMode = 'orbit' | 'pan';
@@ -179,6 +196,26 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   (id: string, shown: string) => (pinyin ? pinyinOf(id, shown) : null),
   [pinyin, pyRev],
  );
+
+ /**
+  * ── S5a — THE SNAPSHOT LIST ───────────────────────────────────────────────────────────────────
+  *
+  * Read ONCE, lazily, and through `readScenes`, which is corruption-tolerant by construction: a
+  * malformed value, a wrong `v`, a non-array `tabs`, a tab with no blob or a half-written six-tuple
+  * camera all degrade to "no tabs" or "this tab has no pose" rather than to a white page. The
+  * oracle for that is the RC12 corrupt-value row, extended to this key.
+  */
+ const [tabs, setTabs] = useState<SceneTab[]>(() => readScenes().tabs);
+ const addTab = useCallback((t: SceneTab) => {
+  setTabs((cur) => {
+   // NEWEST LAST, OLDEST DROPPED. The strip reads left to right, so appending is what makes the
+   // new snapshot appear where the eye already is — and the cap has to bite somewhere, so it bites
+   // the end nobody has looked at in eight snapshots.
+   const next = [...cur, t].slice(-SCENES_CAP);
+   writeScenes({v: 1, tabs: next});
+   return next;
+  });
+ }, []);
 
  const [keysOpen, setKeysOpen] = useState(false);
  const [settingsOpen, setSettingsOpen] = useState(false);
@@ -349,5 +386,6 @@ export function useShell(onCommand?: (cmd: KeyCommand) => boolean | void): Shell
   press: useCallback((code: string) => dispRef.current?.press(code), []),
   release: useCallback((code: string) => dispRef.current?.release(code), []),
   pinyin, setPinyin, py,
+  tabs, addTab, tabsFull: tabs.length >= SCENES_CAP,
  };
 }

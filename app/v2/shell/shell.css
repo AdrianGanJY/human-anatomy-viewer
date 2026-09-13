@@ -269,6 +269,16 @@ body.v2-stage .v2-legend,body.v2-stage .v2-scrim{display:none}
 .v2-kv>b{font-weight:600;font-variant-numeric:tabular-nums}
 .v2-json{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--v2-type-xs);line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--v2-ink-2)}
 .v2-note-sm{font-size:var(--v2-type-xs);line-height:1.55;color:var(--v2-ink-2);margin:0 0 10px}
+/* ── S5a: the JSON dock in EDIT mode ─────────────────────────────────────────────────────────────
+   The box is the same monospace at the same size as the `<pre>` it replaces, so the text does not
+   reflow when Edit is pressed -- a reader who has found the line they want to change must not have
+   to find it again. `resize:vertical` only: a horizontal drag inside a 360 px dock would push the
+   pane out of the grid. */
+.v2-jsonbox{width:100%;min-height:280px;padding:10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--v2-type-xs);line-height:1.55;resize:vertical}
+.v2-jsonbox[aria-invalid=true]{border-color:var(--v2-warn)}
+/* ADJACENT TO THE DRAFT, never a toast (spec.md X4). The draft is retained, so the error has to be
+   where the reader's eyes already are. */
+.v2-json-err{margin:10px 0 0;padding:8px 10px;border-radius:var(--v2-radius-sm);background:var(--v2-warn-soft);color:var(--v2-warn);font-size:var(--v2-type-xs);line-height:1.5}
 .v2-askbox{width:100%;min-height:132px;padding:10px;border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm);background:var(--v2-surface-2);font-size:var(--v2-type-body);line-height:1.6;resize:none;font-family:inherit}
 .v2-empty-state{padding:24px 8px;text-align:center;font-size:var(--v2-type-sm);color:var(--v2-ink-2);line-height:1.7}
 
@@ -311,6 +321,28 @@ html:lang(zh-Hans) .v2-cap .v2-sub,html:lang(zh-Hant) .v2-cap .v2-sub{letter-spa
 .v2-tab{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:6px;font-size:var(--v2-type-xs);color:var(--v2-ink-2);white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis}
 .v2-tab.is-on{background:var(--v2-accent-soft);color:var(--v2-accent);font-weight:600}
 .v2-tab.v2-inert{border:1px dashed var(--v2-line)}
+/* ── S5a: the phone's A9 list and the shared sheet footer ────────────────────────────────────────
+   Rows are 52 px because a sheet is a coarse surface and `spec.md`'s floor there is 44; the extra
+   8 carries the optional pose line without the row growing under it. */
+.v2-scenelist{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.v2-scenerow{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;min-height:52px;padding:8px 12px;border:1px solid var(--v2-line-2);border-radius:var(--v2-radius-sm);text-align:left;width:100%}
+.v2-scenerow:hover{background:var(--v2-surface-2)}
+.v2-scenerow b{font-size:var(--v2-type-body);font-weight:500;color:var(--v2-ink);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v2-scenerow .v2-sub{font-size:var(--v2-type-xs);line-height:1.35;color:var(--v2-ink-3)}
+.v2-sheet-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:18px;padding-top:14px;border-top:1px solid var(--v2-line-2)}
+.v2-sheet-foot .v2-tbtn{height:44px;padding:0 14px}
+
+/* ── S5a: a saved snapshot is a real button ──────────────────────────────────────────────────────
+   The current scene stays a `<span>` -- it is a label, not a control, and making it clickable
+   would offer to apply the scene already applied. */
+button.v2-tab:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+button.v2-tab[disabled]{opacity:.45;cursor:default}
+.v2-tab-add{font-weight:600;padding:0 9px;border:1px solid var(--v2-line-2)}
+/* The `+` at its OTHER home: with no snapshots yet the strip is hidden, so the control that makes
+   the first one sits alone in the status row. Same height as a tab, same restraint. */
+.v2-status-btn{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 10px;margin-left:auto;border-radius:6px;border:1px solid var(--v2-line-2);font-size:var(--v2-type-xs);color:var(--v2-ink-2);white-space:nowrap;flex-shrink:0}
+.v2-status-btn:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
+.v2-status-btn[disabled]{opacity:.45;cursor:default}
 
 /* ══ OVERLAYS — one primitive, two presentations ════════════════════════════════════════════════ */
 .v2-scrim{position:fixed;inset:0;z-index:80;background:var(--v2-scrim);display:flex;align-items:center;justify-content:center;padding:16px}
@@ -454,6 +486,9 @@ html:lang(zh-Hans) .v2-cap .v2-sub,html:lang(zh-Hant) .v2-cap .v2-sub{letter-spa
  /* THE RANGE INPUT IS THE TARGET, not the row that holds it: measured 155x16 inside a 44 px row. */
  .v2-studio .v2-opacity input[type=range]{min-height:44px}
  .v2-studio .v2-tab{height:28px}
+ /* S5a: the coarse tier does not draw the strip at all (spec.md: never 32 px touch tabs), so the
+    only thing that needs a target here is the status-row `+`. */
+ .v2-studio .v2-status-btn{height:44px}
 }
 @media (prefers-reduced-motion:reduce){
  .v2-chip.is-loading .v2-sub{animation:none}
