@@ -31,7 +31,7 @@ import {DEFAULT_VISIBLE,SYSTEMS,explanation,type Atlas,type Concept,type SceneSt
 import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
 import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
-import {decodeScene,encodeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
+import {decodeScene,encodeScene,normalizeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
 import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type Reason, type V2State} from './controller';
@@ -742,15 +742,62 @@ export default function V2() {
     * a widening of the generation rule (which stays exactly as round 16 left it, both directions):
     * a generation is opened when the view changes, and `#v2-field` does not change the view.
     */
-   const kind = u.scene ? 'scene' : u.clearScene ? 'clear' : (u.select?.length ? 'legacy' : null);
-   if (!kind) return;
-   markSettled(false); markSceneReady(false);
-   // WITHDRAW READINESS AND OPEN A NEW GENERATION. The renderer re-arms its barrier against the
-   // ids below and publishes only once their chunks are merged AND drawn, which is what replaced
-   // `markSceneReady(phase === 'atlas')` — a line with two opposite failure modes (R:29): between
-   // the barrier and full load it published `false` and nothing ever restored it, and before the
-   // first barrier the pending barrier belonged to the scene being superseded.
-   bumpEpoch();
+   /**
+    * ══ AND "A BRANCH EXISTS" IS NOT "THE VIEW CHANGED" — codex round 18 ═══════════════════════════
+    *
+    * Round 17's early return was correct and incomplete, because `readUrlState()` reads the QUERY
+    * AND THE HASH MERGED (url-state.ts:123). A warm tab carries its scene in the query, so with
+    * `?scene=<current>` present the skip link `#v2-field` still selected the scene branch: the
+    * handler opened a generation, `apply-scene` opened another, and a pending tab restore went
+    * stale. codex's table — three navigations that change NOTHING, each measured `1 → 3, stale,
+    * 0 setters`: `#v2-field`, `#stage=1&probe=1`, and a hash re-setting the unchanged current scene.
+    *
+    * So the question is no longer "is there a branch" but "is this an ACCEPTED VIEW TRANSITION",
+    * and it is answered in two places, each owning what it can actually know:
+    *
+    *  1. HERE, by comparing the DECODED INCOMING state against the controller's CURRENT canonical
+    *     state. Identical ⇒ nothing is applied, no readiness is withdrawn, no generation is opened.
+    *     Display-only keys (`stage`, `probe`, a bare `#v2-field`) cannot reach a branch this way,
+    *     because they change neither the blob nor the legacy fields. Language and the legacy caption
+    *     are still honoured on that path: they are not view transitions and never were.
+    *
+    *  2. IN `dispatch`, which already withdraws readiness and bumps the generation inside its
+    *     `out.epoch` branch — AFTER `reduce` has accepted. That is why the prelude that used to sit
+    *     here is GONE rather than moved: a refused arrival (codex's 25-structure row) returns from
+    *     `dispatch` before that branch and now changes nothing and bumps nothing, and an accepted one
+    *     bumps exactly once instead of twice. Its refusal still renders — `setRefused` runs first.
+    *
+    * The round-16 directional rule is untouched: an older barrier preserves a newer pending restore,
+    * a newer one discards an older restore. This changes only WHICH navigations are a generation.
+    */
+   const c = ctlRef.current;
+   const sameVisible = (want?: SystemId[]) => want === undefined || sameIds([...want].sort(), [...c.render.visible].sort());
+   /** The legacy fields, compared against what the controller is drawing. `undefined` in the URL
+    *  means "not stated", which cannot be a change. */
+   const sameLegacy = (sel: readonly string[]) =>
+    !c.scene && sameIds([...sel].sort(), [...c.picks].sort()) && sameVisible(u.visible)
+    && (u.view === undefined || u.view === c.render.view)
+    && (u.isolate === undefined || u.isolate === c.render.isolate)
+    && (u.explode === undefined || u.explode === c.render.explode);
+
+   if (u.scene) {
+    // CANONICAL, not literal: the controller re-encodes on arrival (R:27), so a link carrying a
+    // non-canonical spelling of the scene on screen is the same picture and not a transition.
+    const incoming = encodeScene(normalizeScene(u.scene));
+    if (incoming === c.blob && sameVisible(u.visible)) { if (u.lang) applyLang(u.lang); return; }
+   } else if (u.clearScene) {
+    if (sameLegacy(u.select?.filter(known) ?? [])) {
+     setLegacyCaption({title: u.title, note: u.note});
+     if (u.lang) applyLang(u.lang);
+     return;
+    }
+   } else if (u.select?.length) {
+    if (sameLegacy(u.select.filter(known))) {
+     setLegacyCaption({title: u.title, note: u.note});
+     if (u.lang) applyLang(u.lang);
+     return;
+    }
+   } else return;
    /**
     * ⚠️ THE WARM BRANCH CARRIES `system=` AND `lang=` THROUGH ONE TRANSACTION — codex rounds 6 and 7,
     * which took three attempts between them and are worth recording as a set:

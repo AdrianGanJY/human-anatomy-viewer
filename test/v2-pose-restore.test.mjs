@@ -42,6 +42,7 @@ const PAGE = read('app/v2/page.tsx');
 const SHELL = read('app/v2/shell/use-shell.ts');
 const URLSTATE = read('app/url-state.ts');
 const KEYS = read('app/v2/shell/keys.ts');
+const SELECTION = read('app/selection.ts');
 
 /** Cut a slice out of source, or throw — a probe that cannot reach its subject must not pass. */
 const cut = (s, a, b) => {
@@ -66,6 +67,9 @@ const program = () => [
    * and the renderer's prop never did. `bumpEpoch` is extracted now, the harness's `setEpoch` records
    * what the RENDERER would have been given, and `ready()` publishes THAT rather than the ref.
    */
+  // `app/selection.ts` cannot be imported here (it resolves './anatomy' extensionless), so the one
+  // function the handler needs from it is extracted like everything else rather than re-typed.
+  cut(SELECTION, 'export function sameIds(', '}').replace(/^export /, ''),
   cut(PAGE, ' const bumpEpoch = useCallback(', ', []);'),
   cut(PAGE, ' const abortPoseRestore = useCallback(', ', []);'),
   cut(PAGE, ' const poseSig = () => {', '\n };'),
@@ -185,6 +189,9 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     tab,
     /** The page's own dispatch, for a command with no dedicated entry point in this harness. */
     dispatchRaw: (cmd) => ctx.dispatch(cmd),
+    /** Move the address bar between navigations. `readUrlState` reads BOTH halves (url-state.ts:123),
+     *  which is the whole subject of codex round 18. */
+    setUrl: ({search = '', hash = ''} = {}) => { ctx.location.search = search; ctx.location.hash = hash; },
     gesture: () => ctx.window.dispatchEvent({type: 'atlas-nav-gesture'}),
     /**
      * THE RENDERER'S READINESS BARRIER, driven through the REAL `onSceneReady`. `gen` defaults to
@@ -439,6 +446,104 @@ test('M1 (round 17): a hash that names NO view does not supersede a pending rest
   assert.equal(s.pose().x, 1);
 });
 
+// ════ 3c. codex ROUND 18 — A BRANCH IN MERGED URL STATE IS NOT AN ACCEPTED TRANSITION ═════════════
+
+/**
+ * `readUrlState()` reads the QUERY AND THE HASH MERGED (url-state.ts:123), and a warm tab carries its
+ * scene in the query. So `?scene=<current>` + `#v2-field` still SELECTED the scene branch: the
+ * handler opened a generation, `apply-scene` opened another, and the pending restore went stale.
+ * codex measured `1 → 3, stale, 0 setters` for three navigations that change nothing at all.
+ *
+ * These are codex's six rows, executed against the shipped handler. The two that genuinely change
+ * the view are asserted separately below, and they MUST still open a generation.
+ */
+const armWithScene = (s) => {
+  // A tab whose scene becomes the controller's current scene — the warm-tab precondition.
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  return t;
+};
+
+for (const [name, url] of [
+  ['empty query -> #v2-field', {hash: '#v2-field'}],
+  ['empty query -> #stage=1&probe=1', {hash: '#stage=1&probe=1'}],
+  ['CURRENT SCENE in the query -> #v2-field', {query: true, hash: '#v2-field'}],
+  ['CURRENT SCENE in the query -> #stage=1&probe=1', {query: true, hash: '#stage=1&probe=1'}],
+  ['the hash re-sets the UNCHANGED current scene', {sceneHash: true}],
+]) {
+  test(`M1 (round 18): ${name} changes nothing, so it opens no generation and the pose still lands`, () => {
+    const s = scenario();
+    const t = armWithScene(s);
+    const gen = s.gen();
+    s.setUrl({
+      search: url.query ? `?scene=${t.blob}` : '',
+      hash: url.sceneHash ? `#scene=${t.blob}` : (url.hash ?? ''),
+    });
+    s.api().reapply();
+    assert.equal(s.gen(), gen, `no generation was opened; log: ${s.log.join(' -> ')}`);
+    s.ready();
+    assert.equal(s.marks.atlasPose, 'applied', `the restore still lands; log: ${s.log.join(' -> ')}`);
+    assert.equal(s.pose().x, 1);
+  });
+}
+
+test('M1 (round 18): a decoded but REFUSED arrival changes nothing, bumps nothing, and keeps the pose', () => {
+  // codex's sixth row: 25 structures, over the atomic bound. The controller refuses, so the
+  // generation must not move — the bump lives inside `dispatch`, AFTER acceptance.
+  const s = scenario();
+  armWithScene(s);
+  const gen = s.gen();
+  const tooMany = encodeScene(normalizeScene({
+    structures: Array.from({length: 25}, (_, i) => ({id: `FMA${20000 + i}`})),
+    caption: {title: 'too many'},
+  }));
+  s.setUrl({hash: `#scene=${tooMany}`});
+  s.api().reapply();
+  assert.ok(s.log.some((l) => l.startsWith('refused')), `the controller refused it; log: ${s.log.join(' -> ')}`);
+  assert.equal(s.gen(), gen, 'a refusal changes nothing, so it opens no generation');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', 'and the valid pending pose survives it');
+  assert.equal(s.pose().x, 1);
+});
+
+for (const [name, build] of [
+  ['a CHANGED scene', (s, t) => ({hash: `#scene=${s.tab('B', null).blob}`})],
+  ['an explicit CLEAR', () => ({hash: '#scene=&select=FMA22359'})],
+  ['a LEGACY select', () => ({hash: '#select=FMA22449&view=back'})],
+]) {
+  test(`${name} DOES open a generation, and the superseded pose is rejected`, () => {
+    // The other side of the rule: this test file must not be satisfiable by a handler that has
+    // simply stopped applying anything.
+    const s = scenario();
+    const t = armWithScene(s);
+    const gen = s.gen();
+    s.setUrl(build(s, t));
+    s.api().reapply();
+    assert.ok(s.gen() > gen, `the view changed, so a generation was opened; log: ${s.log.join(' -> ')}`);
+    s.ready();
+    assert.equal(s.marks.atlasPose, 'stale', 'and the pose armed for the previous view is discarded');
+    assert.equal(s.log.filter((l) => l.startsWith('setPose')).length, 0);
+  });
+}
+
+test('a LEGACY hash restating the CURRENT selection opens no generation either', () => {
+  /**
+   * The same rule on the branch a pending restore cannot reach (a restore implies a scene, and a
+   * legacy arrival over a scene IS a transition). Asserted on the generation directly rather than
+   * through the pose, so the claim is about what it actually says.
+   */
+  const s = scenario();
+  s.dispatchRaw({type: 'apply-legacy', url: {select: ['FMA22359'], view: 'back'}});
+  const gen = s.gen();
+  s.setUrl({hash: '#select=FMA22359&view=back'});
+  s.api().reapply();
+  assert.equal(s.gen(), gen, `restating the same selection is not a transition; log: ${s.log.join(' -> ')}`);
+  // ...and changing it IS one.
+  s.setUrl({hash: '#select=FMA22449&view=back'});
+  s.api().reapply();
+  assert.ok(s.gen() > gen, 'a different selection opens a generation');
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -503,13 +608,22 @@ const mutations = [
   },
   {
     name: "the hash handler's no-op early return",
-    mutate: (s) => s.replace('   if (!kind) return;', ''),
+    mutate: (s) => s.replace(
+      "    if (incoming === c.blob && sameVisible(u.visible)) { if (u.lang) applyLang(u.lang); return; }",
+      ''),
     // codex round 17: a skip-link jump discarding a valid restore.
+    /**
+     * THE WARM-TAB FORM, which is what round 18 corrected: the scene lives in the QUERY, so the skip
+     * link's hash still reaches the scene branch. (Round 17's empty-query version of this arm no
+     * longer isolates anything — that path returns before the guard this mutation deletes.)
+     */
     defect: (mk) => {
-      const s = mk({hash: '#v2-field'});
-      armA(s);
-      s.api().reapply();          // the skip link, while the restore is pending
-      s.ready();                  // the barrier that follows the superfluous generation
+      const s = mk();
+      const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+      s.api().applyTab(t);
+      s.setUrl({search: `?scene=${t.blob}`, hash: '#v2-field'});
+      s.api().reapply();
+      s.ready();
       return {ok: s.marks.atlasPose === 'stale' && s.pose().x !== 1,
         saw: `marker=${s.marks.atlasPose} pose.x=${s.pose().x} · ${s.log.join(' -> ')}`};
     },
@@ -529,6 +643,19 @@ const mutations = [
       armA(s);
       s.ready();
       return {ok: s.pose().x !== 1, saw: `pose.x=${s.pose().x} marker=${s.marks.atlasPose}`};
+    },
+  },
+  {
+    name: 'the generation belonging to dispatch (after acceptance) rather than to the handler',
+    // The round-18 shape put back: bump before knowing whether anything will be accepted.
+    mutate: (s) => s.replace('   const c = ctlRef.current;', '   bumpEpoch();\n   const c = ctlRef.current;'),
+    defect: (mk) => {
+      const s = mk();
+      s.api().applyTab(s.tab('A', [1, 2, 3, 4, 5, 6]));
+      s.setUrl({hash: '#v2-field'});
+      s.api().reapply();
+      s.ready();
+      return {ok: s.marks.atlasPose === 'stale', saw: `marker=${s.marks.atlasPose} · ${s.log.join(' -> ')}`};
     },
   },
   {
