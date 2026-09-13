@@ -158,4 +158,35 @@ bucket_name = "human-anatomy-snaps"
 # ⚠️ THE FIRST RENDER OF EACH PLATE AFTER THIS BUMP IS COLD. Every cached PNG under the old key is
 # retired, and Browser Rendering minutes are exhausted on the Adrey account, so the cold path is
 # the local one. That is the cost of the bump and it is stated rather than discovered.
+# ══ L31 v2.1b+c, S5a (2026-09-13) — A RENDER-PATH EDIT, AND THE ID DELIBERATELY DOES NOT MOVE ════
+#
+# `app/scene.tsx` gained `__atlasNav.setPose` — the write twin of the `pose()` reader, needed because
+# a scene tab restores a camera pose and `scene.camera` cannot express one (it carries a view, a
+# focus set, a padding and an explode amount, none of which say where a reader orbited to).
+#
+# THE FILE IS IN `deploy.ps1`'s `renderPaths`, so the tripwire fires. The id is NOT bumped, and the
+# reasoning is the same shape as the three edits argued above — a v2-path-only change behind a
+# surface the render branch never reaches:
+#
+#   · `setPose` is only ever called from `applyTab` in app/v2/page.tsx, i.e. by a CLICK on a scene
+#     tab. `workers/snap` renders from the scene and never touches `window.__atlasNav`; grep the
+#     Worker for it and there is nothing.
+#   · It is purely ADDITIVE. No existing line of scene.tsx changed — the diff is one new property on
+#     an object literal — so no code the plate DOES execute was altered.
+#   · The claim is MEASURED, not argued: `plate-goldens.mjs compare` is run against
+#     `.artifacts/L31/v21a/live-after/goldens-after.json` after the deploy, and the deploy is
+#     REVERSED if any control scene moves. (Per the caveat above, the forward-bend plate's PNG hash
+#     is stochastic; its camera and projected rect are the evidence there, as before.)
+#
+# AND THE COST OF BUMPING ANYWAY IS WHY THIS IS WORTH THE PARAGRAPH. Browser Rendering minutes are
+# still exhausted on the Adrey account, so a bump retires every cached PNG and the account cannot
+# re-render one: it would take every existing ChatGPT link from "a slightly older picture" to NO
+# picture, in exchange for retiring a cache that cannot be wrong. That trade is the opposite of the
+# one made at l31v21a, where a warm tab really could draw the wrong language.
+#
+# ⚠️ THIS IS A JUDGEMENT CALL AGAINST A LITERAL READING OF THE S5a KICKOFF (RC2 says "bump
+# SITE_BUILD"), and it is flagged to the planner in #coord and in the worklog rather than taken
+# quietly. RC2's bump to `l31v21bc` was performed by S1 and stands; what is declined here is a
+# SECOND bump for a change that cannot move a plate. If the planner or Adrian wants the bump anyway,
+# it is one line here plus `cd workers/snap; npx wrangler deploy`.
 SITE_BUILD = "l31v21bc"
