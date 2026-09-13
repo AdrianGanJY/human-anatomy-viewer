@@ -996,7 +996,14 @@ export default function V2() {
 
  // ─── the probe ────────────────────────────────────────────────────────────────────────────
  useEffect(() => {
-  if (!probeMode || phase === 'boot') return;
+  /**
+   * ⚠️ A FAILURE IS A READING TOO — codex round 22, Medium 6. It executed the atlas effect with a
+   * 503: the failure WAS recorded (URL, status, content-type), and the probe panel still said
+   * "measuring…" forever — because on a failure `phase` never leaves `boot`, and this effect
+   * returned. The one surface the S5b prelude promised the record to was the one surface that
+   * could not reach it, in precisely the case it exists for.
+   */
+  if (!probeMode || (phase === 'boot' && !error && !expired)) return;
   // Read AFTER the barrier so the byte cut-off is real, and once only.
   const timer = setTimeout(async () => {
    const reading = readProbe('l31v2', (sceneBlob || '').slice(0, 16));
@@ -1004,7 +1011,7 @@ export default function V2() {
    setProbeOut(JSON.stringify({reading, server: echo}, null, 1));
   }, 400);
   return () => clearTimeout(timer);
- }, [probeMode, phase, sceneBlob]);
+ }, [probeMode, phase, sceneBlob, error, expired]);
 
  /**
   * THE DESCRIPTION IS TRANSLATED — and it takes TWO accessors, not one.
@@ -1438,7 +1445,7 @@ export default function V2() {
       `stage-probe` regression case, which asserts the field gets the whole viewport. Not rendering
       is the primary fence; shell.css adds the display:none belt behind it. */}
   {shell.studio && !stage && <Shell
-   t={t} tr={tr} lang={lang} applyLang={applyLang}
+   t={t} tr={tr} lang={lang} applyLang={applyLang} askState={shell.askState}
    atlas={atlas} basket={basket} focused={focused} focusPick={focusPick} clearPicks={clearPicks}
    systemId={systemId} describe={describe}
    state={state} dispatch={dispatch} scene={scene} sceneBlob={sceneBlob} picks={picks}
@@ -1480,7 +1487,7 @@ export default function V2() {
    // S5b: the phone's Ask sheet is the same component as the desktop dock, so it needs the same
    // two collaborators — the UI-language name (for the model's context) and the controller (so a
    // proposed view goes through the one atomic refusal, never a second application path).
-   nameOf={(id, fallback) => t.name(id, fallback)} dispatch={dispatch}
+   nameOf={(id, fallback) => t.name(id, fallback)} dispatch={dispatch} askState={shell.askState}
   />
   <StudioOverlays
    t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}

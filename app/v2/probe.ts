@@ -102,9 +102,22 @@ export function recordFailure(f: {url: string; status?: number | null; detail?: 
   document.documentElement.dataset.atlasFailed =
    `${rec.url} :: ${rec.status === null ? 'no-status' : rec.status} :: ${rec.detail}`.slice(0, 300);
  } catch { /* no document (SSR, a test) — the console line below still lands */ }
- if (f.surfaced) return;
+ // ⚠️ `surfaced` NOW CHOOSES THE LEVEL, NOT WHETHER TO SPEAK — codex round 22, Medium 6.
+ //
+ // The first version returned here, on the ground that the renderer's cause is already on screen.
+ // codex's objection is the right one: "showing the cause on screen does not replace a
+ // machine-checked failure signal" -- a silent record is one an oracle can only find if somebody
+ // remembers to look for it. But the reason for the silence was real too: under a full sweep a
+ // WebGL context loss is a LOAD condition, and an `error` line turned it into a red `no console
+ // errors` row for something no product change caused.
+ //
+ // `warn` answers both. It is in the browser's log, machine-readable, and greppable; and the
+ // sweep's console gate collects `error` only, so a load-induced context loss does not manufacture
+ // a product failure. The general assertion codex asked for is a new oracle row: `data-atlas-failed`
+ // must be ABSENT at the end of every viewport unless a retry was announced for it.
  // eslint-disable-next-line no-console
- console.error(`[atlas] request failed: ${rec.url} status=${rec.status ?? 'none'} ${rec.detail}`);
+ const say = f.surfaced ? console.warn : console.error;
+ say(`[atlas] request failed: ${rec.url} status=${rec.status ?? 'none'} ${rec.detail}`);
 }
 
 export const readFailures = (): RequestFailure[] => failures.slice();

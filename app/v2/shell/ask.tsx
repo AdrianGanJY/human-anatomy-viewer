@@ -29,10 +29,10 @@
  *   · It may not retry. One press, one request, one answer. An automatic retry on a browser-held
  *     key is an unbounded bill with nobody watching it.
  */
-import {useCallback, useEffect, useRef, useState} from 'react';
+import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import type {Scene} from '../../scene-model';
 import type {Command} from '../controller';
-import {AiError, ask, linkify, modelOf, proposedScene, sceneDiff, systemMessage, withoutSceneBlock} from './ai.ts';
+import {AiError, ask, linkify, modelOf, proposedScene, readSpend, sceneDiff, systemMessage, withoutModelLang, withoutSceneBlock} from './ai.ts';
 import {hasOpenAi, readOpenAiModel} from './store.ts';
 
 /** Broadcast by the Settings › AI panel when the key is saved or removed, so an OPEN dock changes
@@ -40,7 +40,26 @@ import {hasOpenAi, readOpenAiModel} from './store.ts';
  *  re-run) and a shared React state would put the two surfaces back in one hook list. */
 export const OPENAI_CHANGED = 'atlas-openai-changed';
 
-interface Turn {role: 'user' | 'assistant'; text: string}
+export interface Turn {role: 'user' | 'assistant'; text: string}
+
+/**
+ * ── THE CONVERSATION OUTLIVES THE PANEL — codex round 22, Medium 5 ────────────────────────────
+ *
+ * S5a kept the unsent draft in `Shell` and in `PhoneSheets`, both of which stay mounted while the
+ * dock or the sheet is merely CLOSED. Moving the surface into this component moved the draft with
+ * it -- and this component unmounts on close. codex executed the lifecycle: an unsent no-key draft
+ * became `""` after reopening. So "without a key the dock is exactly S5a" was FALSE, on both
+ * surfaces, and no oracle noticed because every row types and reads within one mount.
+ *
+ * The draft and the turns are therefore owned ABOVE, by `useShell` (whose state survives opening,
+ * closing and the tier switch between the dock and the sheet), and threaded in. The spend is owned
+ * higher still -- in `ai.ts`, for the whole page -- because closing a panel is not the same event
+ * as ending a session (Medium 1).
+ */
+export interface AskState {
+  draft: string; setDraft(v: string): void;
+  turns: Turn[]; setTurns(f: (prev: Turn[]) => Turn[]): void;
+}
 
 export interface AskProps {
   tr(k: string, v?: Record<string, string | number>): string;
@@ -58,15 +77,20 @@ export interface AskProps {
   noteMax: number;
   /** Phone sheet vs desktop dock — a class name, not a second behaviour. */
   sheet?: boolean;
+  /** Owned by `useShell`, so it survives this component being closed (Medium 5). */
+  state: AskState;
 }
 
 export default function AskPanel(p: AskProps) {
   const {tr} = p;
-  const [q, setQ] = useState('');
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const q = p.state.draft, setQ = p.state.setDraft;
+  const turns = p.state.turns, setTurns = p.state.setTurns;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{key: string; status: number | null; detail: string} | null>(null);
-  const [spend, setSpend] = useState({r: 0, prompt: 0, completion: 0});
+  /** A TICK, not a copy. The numbers live in `ai.ts` for the page's lifetime; this only says
+   *  "read them again", so closing the dock cannot reset a spend the reader has really incurred. */
+  const [spendTick, setSpendTick] = useState(0);
+  const spend = useMemo(() => readSpend(), [spendTick]);
   const [applied, setApplied] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   /**
@@ -117,7 +141,7 @@ export default function AskPanel(p: AskProps) {
     setApplied(null);
     setQ('');
     const history: Turn[] = [...turns, {role: 'user', text: question}];
-    setTurns([...history, {role: 'assistant', text: ''}]);
+    setTurns(() => [...history, {role: 'assistant', text: ''}]);
     setBusy(true);
     const ac = new AbortController();
     abortRef.current = ac;
@@ -144,8 +168,7 @@ export default function AskPanel(p: AskProps) {
           return copy;
         }),
       });
-      const used = out.usage;
-      if (used) setSpend((s) => ({r: s.r + 1, prompt: s.prompt + used.prompt, completion: s.completion + used.completion}));
+      void out;
     } catch (e) {
       // An abort is the READER pressing Stop, not a failure — saying "the request did not reach
       // OpenAI" for something they asked for is the kind of message that teaches distrust.
@@ -155,6 +178,9 @@ export default function AskPanel(p: AskProps) {
     } finally {
       setBusy(false);
       abortRef.current = null;
+      // `ai.ts` has counted this request by now — completed from its usage frame, or as an
+      // UNKNOWN if it was aborted or failed. Re-read it either way.
+      setSpendTick((n) => n + 1);
     }
   }, [q, busy, turns, p]);
 
@@ -184,7 +210,7 @@ export default function AskPanel(p: AskProps) {
       <p className="v2-note-sm">{tr('ai.applyNote')}</p>
       <div className="v2-ai-propfoot">
         <button type="button" className="v2-tbtn is-on"
-          onClick={() => { if (p.dispatch({type: 'apply-scene', scene: parsed as Scene})) setApplied(i); }}>
+          onClick={() => { if (p.dispatch({type: 'apply-scene', scene: withoutModelLang(parsed)})) setApplied(i); }}>
           {tr('ai.apply')}
         </button>
         {applied === i && <span className="v2-static">{tr('ai.applied')}</span>}
@@ -237,8 +263,12 @@ export default function AskPanel(p: AskProps) {
       {askBox}
       <p className="v2-note-sm" style={{marginTop: 10}}>{tr('ask.context', {n: p.basket.length})}</p>
       <p className="v2-note-sm">{keyed ? tr('ai.keyNote') : tr('ask.note')}</p>
-      {keyed && spend.r > 0 && <p className="v2-note-sm">
-        <b>{tr('ai.spendTitle')}:</b> {tr('ai.spend', {r: spend.r, p: spend.prompt, c: spend.completion})}
+      {keyed && (spend.replies > 0 || spend.incomplete > 0) && <p className="v2-note-sm">
+        <b>{tr('ai.spendTitle')}:</b> {tr('ai.spend', {r: spend.replies, p: spend.prompt, c: spend.completion})}
+        {/* THE HONEST HALF. An aborted or failed request has no usage frame, and OpenAI still
+            billed for what it processed — so it is counted and named as UNKNOWN rather than
+            estimated or, as before, silently ignored (codex round 22, Medium 1). */}
+        {spend.incomplete > 0 && <> · {tr('ai.spendUnknown', {n: spend.incomplete})}</>}
       </p>}
     </div>
     <div className={p.sheet ? 'v2-sheet-foot' : 'v2-pane-foot'}>
@@ -249,7 +279,7 @@ export default function AskPanel(p: AskProps) {
       {handOff}
       {keyed && turns.length > 0 && !busy && <>
         <span className="v2-grow"/>
-        <button type="button" className="v2-tbtn" onClick={() => { setTurns([]); setErr(null); setApplied(null); }}>{tr('ai.clear')}</button>
+        <button type="button" className="v2-tbtn" onClick={() => { setTurns(() => []); setErr(null); setApplied(null); }}>{tr('ai.clear')}</button>
       </>}
     </div>
   </>;

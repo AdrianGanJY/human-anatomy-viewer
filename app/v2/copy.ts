@@ -436,6 +436,10 @@ export const V2: Record<string, Row> = {
  // reach it; the fix is a phrasing that is correct at every count rather than a plural table entry
  // that cannot be applied. (Seen in a live reading, not predicted.)
  'ai.spend':       {en: 'Replies {r} · {p} prompt + {c} answer tokens', 'zh-Hans': '{r} 次回答 · 提示 {p} + 回答 {c} 个 token', 'zh-Hant': '{r} 次回答 · 提示 {p} + 回答 {c} 個 token'},
+ // codex round 22, Medium 1: an aborted or failed request has NO usage frame, and OpenAI still
+ // billed for what it processed. Counted and named as unknown -- never estimated, and never
+ // silently ignored, which is what the first build did.
+ 'ai.spendUnknown': {en: '{n} interrupted (tokens unknown)', 'zh-Hans': '{n} 次中断（token 数未知）', 'zh-Hant': '{n} 次中斷（token 數未知）'},
  'ai.spendNone':   {en: 'Nothing sent yet.', 'zh-Hans': '尚未发送任何内容。', 'zh-Hant': '尚未傳送任何內容。'},
  'ai.ask':         {en: 'Ask', 'zh-Hans': '提问', 'zh-Hant': '提問'},
  'ai.stop':        {en: 'Stop', 'zh-Hans': '停止', 'zh-Hant': '停止'},

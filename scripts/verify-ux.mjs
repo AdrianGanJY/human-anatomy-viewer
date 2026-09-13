@@ -480,6 +480,29 @@ for (const vp of SWEEP) {
       }
     }
 
+    /**
+     * ⚠️ THE GENERAL ASSERTION OVER THE FAILURE RECORD — codex round 22, Medium 6.
+     *
+     * S5b made failures observable and then leaned on the console gate to notice them, and codex
+     * was right that this is not enough: `data-atlas-failed` is written for renderer failures too,
+     * which now WARN rather than error, so the console gate cannot see them. A record nobody
+     * asserts over is a record that exists for whoever remembers to look.
+     *
+     * So every viewport asserts the record is EMPTY — with one carve-out, and it is a loud one: if
+     * this viewport announced a retry, the first visit's record is expected and the RETRY line is
+     * the evidence. Anything else is a failure this sweep saw and would otherwise have shrugged at.
+     */
+    const failedRecord = await page.evaluate(
+      () => document.documentElement.dataset.atlasFailed || '',
+    ).catch(() => '');
+    const retriedHere = RETRIES.some((r) => r.startsWith(`[${vp.name}] ${label}`));
+    check(vp.name, 'no request failed during this visit (the app\'s own record, not the console)',
+      failedRecord === '' || retriedHere,
+      failedRecord === ''
+        ? 'data-atlas-failed absent'
+        : `data-atlas-failed = ${failedRecord}${retriedHere ? ' (expected: a retry was announced above)' : ''}`,
+      'empty — or, if a retry was announced for this viewport, the first visit\'s record and nothing new');
+
     // ── 3 BYTES ────────────────────────────────────────────────────────────────────────────
     let readyMs = entry.ready, barrierAt = entry.at;
     const bytes = await page.evaluate(() => {

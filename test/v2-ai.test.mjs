@@ -17,7 +17,7 @@ import {readFileSync, readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {
   AiError, DEFAULT_MODEL, ENDPOINT, ENDPOINT_HOST, MODELS, ask, linkify, modelOf,
-  proposedScene, sanitise, sceneDiff, systemMessage,
+  proposedScene, readSpend, resetSpend, sanitise, sceneDiff, systemMessage, withoutModelLang,
 } from '../app/v2/shell/ai.ts';
 import {hasOpenAi, openAiMask, readOpenAiModel} from '../app/v2/shell/store.ts';
 import {LIMITS} from '../app/scene-codec.js';
@@ -25,7 +25,19 @@ import {LIMITS} from '../app/scene-codec.js';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const KEY = 'sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGGhhhh9xyz';
 
-function withKey(entry, fn) {
+/**
+ * ⚠️ `await fn(store)`, NOT `return fn(store)` — and the difference was hiding a vacuous pass.
+ *
+ * `try { return fn(store) } finally { restore }` runs the `finally` the moment `fn` hands back its
+ * PROMISE, so the stand-in was torn down while the async body was still running. Every call made
+ * before the body's first `await` worked (`readOpenAi()` runs synchronously inside `ask`), and
+ * every call after one saw no `localStorage` at all and threw `ai.noKey`.
+ *
+ * That is why "the key is read AT CALL TIME" passed: its second `ask` was rejected because the
+ * storage stand-in had been removed, not because the key had. A green for the right reason only by
+ * coincidence — found when the spend test, which really does need three sequential calls, failed.
+ */
+async function withKey(entry, fn) {
   const prev = globalThis.localStorage;
   const store = {'atlas.openai': entry};
   globalThis.localStorage = {
@@ -33,7 +45,7 @@ function withKey(entry, fn) {
     setItem: (k, v) => { store[k] = v; },
     removeItem: (k) => { delete store[k]; },
   };
-  try { return fn(store); } finally { globalThis.localStorage = prev; }
+  try { return await fn(store); } finally { globalThis.localStorage = prev; }
 }
 const stored = (over = {}) => JSON.stringify({v: 1, key: KEY, model: '', ...over});
 
@@ -337,4 +349,130 @@ test('NO innerHTML anywhere in the Ask surface (RC11 / §G.1)', () => {
       assert.ok(!src.includes(bad), `${f} uses ${bad}`);
     }
   }
+});
+
+// ════ 7. codex ROUND 22's SIX MEDIUMS, EACH AS A TEST THAT WOULD HAVE CAUGHT IT ═══════════════
+
+test('M2: a CRLF stream is parsed — the spec allows CR, LF or CRLF, and split(\'\n\n\') sees one', async () => {
+  // codex executed an otherwise identical stream with CRLF separators and got an EMPTY answer and
+  // `usage: null` — no error, no warning. The silent one is always the expensive one.
+  await withKey(stored(), async () => {
+    const body = frames(['The ', '半腱肌 ', 'is posterior.'], {prompt_tokens: 12, completion_tokens: 8})
+      .replace(/\n/g, '\r\n');
+    const f = stubFetch(okStream(sseStream(body, 1)));
+    const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: f});
+    assert.equal(out.text, 'The 半腱肌 is posterior.');
+    assert.deepEqual(out.usage, {prompt: 12, completion: 8});
+  });
+});
+
+test('M2: a comment frame and a lone CR are ignored rather than swallowing the answer', async () => {
+  await withKey(stored(), async () => {
+    const body = ': keep-alive\r\n\r\n' + frames(['ok']).replace(/\n/g, '\r\n');
+    const f = stubFetch(okStream(sseStream(body, 3)));
+    const out = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: f});
+    assert.equal(out.text, 'ok');
+  });
+});
+
+test('M2: the reader is RELEASED on completion, on a read failure and on an abort', async () => {
+  // A locked reader holds the response body open. codex found it locked in all three cases.
+  const cases = {
+    completion: () => sseStream(frames(['a']), 8),
+    failure: () => new ReadableStream({pull(c) { c.error(new Error(`boom ${KEY}`)); }}),
+  };
+  for (const [name, make] of Object.entries(cases)) {
+    await withKey(stored(), async () => {
+      const body = make();
+      const f = stubFetch(async () => new Response(body, {status: 200}));
+      const err = await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: f}).catch((e) => e);
+      assert.equal(body.locked, false, `the reader is still locked after ${name}`);
+      if (name === 'failure') {
+        // AND the read failure went through AiError + sanitise. codex: it was a raw Error, outside
+        // the module's own sanitised boundary — latent only because the dock suppressed the detail.
+        assert.ok(err instanceof AiError, 'a mid-stream read failure must be an AiError');
+        assert.equal(err.key, 'ai.network');
+        assert.ok(!err.detail.includes(KEY), `the key survived a read failure: ${err.detail}`);
+        assert.ok(!/sk-[A-Za-z0-9_-]{3,}/.test(`${err.message} ${err.detail}`));
+      }
+    });
+  }
+});
+
+test('M3: a proposal whose id is an un-stringable object does not THROW during render', () => {
+  // codex's exact payload. `String({toString:null})` raises `TypeError: Cannot convert object to
+  // primitive value` — during render of the proposal card, before the controller can refuse it.
+  const evil = {structures: [{id: {toString: null}}]};
+  assert.doesNotThrow(() => sceneDiff({structures: [{id: 'A'}]}, evil));
+  const d = sceneDiff({structures: [{id: 'A'}]}, evil);
+  assert.deepEqual(d, {added: [], removed: ['A'], total: 0}, 'a non-string id is not an id');
+  // And the neighbouring shapes, so the filter is not accidentally narrow.
+  for (const bad of [{id: 1}, {id: null}, {id: []}, {id: {}}, {}, null, 'FMA1']) {
+    assert.doesNotThrow(() => sceneDiff(null, {structures: [bad]}), JSON.stringify(bad));
+  }
+});
+
+test('M4: a MODEL-proposed scene loses its `lang` before it can be committed', () => {
+  // The four-step route codex executed: a proposal declares zh-Hant -> applied -> re-arrived at ->
+  // `resolveArrivalLang` honours the DECLARATION -> `atlas.lang` written. Cut at step 1.
+  const proposed = {structures: [{id: 'A'}], lang: 'zh-Hant', caption: {title: 'x'}};
+  const out = withoutModelLang(proposed);
+  assert.equal(out.lang, undefined, 'the model may never set the interface language (RC11)');
+  assert.deepEqual(out.structures, [{id: 'A'}], 'and nothing else about the proposal is touched');
+  assert.deepEqual(out.caption, {title: 'x'});
+  assert.equal(proposed.lang, 'zh-Hant', 'the input is not mutated — the card still shows what was proposed');
+  // Non-objects pass through: the controller refuses them, which is its job, not this function's.
+  for (const junk of [null, undefined, 42, 'x', []]) assert.doesNotThrow(() => withoutModelLang(junk));
+});
+
+test('M1: the session spend survives the panel, and an interrupted request is counted as UNKNOWN', async () => {
+  resetSpend();
+  await withKey(stored(), async () => {
+    // A FRESH STREAM PER CALL. `okStream(oneStream)` hands the SAME body to both requests, and the
+    // second read finds it already consumed — which the new `reader.cancel()` in `ask`'s `finally`
+    // makes immediate rather than latent.
+    const ok = stubFetch(async () => new Response(
+      sseStream(frames(['a'], {prompt_tokens: 20, completion_tokens: 5}), 64),
+      {status: 200, headers: {'content-type': 'text/event-stream'}}));
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: ok});
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: ok});
+    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0});
+    // codex's sequence ended here with an unmount and a reopen reporting 0 · 0 + 0. The counter is
+    // module-scoped now, so there is no component lifetime for it to be lost to.
+    assert.deepEqual(readSpend(), {replies: 2, prompt: 40, completion: 10, incomplete: 0},
+      'reading it twice is reading the same session');
+
+    // An aborted request: tokens were sent, OpenAI billed, and there is no usage frame.
+    // ⚠️ THE STUB HONOURS THE SIGNAL. A body that simply never yields does not model an abort — it
+    // models a hang, and the first version of this case left a promise pending forever ("Promise
+    // resolution is still pending but the event loop has already resolved"). A real abort errors
+    // the stream, which is what the production reader has to survive.
+    const slow = stubFetch(async (_url, init) => new Response(new ReadableStream({
+      start(c) {
+        init.signal?.addEventListener('abort', () => c.error(new DOMException('aborted', 'AbortError')));
+      },
+    }), {status: 200, headers: {'content-type': 'text/event-stream'}}));
+    const ac = new AbortController();
+    const pending = ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, signal: ac.signal, fetchImpl: slow});
+    await new Promise((r) => setTimeout(r, 10));
+    ac.abort();
+    await pending.catch(() => {});
+    // A 401 is the other interrupted shape.
+    const bad = stubFetch(async () => new Response('{}', {status: 401}));
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {}, fetchImpl: bad}).catch(() => {});
+    const s = readSpend();
+    assert.equal(s.replies, 2, 'an interrupted request is not a reply');
+    assert.ok(s.incomplete >= 1, `interrupted requests are counted, not ignored (got ${s.incomplete})`);
+    assert.equal(s.prompt, 40, 'and their token cost is NOT estimated — it is unknown, and says so');
+  });
+  resetSpend();
+});
+
+test('M1: a missing key is NOT counted as spend — nothing left the browser', async () => {
+  resetSpend();
+  await withKey(undefined, async () => {
+    await ask({model: DEFAULT_MODEL, messages: [], onDelta: () => {},
+      fetchImpl: stubFetch(async () => new Response('', {status: 200}))}).catch(() => {});
+  });
+  assert.deepEqual(readSpend(), {replies: 0, prompt: 0, completion: 0, incomplete: 0});
 });

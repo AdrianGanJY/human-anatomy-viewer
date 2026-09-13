@@ -11,6 +11,7 @@ import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {HOLD, HOLD_CODES, POSE_CMDS, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
 import {effectiveDocks, readDocks, readPinyin, readScenes, writeDocks, writePinyin, writeScenes, SCENES_CAP, type DockKey, type SceneTab} from './store.ts';
+import type {AskState, Turn as AskTurn} from './ask.tsx';
 import {loadPinyin, pinyinOf} from '../pinyin.ts';
 
 /** A live viewport reading. `matchMedia` rather than a resize listener: the browser coalesces the
@@ -92,6 +93,8 @@ export interface ShellState {
   * ⚠️ NO APPLY HERE. Applying a tab is a controller transaction plus a camera restore, and the
   * controller lives in `page.tsx`. This hook owns the LIST; the page owns what a click does.
   */
+ /** S5b: the Ask surface's draft + conversation, owned here so a close cannot discard them. */
+ askState: AskState;
  tabs: SceneTab[];
  /** Append, newest last, capped at 8 by dropping the OLDEST — and persisted in the same call, so
   *  there is no window where the rendered list and the stored list disagree. */
@@ -242,6 +245,24 @@ export function useShell(
   * camera all degrade to "no tabs" or "this tab has no pose" rather than to a white page. The
   * oracle for that is the RC12 corrupt-value row, extended to this key.
   */
+/**
+  * ── THE ASK SURFACE'S STATE, OWNED ABOVE THE SURFACE — codex round 22, Medium 5 ────────────────
+  *
+  * The dock and the phone sheet are CONDITIONALLY MOUNTED: closing either unmounts `AskPanel`. S5a
+  * kept the unsent draft in `Shell`/`PhoneSheets`, which stay mounted through a close, so the draft
+  * survived; S5b moved the surface into its own component and the draft moved with it. codex
+  * executed the lifecycle and measured an unsent draft becoming `""` on reopen -- so "without a key
+  * the dock is exactly S5a" was false, on both surfaces, and no oracle saw it because every row
+  * types and reads inside one mount.
+  *
+  * Owned here, the draft and the conversation survive closing the dock, opening the sheet, and the
+  * tier switch between them -- which is also the only reason a reader can carry a question from the
+  * desktop into a rotated phone. (The SPEND is owned higher still, in `ai.ts`, for the page's
+  * lifetime: closing a panel is not the same event as ending a session -- Medium 1.)
+  */
+ const [askDraft, setAskDraft] = useState('');
+ const [askTurns, setAskTurns] = useState<AskTurn[]>([]);
+
  const [tabs, setTabs] = useState<SceneTab[]>(() => readScenes().tabs);
  const addTab = useCallback((t: SceneTab) => {
   setTabs((cur) => {
@@ -435,6 +456,7 @@ export function useShell(
   press: useCallback((code: string) => dispRef.current?.press(code), []),
   release: useCallback((code: string) => dispRef.current?.release(code), []),
   pinyin, setPinyin, py,
+  askState: {draft: askDraft, setDraft: setAskDraft, turns: askTurns, setTurns: setAskTurns},
   tabs, addTab, tabsFull: tabs.length >= SCENES_CAP,
  };
 }

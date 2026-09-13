@@ -63,7 +63,7 @@ const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
 import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
 import {DOCK_KEYS, clearOpenAi, openAiMask, readOpenAiModel, saveOpenAiKey, setOpenAiModel, tabOrdinals, type DockKey, type SceneTab} from './store.ts';
-import AskPanel, {OPENAI_CHANGED} from './ask.tsx';
+import AskPanel, {OPENAI_CHANGED, type AskState} from './ask.tsx';
 import {MODELS, modelOf} from './ai.ts';
 import {LIMITS} from '../../scene-codec.js';
 
@@ -163,6 +163,8 @@ export interface ShellProps {
  tabsFull: boolean;
  onSnapshot(): void;
  onApplyTab(t: SceneTab): void;
+ /** S5b: owned by `useShell` so closing the dock cannot discard a draft (round 22, Medium 5). */
+ askState: AskState;
 }
 
 const MB = (n: number) => (n / 1048576).toFixed(1);
@@ -832,7 +834,7 @@ export default function Shell(p: ShellProps) {
  const askPane = <AskPanel
   tr={tr} lang={p.lang} scene={p.scene} sceneBlob={p.sceneBlob} picks={p.picks}
   basket={p.basket} nameOf={(id, fallback) => t.name(id, fallback)} dispatch={p.dispatch}
-  titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX}/>;
+  titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX} state={p.askState}/>;
 
  const paneBody: Record<DockKey, React.ReactNode> = {selection: selectionPane, info: infoPane, json: jsonPane, ask: askPane};
  const dock = p.docks.length > 0 && <div className="v2-dock">
@@ -925,6 +927,7 @@ export function PhoneSheets(p: {
   *  and the controller, so a model-proposed view can be applied through the atomic refusal. */
  nameOf(id: string, fallback: string): string;
  dispatch(cmd: Command): boolean;
+ askState: AskState;
 }) {
  const {tr} = p;
  const ords = tabOrdinals(p.tabs);
@@ -943,7 +946,7 @@ export function PhoneSheets(p: {
   <AskPanel sheet
    tr={tr} lang={p.lang} scene={p.scene} sceneBlob={p.sceneBlob} picks={p.picks}
    basket={p.basket} nameOf={p.nameOf} dispatch={p.dispatch}
-   titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX}/>
+   titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX} state={p.askState}/>
  </Overlay>;
 
  // A9 — the local snapshots. `spec.md`: "three local snapshots, active scene, + cap 8, no

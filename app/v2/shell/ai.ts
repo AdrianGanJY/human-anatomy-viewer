@@ -201,14 +201,57 @@ export const withoutSceneBlock = (reply: string): string => reply
   .trim();
 
 /**
+ * ── THE MODEL MAY NOT SET THE INTERFACE LANGUAGE — codex round 22, Medium 4 ────────────────────
+ *
+ * RC11 says the model may never write the URL, localStorage or the language, and I believed the
+ * third was true because nothing in the apply path calls `applyLang`. codex found the route anyway,
+ * and it takes four steps, which is why reading the file did not show it:
+ *
+ *   1. a proposal carries `"lang":"zh-Hant"` — a legal scene field;
+ *   2. the explicit click applies it, and the SCENE's language becomes zh-Hant (the UI's does not);
+ *   3. the reader later arrives at that accepted blob — a reload, a shared link, a scene tab;
+ *   4. `resolveArrivalLang` sees a scene that DECLARES a language, and a declaration beats the
+ *      link's `lang=`. `applyLang` runs, and `atlas.lang` is written to disk.
+ *
+ * So the model set a persistent setting one navigation later, through a rule that is correct for
+ * every OTHER author of a scene. The fix belongs at the boundary rather than in that rule: a scene
+ * a MODEL proposed loses its `lang` before it is ever committed, so step 4 has nothing to find. A
+ * human editing the same field in the Scene JSON dock is unaffected — they are the author.
+ *
+ * Deliberately NOT an allowlist of "fields a model may set": that list needs updating every time
+ * the codec grows a field, and the day somebody forgets is the day this is back.
+ */
+export function withoutModelLang(proposed: unknown): Scene {
+  if (!proposed || typeof proposed !== 'object' || Array.isArray(proposed)) return proposed as Scene;
+  const rest: Record<string, unknown> = {...(proposed as Record<string, unknown>)};
+  delete rest.lang;
+  return rest as unknown as Scene;
+}
+
+/**
  * WHAT THE PROPOSAL WOULD CHANGE, as two lists of ids — RC11's "a visible diff (structures
  * added/removed)". Computed here rather than in the dock so the unit tests can state it.
  */
 export function sceneDiff(current: Scene | null, proposed: unknown): {added: string[]; removed: string[]; total: number} {
+  /**
+   * ⚠️ STRINGS ONLY — NEVER `String(anything)` — codex round 22, Medium 3.
+   *
+   * `String()` on an arbitrary object CALLS it. codex executed a proposal carrying
+   * `{"id":{"toString":null}}` inside a scene fence: `proposedScene` accepts it (it is valid JSON
+   * and an object), and this line then threw `TypeError: Cannot convert object to primitive value`
+   * — DURING RENDER of the proposal card, which is before the controller's refusal can say no. The
+   * normalizer would have discarded that id happily; rendering never got that far.
+   *
+   * So the diff reads only ids that are ALREADY strings. Anything else is not an id, is dropped
+   * from the count, and reaches `commitScene` to be refused there like any other invalid scene —
+   * which is the one place allowed to have an opinion about what a scene is.
+   */
   const ids = (s: unknown): string[] => {
     const st = (s as {structures?: unknown})?.structures;
     if (!Array.isArray(st)) return [];
-    return st.map((x) => String((x as {id?: unknown})?.id ?? '')).filter(Boolean);
+    return st
+      .map((x) => (x && typeof x === 'object' ? (x as {id?: unknown}).id : undefined))
+      .filter((id): id is string => typeof id === 'string' && id.length > 0);
   };
   const now = new Set(ids(current));
   const next = ids(proposed);
@@ -248,6 +291,40 @@ export function linkify(text: string): Segment[] {
   return out;
 }
 
+/**
+ * ── THE SESSION SPEND LIVES HERE, NOT IN THE DOCK — codex round 22, Medium 1 ───────────────────
+ *
+ * It executed the sequence and the number simply vanished: two completed requests reported
+ * `2 replies · 40 + 10`, then an unmount and reopen reported `0 · 0 + 0`. The counter was React
+ * state in a component the reader CLOSES — and closing a panel is not the same event as ending a
+ * session. A spend indicator that resets when you tidy your workspace is worse than none, because
+ * it invites the belief that nothing has been spent.
+ *
+ * So it lives in the module that issues the requests, for as long as the page is open, and every
+ * surface reads the same number.
+ *
+ * ⚠️ `incomplete` IS A SEPARATE COUNT, and it is the honest half. An aborted or failed request has
+ * no usage frame — the tokens were still sent, and OpenAI still bills for what it processed. The
+ * old counter silently ignored those, so a reader who pressed Stop three times saw "nothing spent".
+ * They are counted as UNKNOWN rather than estimated: this module has no way to know the real
+ * figure, and inventing one would be worse than admitting it.
+ */
+export interface Spend {replies: number; prompt: number; completion: number; incomplete: number}
+const spend: Spend = {replies: 0, prompt: 0, completion: 0, incomplete: 0};
+export const readSpend = (): Spend => ({...spend});
+/** Test-only: the counter is module-scoped for the reason above, which makes it survive between
+ *  cases in a way a suite has to be able to undo. */
+export const resetSpend = (): void => { spend.replies = 0; spend.prompt = 0; spend.completion = 0; spend.incomplete = 0; };
+function countSpend(usage: AskResult['usage']): void {
+  if (usage) {
+    spend.replies += 1;
+    spend.prompt += usage.prompt;
+    spend.completion += usage.completion;
+  } else {
+    spend.incomplete += 1;
+  }
+}
+
 export interface AskOptions {
   model: string;
   messages: {role: 'system' | 'user' | 'assistant'; content: string}[];
@@ -266,6 +343,20 @@ export interface AskResult {text: string; usage: {prompt: number; completion: nu
  * key with an automatic retry is an unbounded bill and nobody watching it.
  */
 export async function ask(o: AskOptions): Promise<AskResult> {
+  /**
+   * ⚠️ AN INTERRUPTED REQUEST IS STILL SPEND — codex round 22, Medium 1. `askOnce` counts a
+   * COMPLETED reply from its usage frame; everything that left the browser and did not finish is
+   * counted as UNKNOWN here. `ai.noKey` is the one exception: nothing left, so nothing was spent.
+   */
+  try {
+    return await askOnce(o);
+  } catch (e) {
+    if (!(e instanceof AiError && e.key === 'ai.noKey')) countSpend(null);
+    throw e;
+  }
+}
+
+async function askOnce(o: AskOptions): Promise<AskResult> {
   // READ AT CALL TIME. `prefs` is function-local, is never returned, and is not closed over by
   // anything that outlives this call.
   const prefs = readOpenAi();
@@ -304,32 +395,68 @@ export async function ask(o: AskOptions): Promise<AskResult> {
   const dec = new TextDecoder();
   let buf = '', text = '';
   let usage: AskResult['usage'] = null;
-  for (;;) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, {stream: true});
-    // SSE frames are separated by a blank line; a chunk boundary can fall anywhere, so the tail is
-    // kept rather than parsed. Splitting on '\n' alone would parse half a JSON object.
-    const frames = buf.split('\n\n');
-    buf = frames.pop() ?? '';
-    for (const frame of frames) {
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        try {
-          const j = JSON.parse(payload) as {
-            choices?: {delta?: {content?: string}}[];
-            usage?: {prompt_tokens?: number; completion_tokens?: number};
-          };
-          const piece = j.choices?.[0]?.delta?.content;
-          if (typeof piece === 'string' && piece) { text += piece; o.onDelta(piece); }
-          if (j.usage) {
-            usage = {prompt: j.usage.prompt_tokens ?? 0, completion: j.usage.completion_tokens ?? 0};
-          }
-        } catch { /* a frame we cannot parse is a frame we ignore — never a thrown request */ }
+  /**
+   * ⚠️ THE READER IS RELEASED ON EVERY EXIT — codex round 22, Medium 2. It executed normal
+   * completion, a read failure and an abort, and the reader stayed LOCKED in all three. A locked
+   * reader holds the response body open; on an abort that is a socket the browser cannot reclaim
+   * until GC, and on a component that has already unmounted nobody will ever come back for it.
+   */
+  try {
+    for (;;) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (e) {
+        // ⚠️ A MID-STREAM READ FAILURE WENT OUT AS A RAW `Error` — codex round 22, Medium 2 again,
+        // and it is the one that matters: the module's whole claim is that NOTHING it surfaces can
+        // carry the key, and this path bypassed `sanitise` entirely. The dock happened to suppress
+        // the detail, so the leak was latent rather than live — which is exactly the kind of gap
+        // that becomes live the first time somebody renders `String(e)` in a catch.
+        throw new AiError('ai.network', null, sanitise(String((e as Error)?.message ?? e)));
+      }
+      if (chunk.done) break;
+      buf += dec.decode(chunk.value, {stream: true});
+      /**
+       * ⚠️ NORMALISE CRLF BEFORE SPLITTING — codex round 22, Medium 2, the silent one.
+       *
+       * SSE frames are separated by a BLANK LINE, and the spec's line terminator is CR, LF **or
+       * CRLF**. `split('\n\n')` never matches `\r\n\r\n`, so a conforming CRLF stream produced an
+       * EMPTY answer and `usage: null` — no error, no warning, nothing to see. codex executed it
+       * one byte at a time against an otherwise identical stream and got the empty answer.
+       *
+       * Normalising the buffer (not the chunks) is what makes it safe across a boundary that falls
+       * BETWEEN the CR and the LF: the CR stays in the tail and is joined to its LF next round.
+       */
+      buf = buf.replace(/\r\n/g, '\n');
+      // A chunk boundary can fall anywhere, so the tail is kept rather than parsed — splitting on a
+      // single '\n' would hand half a JSON object to the parser.
+      const frames = buf.split('\n\n');
+      buf = frames.pop() ?? '';
+      for (const frame of frames) {
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const j = JSON.parse(payload) as {
+              choices?: {delta?: {content?: string}}[];
+              usage?: {prompt_tokens?: number; completion_tokens?: number};
+            };
+            const piece = j.choices?.[0]?.delta?.content;
+            if (typeof piece === 'string' && piece) { text += piece; o.onDelta(piece); }
+            if (j.usage) {
+              usage = {prompt: j.usage.prompt_tokens ?? 0, completion: j.usage.completion_tokens ?? 0};
+            }
+          } catch { /* a frame we cannot parse is a frame we ignore — never a thrown request */ }
+        }
       }
     }
+  } finally {
+    // `cancel()` on an unfinished body, `releaseLock()` on a finished one. Both are best-effort:
+    // a failure to tidy up must never become the error the reader sees.
+    try { await reader.cancel(); } catch { /* already closed */ }
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
+  countSpend(usage);
   return {text, usage};
 }
