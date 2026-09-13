@@ -158,35 +158,39 @@ bucket_name = "human-anatomy-snaps"
 # ⚠️ THE FIRST RENDER OF EACH PLATE AFTER THIS BUMP IS COLD. Every cached PNG under the old key is
 # retired, and Browser Rendering minutes are exhausted on the Adrey account, so the cold path is
 # the local one. That is the cost of the bump and it is stated rather than discovered.
-# ══ L31 v2.1b+c, S5a (2026-09-13) — A RENDER-PATH EDIT, AND THE ID DELIBERATELY DOES NOT MOVE ════
+# ══ L31 v2.1b+c, S5a (2026-09-13) — BUMPED TO l31v21bc2. A RENDER-PATH EDIT, AND THE ID MOVES ════
 #
 # `app/scene.tsx` gained `__atlasNav.setPose` — the write twin of the `pose()` reader, needed because
 # a scene tab restores a camera pose and `scene.camera` cannot express one (it carries a view, a
-# focus set, a padding and an explode amount, none of which say where a reader orbited to).
+# focus set, a padding and an explode amount, none of which say where a reader orbited to). The file
+# is in `deploy.ps1`'s `renderPaths`, so the tripwire fires and RC2 applies exactly as written: bump,
+# deploy the Worker, and prove the plates unchanged.
 #
-# THE FILE IS IN `deploy.ps1`'s `renderPaths`, so the tripwire fires. The id is NOT bumped, and the
-# reasoning is the same shape as the three edits argued above — a v2-path-only change behind a
-# surface the render branch never reaches:
+# ⚠️ I FIRST DECLINED THIS BUMP, AND MY REASON WAS FALSE. I argued the change was plate-invisible by
+# inspection (true, and codex agreed across two rounds that it found no path from Worker capture to
+# `setPose`) and that a bump would therefore cost more than it bought, because "Browser Rendering
+# minutes are EXHAUSTED on the Adrey account" — so retiring the cache would take live links from a
+# slightly older picture to NO picture.
 #
-#   · `setPose` is only ever called from `applyTab` in app/v2/page.tsx, i.e. by a CLICK on a scene
-#     tab. `workers/snap` renders from the scene and never touches `window.__atlasNav`; grep the
-#     Worker for it and there is nothing.
-#   · It is purely ADDITIVE. No existing line of scene.tsx changed — the diff is one new property on
-#     an object literal — so no code the plate DOES execute was altered.
-#   · The claim is MEASURED, not argued: `plate-goldens.mjs compare` is run against
-#     `.artifacts/L31/v21a/live-after/goldens-after.json` after the deploy, and the deploy is
-#     REVERSED if any control scene moves. (Per the caveat above, the forward-bend plate's PNG hash
-#     is stochastic; its camera and projected rect are the evidence there, as before.)
+# That second half was not a measurement. It was this file's own note from the l31v21a era, read as
+# if it were still true. The planner refuted it with the instrument that settles it: the post-deploy
+# plate goldens rendered **6 of 6 IDENTICAL against the live Worker** after S1 (2026-09-12) and again
+# after S4 at 06:40 today (`.artifacts/L31/v21a/live-after-s4/goldens-after.json`). The account
+# renders plates. The cost I was protecting against does not exist, so the trade I made was between a
+# real risk and an imaginary saving.
 #
-# AND THE COST OF BUMPING ANYWAY IS WHY THIS IS WORTH THE PARAGRAPH. Browser Rendering minutes are
-# still exhausted on the Adrey account, so a bump retires every cached PNG and the account cannot
-# re-render one: it would take every existing ChatGPT link from "a slightly older picture" to NO
-# picture, in exchange for retiring a cache that cannot be wrong. That trade is the opposite of the
-# one made at l31v21a, where a warm tab really could draw the wrong language.
+# THE LESSON IS THE ONE THIS PROJECT KEEPS RELEARNING, arriving in a new place: a comment is a claim,
+# not evidence. This file is full of careful measured notes, and I used one of them as a fact about
+# TODAY without re-measuring — the same shape as trusting a status line over the server's own log.
+# Where a stale note can gate a deploy decision, it has to carry its measurement date, and the reader
+# has to check it. Hence the date stamps above and here.
 #
-# ⚠️ THIS IS A JUDGEMENT CALL AGAINST A LITERAL READING OF THE S5a KICKOFF (RC2 says "bump
-# SITE_BUILD"), and it is flagged to the planner in #coord and in the worklog rather than taken
-# quietly. RC2's bump to `l31v21bc` was performed by S1 and stands; what is declined here is a
-# SECOND bump for a change that cannot move a plate. If the planner or Adrian wants the bump anyway,
-# it is one line here plus `cd workers/snap; npx wrangler deploy`.
-SITE_BUILD = "l31v21bc"
+# ⚠️ AND THE BUMP IS THE HONEST WAY TO CLEAR THE TRIPWIRE. Touching this file to satisfy the guard's
+# mtime comparison without moving the id would have passed the check while doing none of what the
+# check exists to cause. The guard is never edited and never worked around.
+#
+# THE PROOF IS STILL THE GOLDENS, not this paragraph: after the Pages and Worker deploys,
+# `plate-goldens.mjs compare` runs against the S4 baseline above and must report every control scene
+# IDENTICAL. (Per the caveat further up, the forward-bend plate's PNG hash is stochastic — its camera
+# and projected rect are the evidence there.) The first render after this bump is COLD.
+SITE_BUILD = "l31v21bc2"
