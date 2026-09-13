@@ -656,6 +656,11 @@ button.v2-tab[disabled]{opacity:.45;cursor:default}
  background:var(--v2-accent-soft)}
 .v2-ai-prop>b{display:block;font-size:var(--v2-type-sm);margin-bottom:4px}
 .v2-ai-propfoot{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
-/* The phone sheet's body: the same panel, scrolling inside the sheet rather than inside a pane. */
+/* The phone sheet's body: the same panel, scrolling inside the SHEET rather than inside a pane.
+   ⚠️ AND WITH NO NESTED SCROLLER OF ITS OWN. The first draft gave the log `max-height:38dvh` here
+   too, which put a bounded scroll area inside an already-scrolling sheet: the 390x844 screenshot
+   showed the proposal card sliced through the middle of "adds 2 structures", with its Apply button
+   below the fold of an inner scroller a finger has no reason to look for. On the phone the sheet is
+   the scroller, and the log simply grows inside it. */
 .v2-ai-sheetbody{display:flex;flex-direction:column;min-height:0}
-.v2-ai-sheetbody .v2-ai-log{max-height:38dvh}
+.v2-ai-sheetbody .v2-ai-log{max-height:none;overflow:visible}

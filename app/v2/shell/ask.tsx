@@ -86,6 +86,24 @@ export default function AskPanel(p: AskProps) {
   // A send in flight when the dock closes must not keep streaming into a dead component.
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /**
+   * ⚠️ FOLLOW THE ANSWER DOWN — and this is not a nicety, it is the difference between a control
+   * being reachable and not. LOOKED AT, in the 1440 and 390 screenshots: the log is a bounded
+   * scroller, so a reply long enough to overflow it left the PROPOSAL CARD cut off mid-word with
+   * its "Apply to view" button entirely below the fold of a nested scroll area most readers would
+   * not think to scroll. The one thing in this panel with a consequence was the one thing you
+   * could not see.
+   *
+   * On every turn change AND every delta, the log is pinned to its bottom. `scrollTop = scrollHeight`
+   * rather than `scrollIntoView`, which would also scroll the PAGE (and on the phone, the sheet)
+   * out from under the reader.
+   */
+  const logRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [turns]);
+
   /** The S5a hand-off, unchanged: the controller's blob, so the link carries this session's edits. */
   const link = () =>
     `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
@@ -201,7 +219,7 @@ export default function AskPanel(p: AskProps) {
     <div className={p.sheet ? 'v2-ai-sheetbody' : 'v2-pane-body'}>
       <p className="v2-note-sm"><b>{tr('ask.lead')}</b></p>
       {keyed && turns.length === 0 && <p className="v2-note-sm">{tr('ai.empty')}</p>}
-      {keyed && turns.length > 0 && <div className="v2-ai-log" role="log" aria-live="polite">
+      {keyed && turns.length > 0 && <div className="v2-ai-log" ref={logRef} role="log" aria-live="polite">
         {turns.map((t, i) => <div key={i} className={`v2-ai-turn is-${t.role}`}>
           <b>{tr(t.role === 'user' ? 'ai.you' : 'ai.answer')}</b>
           <div className="v2-ai-text">{t.role === 'user' ? t.text : body(t.text)}</div>

@@ -1160,7 +1160,7 @@ export function StudioOverlays(p: {
       }}>
       <input className="v2-ai-keyinput" name="openai-model" autoComplete="off" spellCheck={false}
        defaultValue={custom ? model : ''} placeholder={tr('ai.modelOther')} aria-label={tr('ai.modelOther')}/>
-      <button type="submit" className="v2-tbtn">{tr('ai.save')}</button>
+      <button type="submit" className="v2-tbtn">{tr('ai.saveModel')}</button>
      </form>
     </div>
    </div>

@@ -425,6 +425,10 @@ export const V2: Record<string, Row> = {
  'ai.none':        {en: 'No key on this device.', 'zh-Hans': '本设备未保存密钥。', 'zh-Hant': '本裝置未儲存金鑰。'},
  'ai.model':       {en: 'Model', 'zh-Hans': '模型', 'zh-Hant': '模型'},
  'ai.modelNote':   {en: 'A short fixed list, plus anything you type. No list is fetched, and a name OpenAI does not know fails visibly rather than quietly falling back.', 'zh-Hans': '固定的简短列表，也可自行输入。不会去获取模型列表；OpenAI 不认识的名称会明确报错，而不会悄悄退回其他模型。', 'zh-Hant': '固定的簡短清單，也可自行輸入。不會去取得模型清單；OpenAI 不認得的名稱會明確報錯，而不會悄悄退回其他模型。'},
+ // ⚠️ ITS OWN LABEL. The model form reused `ai.save` and the 1440 screenshot showed a button
+ // reading "Save key" directly under a MODEL field -- copy that tells the reader they are
+ // about to do something they are not. Seen in a picture, not in a diff.
+ 'ai.saveModel':   {en: 'Use this model', 'zh-Hans': '使用此模型', 'zh-Hant': '使用此模型'},
  'ai.modelOther':  {en: 'Another model', 'zh-Hans': '其他模型', 'zh-Hant': '其他模型'},
  'ai.spendTitle':  {en: 'This session', 'zh-Hans': '本次会话', 'zh-Hant': '本次工作階段'},
  // ⚠️ "Replies {r}" AND NOT "{r} replies" — the shipped build rendered "1 replies" on the first

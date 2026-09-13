@@ -6055,6 +6055,40 @@ if (variant === 'v2') {
       const proposed = await page.waitForFunction(
         () => !!document.querySelector('.v2-ai-prop'), null, {timeout: 15000, polling: 100},
       ).then(() => true).catch(() => false);
+      /**
+       * ⚠️ PRESENT IS NOT REACHABLE — and only the SCREENSHOTS showed it. The proposal card sits at
+       * the end of a long reply inside a bounded, scrolling log, so on the first build the card was
+       * sliced through the middle of "adds 2 structures" and its Apply button sat below the fold of
+       * a NESTED scroller — on the phone, inside an already-scrolling sheet. The row above would
+       * have passed: the card existed and the click worked, because `.click()` does not need to see
+       * anything. The one control in this panel with a consequence was the one a reader could not
+       * find.
+       *
+       * So the button's rect is compared to its scroll container's. The product fix is the log
+       * following the answer down (`ask.tsx`) plus no nested scroller on the phone (`shell.css`).
+       */
+      const reach = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.v2-ai-prop button')]
+          .find((x) => /Apply|应用|套用/.test(x.textContent || ''));
+        if (!b) return {found: false};
+        const r = b.getBoundingClientRect();
+        const log = b.closest('.v2-ai-log');
+        const lr = log ? log.getBoundingClientRect() : null;
+        return {
+          found: true,
+          size: r.width > 0 && r.height > 0,
+          inViewport: r.top >= 0 && r.bottom <= innerHeight,
+          inScroller: !lr || (r.top >= lr.top - 1 && r.bottom <= lr.bottom + 1),
+          where: `button ${Math.round(r.top)}–${Math.round(r.bottom)}`
+            + (lr ? ` · log ${Math.round(lr.top)}–${Math.round(lr.bottom)}` : ' · no inner scroller')
+            + ` · viewport 0–${innerHeight}`,
+        };
+      });
+      check(VP5B.name, `[${S5B}] and the Apply button is REACHABLE, not merely present`,
+        reach.found && reach.size && reach.inViewport && reach.inScroller,
+        `found=${reach.found} · has size=${reach.size} · inside the viewport=${reach.inViewport}`
+        + ` · inside its scroll container=${reach.inScroller} · ${reach.where || '-'}`,
+        'the one control here with a consequence must be visible without hunting for a nested scrollbar');
       const before = await page.evaluate(() => ({
         ids: window.atlas?.state?.().ids?.length ?? -1,
         blob: new URL(location.href).searchParams.get('scene') || '',
