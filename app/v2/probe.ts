@@ -35,7 +35,79 @@ export interface ProbeReading {
  memoryGb: number | null;
  cores: number | null;
  cls: number;
+ /** S5b prelude — see `recordFailure`. Empty on every healthy visit. */
+ failures: RequestFailure[];
 }
+
+/**
+ * ── WHICH REQUEST FAILED — S5b prelude ─────────────────────────────────────────────────────────
+ *
+ * The planner's first live sweep after the S5a deploy measured, at 1366×1024 only, "The anatomy
+ * could not be loaded" with 0 systems and 0 structures; the rerun was clean 590/0/7. A transient
+ * fetch failure moments after a deploy is the obvious reading — and it is a READING, not a
+ * measurement, because the app recorded NOTHING about what actually failed. `markError('atlas')`
+ * says a load failed; it does not say which URL, with what status, or whether the body was the
+ * Access login page arriving as HTTP 200.
+ *
+ * The cost of that silence is exactly the one this project keeps paying: a transient and a real
+ * regression produce the same evidence, so the only way to tell them apart is to run it again and
+ * believe the second answer. So the failure now names itself in three places a human or an oracle
+ * can read without a debugger:
+ *   · `document.documentElement.dataset.atlasFailed` — one line, for the sweep and for a glance;
+ *   · `console.error` — for the browser's own log, which the sweep already collects;
+ *   · the probe panel (`?probe=1`), through `ProbeReading.failures`.
+ *
+ * ⚠️ IT DOES NOT GO IN THE VISIBLE ERROR CARD. A URL and an HTTP status in the reader's face is
+ * developer output; the card keeps saying `error.load` in the reader's language, with its Reload
+ * button. Diagnostics go where diagnostics are read.
+ *
+ * ⚠️ AND IT IS NOT IN `url-state.ts`. That file is inside `deploy.ps1`'s render-path guard, so a
+ * line there would force a `SITE_BUILD` bump and a Worker deploy to retire every cached plate —
+ * for a diagnostic that cannot change a single pixel of one. This module is v2-only.
+ */
+export interface RequestFailure {url: string; status: number | null; detail: string; at: number}
+const failures: RequestFailure[] = [];
+
+/**
+ * ⚠️ `surfaced` — "THE READER CAN ALREADY SEE THE CAUSE", and it decides ONE thing: the console.
+ *
+ * Measured, not predicted. The renderer's `onError` already puts its own sentence on screen in the
+ * reader's language ("The 3D session was paused by your device. Reload to continue."), so a console
+ * line adds nothing a human needs — and the first version emitted one anyway. Under a full sweep
+ * (twelve browser contexts, SwiftShader, a live WebGL canvas) a context loss is a LOAD condition
+ * that happens sometimes, and the new line turned it into a red `no console errors` row: a
+ * diagnostic making a pre-existing, unrelated oracle flakier. Measured in the S5b smoke sweep.
+ *
+ * The ATLAS fetch is the opposite case and the one this whole record exists for: its card says "The
+ * anatomy could not be loaded" and the CAUSE — which URL, what status, what content-type — is
+ * nowhere on screen by design. That is what the console line is for.
+ *
+ * Both cases still write the attribute and the probe entry, so nothing is hidden from an oracle or
+ * from `?probe=1` either way; `surfaced` only decides whether the CONSOLE is told something the
+ * screen has already said.
+ */
+export function recordFailure(f: {url: string; status?: number | null; detail?: string; surfaced?: boolean}): void {
+ const rec: RequestFailure = {
+  url: f.url,
+  status: typeof f.status === 'number' ? f.status : null,
+  // BOUNDED. An error message can carry a whole HTML body — the SPA-fallback trap this estate
+  // already knows — and an unbounded one in a DOM attribute is its own denial of service.
+  detail: String(f.detail ?? '').replace(/\s+/g, ' ').trim().slice(0, 200),
+  at: Math.round(performance.now()),
+ };
+ // Bounded the same way: a retry loop must not grow this without limit.
+ failures.push(rec);
+ if (failures.length > 8) failures.shift();
+ try {
+  document.documentElement.dataset.atlasFailed =
+   `${rec.url} :: ${rec.status === null ? 'no-status' : rec.status} :: ${rec.detail}`.slice(0, 300);
+ } catch { /* no document (SSR, a test) — the console line below still lands */ }
+ if (f.surfaced) return;
+ // eslint-disable-next-line no-console
+ console.error(`[atlas] request failed: ${rec.url} status=${rec.status ?? 'none'} ${rec.detail}`);
+}
+
+export const readFailures = (): RequestFailure[] => failures.slice();
 
 const marks: Record<string, number> = {};
 let cls = 0;
@@ -104,6 +176,7 @@ export function readProbe(build: string, scene: string): ProbeReading {
   memoryGb: nav.deviceMemory ?? null,
   cores: nav.hardwareConcurrency ?? null,
   cls: Math.round(cls * 10000) / 10000,
+  failures: readFailures(),
  };
 }
 

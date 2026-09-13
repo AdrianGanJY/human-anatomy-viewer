@@ -62,7 +62,10 @@ declare const __ATLAS_DEPS__: string | undefined;
 const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
 import type {NavMode} from './use-shell.ts';
 import Overlay from './overlay.tsx';
-import {DOCK_KEYS, type DockKey, type SceneTab} from './store.ts';
+import {DOCK_KEYS, clearOpenAi, openAiMask, readOpenAiModel, saveOpenAiKey, setOpenAiModel, tabOrdinals, type DockKey, type SceneTab} from './store.ts';
+import AskPanel, {OPENAI_CHANGED} from './ask.tsx';
+import {MODELS, modelOf} from './ai.ts';
+import {LIMITS} from '../../scene-codec.js';
 
 const ICON = {stroke: 'currentColor', fill: 'none', strokeWidth: 1.6, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const};
 const Ico = ({d, size = 15}: {d: string; size?: number}) =>
@@ -163,6 +166,41 @@ export interface ShellProps {
 }
 
 const MB = (n: number) => (n / 1048576).toFixed(1);
+
+/**
+ * ── A TAB'S LABEL AND ITS TOOLTIP — S5b prelude, codex r21 LOW 1 ───────────────────────────────
+ *
+ * Carried unfixed across rounds 18–21: the label is the scene's CAPTION, so pressing `+` twice on
+ * one scene produces two identical tabs restoring two different cameras. Rename is out of this
+ * increment (`spec.md` §Rejected), so the label takes a POSITIONAL ordinal and the tooltip takes
+ * the SNAPSHOT TIME — positional because eviction renumbers, and the time because it does not.
+ *
+ * ⚠️ ONE IMPLEMENTATION FOR BOTH SURFACES. The desktop strip and the phone's A9 sheet render the
+ * same list, and the way this goes wrong is one of them getting the ordinal and the other not —
+ * so there is one function and neither surface computes anything of its own.
+ *
+ * ⚠️ THE DATE IS FORMATTED BY THE PLATFORM, in the UI language, never by a string in `copy.ts`.
+ * A table of date words is a table that disagrees with the reader's own clock format.
+ */
+const tabLabel = (t: SceneTab, ord: number | null, untitled: string): string =>
+ `${t.title || untitled}${ord === null ? '' : ` · ${ord}`}`;
+const tabTip = (
+ tr: ShellProps['tr'], lang: Lang, t: SceneTab, ord: number | null, untitled: string,
+): string => {
+ const parts = [t.title || untitled];
+ if (ord !== null) parts.push(tr('tabs.nth', {n: ord}));
+ if (t.cam) parts.push(tr('tabs.pose'));
+ // `at` is absent on every tab written before S5b. The tooltip then simply says less, rather than
+ // showing "Invalid Date" or inventing a time from when the page happened to load.
+ if (typeof t.at === 'number' && Number.isFinite(t.at)) {
+  let when: string;
+  // A locale the runtime does not know throws a RangeError out of `toLocaleString`, which would
+  // take the whole strip down for a tooltip.
+  try { when = new Date(t.at).toLocaleString(lang); } catch { when = new Date(t.at).toISOString(); }
+  parts.push(tr('tabs.taken', {t: when}));
+ }
+ return parts.join(' — ');
+};
 
 /**
  * THE FIELD OVERLAYS — a SEPARATE component, and the split is structural rather than tidy.
@@ -783,43 +821,18 @@ export default function Shell(p: ShellProps) {
   </div>
  </>;
 
- // THE ASK DOCK. The deep link is permitted at S0 by the kickoff, so this is LIVE — and it opens
- // ChatGPT in a new tab with the prompt and the scene link, generating no answer here. The in-app
- // chat (and its CSP, and its key handling) is S5b and is deliberately absent, not stubbed.
  /**
-  * THE PROMPT AND THE LINK ARE ONE STRING, built once (S5a).
+  * THE ASK DOCK — ONE COMPONENT, SHARED WITH THE PHONE SHEET (S5b).
   *
-  * `askText` is what goes to ChatGPT and what "Copy prompt" puts on the clipboard — the same bytes
-  * through both routes, so a reader who pastes by hand gets what the button would have sent. The
-  * link is the CONTROLLER's blob, so it carries every edit made in this session rather than the
-  * blob the page arrived with.
+  * S5a rendered the hand-off HERE and again in `PhoneSheets`, and the two copies had already
+  * started to differ. S5b adds an optional chat with a live API key to that surface, so a second
+  * copy would be a second place for a key-handling mistake to live: `ask.tsx` is now the only
+  * implementation and both hosts render it. Without a key it is byte-for-byte S5a's hand-off.
   */
- const askLink = () =>
-  `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
- const askText = (q: string) => `${q}\n\n${askLink()}`;
- const askHref = (q: string) => `https://chatgpt.com/?q=${encodeURIComponent(askText(q))}`;
- const [ask, setAsk] = useState('');
- const askPane = <>
-  <div className="v2-pane-body">
-   <p className="v2-note-sm"><b>{tr('ask.lead')}</b></p>
-   <textarea className="v2-askbox" value={ask} onChange={(e) => setAsk(e.target.value)}
-    placeholder={tr('ask.placeholder')} aria-label={tr('panel.ask')}/>
-   <p className="v2-note-sm" style={{marginTop: 10}}>{tr('ask.context', {n: p.basket.length})}</p>
-   <p className="v2-note-sm">{tr('ask.note')}</p>
-  </div>
-  <div className="v2-pane-foot">
-   {/* DISABLED, not inert: the control exists and works, it just needs a question first. */}
-   <a className={`v2-tbtn ${ask.trim() ? 'is-on' : ''}`} href={ask.trim() ? askHref(ask.trim()) : undefined}
-    target="_blank" rel="noreferrer noopener" aria-disabled={!ask.trim()}
-    style={ask.trim() ? undefined : {opacity: .45, pointerEvents: 'none'}}>{tr('ask.open')}</a>
-   {/* S5a. The hand-off has to work for someone whose assistant is not ChatGPT, and for someone
-       whose browser blocked the new tab. Same bytes as the link carries. */}
-   <button type="button" className="v2-tbtn" disabled={!ask.trim()}
-    onClick={() => copyText(askText(ask.trim()), 'copied')}>{tr('ask.copy')}</button>
-   <span className="v2-grow"/>
-   {jsonFlash === 'copied' && <span className="v2-static">{tr('ask.copied')}</span>}
-  </div>
- </>;
+ const askPane = <AskPanel
+  tr={tr} lang={p.lang} scene={p.scene} sceneBlob={p.sceneBlob} picks={p.picks}
+  basket={p.basket} nameOf={(id, fallback) => t.name(id, fallback)} dispatch={p.dispatch}
+  titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX}/>;
 
  const paneBody: Record<DockKey, React.ReactNode> = {selection: selectionPane, info: infoPane, json: jsonPane, ask: askPane};
  const dock = p.docks.length > 0 && <div className="v2-dock">
@@ -834,6 +847,9 @@ export default function Shell(p: ShellProps) {
    {paneBody[k]}
   </section>)}
  </div>;
+
+ // The ordinals for the strip: computed ONCE, from the same function the phone sheet uses.
+ const tabOrds = tabOrdinals(p.tabs);
 
  // ── the status strip ────────────────────────────────────────────────────────────────────────
  const status = <footer className="v2-status">
@@ -855,9 +871,11 @@ export default function Shell(p: ShellProps) {
   {!p.coarse && p.tabs.length > 0 && <div className="v2-tabs" role="group" aria-label={tr('tabs.short')}>
    <span className="v2-tab is-on">{p.caption.title || tr('tabs.current')}</span>
    {p.tabs.map((t, i) => <button type="button" key={`${t.blob.slice(0, 12)}-${i}`} className="v2-tab"
-    title={`${t.title || tr('tabs.untitled')}${t.cam ? ` — ${tr('tabs.pose')}` : ''}`}
-    aria-label={tr('tabs.restore', {name: t.title || tr('tabs.untitled')})}
-    onClick={() => p.onApplyTab(t)}>{t.title || tr('tabs.untitled')}</button>)}
+    title={tabTip(tr, p.lang, t, tabOrds[i], tr('tabs.untitled'))}
+    // THE ORDINAL TRAVELS INTO THE ACCESSIBLE NAME TOO. A screen-reader user hears "Open
+    // Hamstrings & pelvis" twice otherwise — the same ambiguity, with no tooltip to fall back on.
+    aria-label={tr('tabs.restore', {name: tabLabel(t, tabOrds[i], tr('tabs.untitled'))})}
+    onClick={() => p.onApplyTab(t)}>{tabLabel(t, tabOrds[i], tr('tabs.untitled'))}</button>)}
    <button type="button" className="v2-tab v2-tab-add" disabled={!p.scene}
     title={p.tabsFull ? tr('tabs.full') : tr('tabs.snapshot')}
     aria-label={tr('tabs.snapshot')} onClick={p.onSnapshot}>+</button>
@@ -903,33 +921,29 @@ export function PhoneSheets(p: {
  askOpen: boolean; onAsk(v: boolean): void;
  scenesOpen: boolean; onScenes(v: boolean): void;
  tabs: SceneTab[]; tabsFull: boolean; onSnapshot(): void; onApplyTab(t: SceneTab): void;
+ /** S5b — the two the chat needs and the S5a sheet did not: the UI-language name for a structure,
+  *  and the controller, so a model-proposed view can be applied through the atomic refusal. */
+ nameOf(id: string, fallback: string): string;
+ dispatch(cmd: Command): boolean;
 }) {
  const {tr} = p;
- const [ask, setAsk] = useState('');
- const [copied, setCopied] = useState(false);
- const link = () =>
-  `${location.origin}${location.pathname}${p.sceneBlob ? `?scene=${p.sceneBlob}` : `?select=${p.picks.join(',')}`}`;
- const text = (q: string) => `${q}\n\n${link()}`;
+ const ords = tabOrdinals(p.tabs);
 
- // A8 — the conversation hand-off. `spec.md`: "filled prompt, explicit external handoff,
- // copy-prompt; no answer bubbles." The absence of answer bubbles is the S5a/S5b line, drawn here.
+ /**
+  * A8 — the conversation hand-off, and from S5b the chat as well. `spec.md` drew this as "filled
+  * prompt, explicit external handoff, copy-prompt; NO ANSWER BUBBLES", and the absence of bubbles
+  * was exactly the S5a/S5b line: S5b is the side of it that has them, on the phone as on the
+  * desktop, because a reader who pasted a key on this device did so for both.
+  *
+  * ⚠️ THE SAME COMPONENT AS THE DOCK (`ask.tsx`), in its sheet presentation. RC5 still holds by
+  * construction: a sheet is a scrim ABOVE `.v2-margin`, and nothing here renders inside it.
+  */
  const askSheet = <Overlay open={p.askOpen} onClose={() => p.onAsk(false)} sheet
   title={tr('panel.ask')} labelClose={tr('settings.close')}>
-  <p className="v2-note-sm"><b>{tr('ask.lead')}</b></p>
-  <textarea className="v2-askbox" value={ask} onChange={(e) => { setAsk(e.target.value); setCopied(false); }}
-   placeholder={tr('ask.placeholder')} aria-label={tr('panel.ask')}/>
-  <p className="v2-note-sm" style={{marginTop: 10}}>{tr('ask.context', {n: p.basket.length})}</p>
-  <p className="v2-note-sm">{tr('ask.note')}</p>
-  <div className="v2-sheet-foot">
-   <a className={`v2-tbtn ${ask.trim() ? 'is-on' : ''}`}
-    href={ask.trim() ? `https://chatgpt.com/?q=${encodeURIComponent(text(ask.trim()))}` : undefined}
-    target="_blank" rel="noreferrer noopener" aria-disabled={!ask.trim()}
-    style={ask.trim() ? undefined : {opacity: .45, pointerEvents: 'none'}}>{tr('ask.open')}</a>
-   <button type="button" className="v2-tbtn" disabled={!ask.trim()}
-    onClick={() => navigator.clipboard?.writeText(text(ask.trim())).then(() => setCopied(true)).catch(() => {})}>
-    {tr('ask.copy')}</button>
-   {copied && <span className="v2-static">{tr('ask.copied')}</span>}
-  </div>
+  <AskPanel sheet
+   tr={tr} lang={p.lang} scene={p.scene} sceneBlob={p.sceneBlob} picks={p.picks}
+   basket={p.basket} nameOf={p.nameOf} dispatch={p.dispatch}
+   titleMax={LIMITS.TITLE_MAX} noteMax={LIMITS.NOTE_MAX}/>
  </Overlay>;
 
  // A9 — the local snapshots. `spec.md`: "three local snapshots, active scene, + cap 8, no
@@ -942,8 +956,10 @@ export function PhoneSheets(p: {
     <p className="v2-note-sm">{tr('tabs.note', {n: p.tabs.length})}</p>
     <div className="v2-scenelist">
      {p.tabs.map((t, i) => <button type="button" key={`${t.blob.slice(0, 12)}-${i}`} className="v2-scenerow"
+      title={tabTip(tr, p.lang, t, ords[i], tr('tabs.untitled'))}
+      aria-label={tr('tabs.restore', {name: tabLabel(t, ords[i], tr('tabs.untitled'))})}
       onClick={() => { p.onApplyTab(t); p.onScenes(false); }}>
-      <b>{t.title || tr('tabs.untitled')}</b>
+      <b>{tabLabel(t, ords[i], tr('tabs.untitled'))}</b>
       {/* WHETHER THE POSE CAME WITH IT, said per row. A snapshot taken before the renderer was
           ready has no pose, and a row that promised one and did not restore it would read as a
           broken control rather than as an honest one. */}
@@ -987,7 +1003,32 @@ export function StudioOverlays(p: {
  py(id: string, shown: string): string | null;
 }) {
  const {tr, lang} = p;
- const [tab, setTab] = useState<'general' | 'language' | 'about'>('general');
+ const [tab, setTab] = useState<'general' | 'language' | 'ai' | 'about'>('general');
+ /**
+  * ══ SETTINGS › AI — S5b ═══════════════════════════════════════════════════════════════════════
+  *
+  * ⚠️ THE KEY IS NEVER IN REACT STATE, INCLUDING WHILE IT IS BEING TYPED. The paste field is an
+  * UNCONTROLLED input inside a `<form>`: its value lives in the DOM (where an input's value has to
+  * live) and is read once, in the submit handler, from `FormData`. There is no `useState`, no
+  * `useRef` and no `onChange` holding it — so a devtools component snapshot, a React error boundary
+  * and a future props log have nothing to serialise. The field is `reset()` immediately after.
+  *
+  * Everything the panel DISPLAYS comes from the key-free accessors in `store.ts` (`hasOpenAi`,
+  * `openAiMask`, `readOpenAiModel`); this component cannot obtain the key even if it wanted to.
+  *
+  * `mask` is the only "cached" value and it is a mask — a bump counter re-reads it after a write,
+  * rather than holding a copy across renders.
+  */
+ const [keyTick, setKeyTick] = useState(0);
+ const [keyFlash, setKeyFlash] = useState<'' | 'saved' | 'removed'>('');
+ const mask = keyTick >= 0 ? openAiMask() : null;
+ const model = readOpenAiModel();
+ const custom = !!model && !(MODELS as readonly string[]).includes(model);
+ /** Tell an OPEN Ask dock that the answer to `hasOpenAi()` changed. */
+ const announceKey = () => {
+  setKeyTick((n) => n + 1);
+  try { window.dispatchEvent(new Event(OPENAI_CHANGED)); } catch { /* no window: nothing to tell */ }
+ };
  // ── Settings ────────────────────────────────────────────────────────────────────────────────
  const settings = <Overlay open={p.settingsOpen} onClose={() => p.onSettings(false)} sheet={p.sheet}
   title={tr('settings.title')} labelClose={tr('settings.close')}>
@@ -996,7 +1037,7 @@ export function StudioOverlays(p: {
        overlay rule was built to serve. `Overlay` used to focus the first focusable in DOM order,
        which is the panel header's `×` in every overlay — the defect that cost Find its typing
        (overlay.tsx). Settings now declares its target the same way Find declares its input. */}
-   {(['general', 'language', 'about'] as const).map((k) => <button type="button" key={k} role="tab"
+   {(['general', 'language', 'ai', 'about'] as const).map((k) => <button type="button" key={k} role="tab"
     aria-selected={tab === k} className={`v2-mtab ${tab === k ? 'is-on' : ''}`}
     {...(tab === k ? {'data-autofocus': '1'} : {})}
     onClick={() => setTab(k)}>{tr(`settings.${k}`)}</button>)}
@@ -1059,6 +1100,68 @@ export function StudioOverlays(p: {
       {p.py('FMA7487', '胸骨体') && <><br/><span className="v2-py">{p.py('FMA7487', '胸骨体')}</span></>}
       <br/><span style={{color: 'var(--v2-ink-3)'}}>Body of sternum</span>
      </p>
+    </div>
+   </div>
+  </div>}
+  {tab === 'ai' && <div className="v2-ai-settings">
+   <div className="v2-srow">
+    <div><b>{tr('ai.title')}</b><p>{tr('ai.intro')}</p></div>
+   </div>
+   <div className="v2-srow">
+    <div style={{width: '100%'}}>
+     <b>{tr('ai.keyLabel')}</b>
+     <p>{tr('ai.keyNote')}</p>
+     {mask
+      ? <div className="v2-ai-keyrow">
+        {/* THE MASK, NOT THE KEY. `openAiMask()` derives `sk-***…abcd` from storage on demand; the
+            whole value is never returned to this component, so it cannot be displayed, copied or
+            logged from here even by accident. */}
+        <code className="v2-ai-mask">{mask}</code>
+        <span className="v2-static">{tr('ai.stored')}</span>
+        <span className="v2-grow"/>
+        {/* A REAL REMOVE: `localStorage.removeItem`, not a flag. RC11. */}
+        <button type="button" className="v2-tbtn"
+         onClick={() => { clearOpenAi(); setKeyFlash('removed'); announceKey(); }}>{tr('ai.remove')}</button>
+       </div>
+      : <p className="v2-empty-state">{tr('ai.none')}</p>}
+     {/* ⚠️ UNCONTROLLED, AND THAT IS THE POINT — see the block comment above. `autoComplete="off"`
+         and `type="password"` keep it out of the browser's own form store and off the screen;
+         `FormData` reads it once; `reset()` clears the DOM node in the same handler. */}
+     <form className="v2-ai-keyrow" style={{marginTop: 10}} onSubmit={(e) => {
+       e.preventDefault();
+       const form = e.currentTarget;
+       const typed = String(new FormData(form).get('openai-key') ?? '');
+       form.reset();
+       if (saveOpenAiKey(typed)) { setKeyFlash('saved'); announceKey(); }
+      }}>
+      <input className="v2-ai-keyinput" type="password" name="openai-key" autoComplete="off"
+       spellCheck={false} placeholder={tr('ai.placeholder')} aria-label={tr('ai.keyLabel')}/>
+      <button type="submit" className="v2-tbtn is-on">{tr('ai.save')}</button>
+     </form>
+     {keyFlash && <p className="v2-note-sm">{tr(keyFlash === 'saved' ? 'ai.stored' : 'ai.removed')}</p>}
+    </div>
+   </div>
+   <div className="v2-srow">
+    <div style={{width: '100%'}}>
+     <b>{tr('ai.model')}</b>
+     <p>{tr('ai.modelNote')}</p>
+     {/* A SHORT HARDCODED LIST — RC11 refuses `GET /v1/models`. The free-text box below sends what
+         is typed, unprobed: a name OpenAI does not know comes back as its own 400/404 and the dock
+         shows it, which is "fails loudly" rather than a silent downgrade to something cheaper. */}
+     <div className="v2-seg" style={{marginTop: 10}}>
+      {MODELS.map((m) => <button type="button" key={m}
+       className={modelOf(model) === m ? 'is-on' : ''} aria-pressed={modelOf(model) === m}
+       onClick={() => { setOpenAiModel(m); setKeyTick((n) => n + 1); }}>{m}</button>)}
+     </div>
+     <form className="v2-ai-keyrow" style={{marginTop: 10}} onSubmit={(e) => {
+       e.preventDefault();
+       setOpenAiModel(String(new FormData(e.currentTarget).get('openai-model') ?? ''));
+       setKeyTick((n) => n + 1);
+      }}>
+      <input className="v2-ai-keyinput" name="openai-model" autoComplete="off" spellCheck={false}
+       defaultValue={custom ? model : ''} placeholder={tr('ai.modelOther')} aria-label={tr('ai.modelOther')}/>
+      <button type="submit" className="v2-tbtn">{tr('ai.save')}</button>
+     </form>
     </div>
    </div>
   </div>}

@@ -15,7 +15,7 @@ import vm from 'node:vm';
 import {isStudio, ladder, openDock, tierOf} from '../app/v2/shell/layout.ts';
 import {
   DOCK_W, FIELD_MIN, SIDE_DEFAULT, SIDE_MAX, SIDE_MIN, SIDE_STUB,
-  defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes, writeScenes,
+  defaultDocks, effectiveDocks, maskKey, readDocks, readOpenAi, readPinyin, readScenes, tabOrdinals, writeScenes,
 } from '../app/v2/shell/store.ts';
 import {CAMERA_CMDS, HOLD, HOLD_CODES, KEY_MAP} from '../app/v2/shell/keys.ts';
 import {V2, v2t} from '../app/v2/copy.ts';
@@ -218,6 +218,50 @@ test('a scene tab needs a blob, and a half-written camera pose is discarded rath
     assert.deepEqual(s.tabs[0].cam, [1, 2, 3, 4, 5, 6]);
     assert.equal(s.tabs[1].blob, 'bbb');
     assert.equal(s.tabs[1].cam, null, 'a three-number pose is not a pose');
+  });
+});
+
+/**
+ * ══ S5b PRELUDE — TWO SNAPSHOTS OF ONE SCENE MUST BE TELLABLE APART ════════════════════════════
+ *
+ * Carried by codex across rounds 18–21 and named again in r21's LOW: the tab label is the scene's
+ * CAPTION, so pressing `+` twice on one scene produces two tabs reading `Hamstrings & pelvis` and
+ * `Hamstrings & pelvis`. They restore different CAMERAS, so they are genuinely different views with
+ * identical names — the reader has to click one to find out which. Rename is explicitly out of this
+ * increment (spec.md §Rejected), so the cheap honest interim is an ordinal plus the time.
+ *
+ * ⚠️ THE ORDINAL IS POSITIONAL AND SAYS SO. It numbers within the DUPLICATE GROUP, in strip order,
+ * so evicting the oldest of three renumbers the other two. That is a real limitation and the reason
+ * the TOOLTIP carries the snapshot time, which is stable per tab and is the identity a reader can
+ * actually rely on. A unique title takes no ordinal at all — a lone `· 1` would be noise.
+ */
+test('S5b — a duplicated tab title gets a positional ordinal, a unique one does not', () => {
+  const t = (title) => ({blob: `b-${title}-${Math.random()}`, title, cam: null});
+  const tabs = [t('A'), t('B'), t('A'), t('A')];
+  assert.deepEqual(tabOrdinals(tabs), [1, null, 2, 3]);
+  assert.deepEqual(tabOrdinals([t('A')]), [null], 'one of a kind is not "number 1 of 1"');
+  assert.deepEqual(tabOrdinals([]), []);
+});
+
+test('S5b — an UNTITLED tab is one population, not many: two blanks are still 1 and 2', () => {
+  // `title: ''` renders as `tabs.untitled` in both surfaces, so two blanks LOOK identical and must
+  // be numbered. Grouping on the raw title is what makes that true without the copy table.
+  const tabs = [{blob: 'x', title: '', cam: null}, {blob: 'y', title: '', cam: null}];
+  assert.deepEqual(tabOrdinals(tabs), [1, 2]);
+});
+
+test('S5b — the snapshot time survives the store, and an absent or corrupt one is null', () => {
+  withStorage({'atlas.scenes': JSON.stringify({v: 1, tabs: [
+    {blob: 'a', title: 'has', cam: null, at: 1757700000000},
+    {blob: 'b', title: 'none', cam: null},
+    {blob: 'c', title: 'bad', cam: null, at: 'yesterday'},
+    {blob: 'd', title: 'infinite', cam: null, at: Number.POSITIVE_INFINITY},
+  ]})}, () => {
+    const s = readScenes();
+    assert.equal(s.tabs[0].at, 1757700000000);
+    assert.equal(s.tabs[1].at, null, 'a tab stored before S5b has no time, and that is not corruption');
+    assert.equal(s.tabs[2].at, null, 'a string is not a time');
+    assert.equal(s.tabs[3].at, null, 'and neither is Infinity — JSON.stringify would write it as null anyway');
   });
 });
 

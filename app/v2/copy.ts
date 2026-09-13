@@ -395,6 +395,66 @@ export const V2: Record<string, Row> = {
  'tabs.short':     {en: 'Scenes', 'zh-Hans': '场景', 'zh-Hant': '場景'},
  'tabs.snapshot':  {en: 'Snapshot as a new tab', 'zh-Hans': '快照为新标签页', 'zh-Hant': '快照為新分頁'},
  'tabs.current':   {en: 'Current scene', 'zh-Hans': '当前场景', 'zh-Hant': '目前場景'},
+ /** S5b prelude — codex r21 LOW 1. Two snapshots of one scene carry one caption, so the label takes
+  *  a positional ordinal and the tooltip takes the SNAPSHOT TIME, which is the stable half. `{t}` is
+  *  already localised by `toLocaleString` before it arrives, so no date words live in this table. */
+ 'tabs.taken':     {en: 'Snapshot taken {t}', 'zh-Hans': '快照时间：{t}', 'zh-Hant': '快照時間：{t}'},
+
+ // ══ L31 v2.1b+c, S5b — THE IN-APP CHAT ════════════════════════════════════════════════════════
+ // Adrian, 2026-09-11: "optional openai api key for in app chat". OPTIONAL is the operative word:
+ // with no key on the device the Ask dock is exactly what S5a shipped and none of these rows is
+ // reachable. Governed by RC11 / opus-plan-review-2.md §G.
+ //
+ // ⚠️ THE `{n}` AUDIT (RC13), in full. `ai.adds` and `ai.drops` interpolate a STRUCTURE COUNT whose
+ // English singular differs, so both are in `V2_ONE`. `ai.spend` interpolates TOKEN counts and is
+ // deliberately NOT there: `v2t` singularises on `{n}` alone and that row has three numbers, so a
+ // singular could not express it correctly anyway — and a one-token reply does not occur.
+ // `ai.failed` interpolates an HTTP status, which is not a count.
+ 'settings.ai':    {en: 'AI', 'zh-Hans': 'AI', 'zh-Hant': 'AI'},
+ 'ai.title':       {en: 'In-app chat', 'zh-Hans': '应用内对话', 'zh-Hant': '應用內對話'},
+ 'ai.intro':       {en: 'Paste an OpenAI API key and the Ask panel answers here, with this view as context. Optional: without a key, Ask hands off to ChatGPT exactly as before.', 'zh-Hans': '粘贴 OpenAI API 密钥后，“提问”面板可直接在此作答，并以当前视图为上下文。此为可选功能：未填写密钥时，“提问”仍照旧转交 ChatGPT。', 'zh-Hant': '貼上 OpenAI API 金鑰後，「提問」面板可直接在此作答，並以目前視圖為脈絡。此為選用功能：未填寫金鑰時，「提問」仍照舊轉交 ChatGPT。'},
+ 'ai.keyLabel':    {en: 'OpenAI API key', 'zh-Hans': 'OpenAI API 密钥', 'zh-Hant': 'OpenAI API 金鑰'},
+ // THE ONE-LINE STATEMENT RC11 REQUIRES, and it is the literal truth: the key is written to this
+ // browser's localStorage and sent as a bearer token to api.openai.com and to no other host.
+ 'ai.keyNote':     {en: 'Stored on this device only, and sent only to api.openai.com. It never reaches this site’s servers, a link, or a snapshot.', 'zh-Hans': '仅保存在本设备，且只发送至 api.openai.com。不会传到本站服务器、链接或快照中。', 'zh-Hant': '僅儲存在本裝置，且只傳送至 api.openai.com。不會傳到本站伺服器、連結或快照中。'},
+ 'ai.save':        {en: 'Save key', 'zh-Hans': '保存密钥', 'zh-Hant': '儲存金鑰'},
+ 'ai.placeholder': {en: 'sk-…', 'zh-Hans': 'sk-…', 'zh-Hant': 'sk-…'},
+ 'ai.stored':      {en: 'Saved on this device', 'zh-Hans': '已保存在本设备', 'zh-Hant': '已儲存在本裝置'},
+ 'ai.remove':      {en: 'Remove key', 'zh-Hans': '删除密钥', 'zh-Hant': '刪除金鑰'},
+ 'ai.removed':     {en: 'Removed from this device.', 'zh-Hans': '已从本设备删除。', 'zh-Hant': '已從本裝置刪除。'},
+ 'ai.none':        {en: 'No key on this device.', 'zh-Hans': '本设备未保存密钥。', 'zh-Hant': '本裝置未儲存金鑰。'},
+ 'ai.model':       {en: 'Model', 'zh-Hans': '模型', 'zh-Hant': '模型'},
+ 'ai.modelNote':   {en: 'A short fixed list, plus anything you type. No list is fetched, and a name OpenAI does not know fails visibly rather than quietly falling back.', 'zh-Hans': '固定的简短列表，也可自行输入。不会去获取模型列表；OpenAI 不认识的名称会明确报错，而不会悄悄退回其他模型。', 'zh-Hant': '固定的簡短清單，也可自行輸入。不會去取得模型清單；OpenAI 不認得的名稱會明確報錯，而不會悄悄退回其他模型。'},
+ 'ai.modelOther':  {en: 'Another model', 'zh-Hans': '其他模型', 'zh-Hant': '其他模型'},
+ 'ai.spendTitle':  {en: 'This session', 'zh-Hans': '本次会话', 'zh-Hant': '本次工作階段'},
+ // ⚠️ "Replies {r}" AND NOT "{r} replies" — the shipped build rendered "1 replies" on the first
+ // answer. `v2t` singularises on `{n}` alone and this row has three numbers, so `V2_ONE` cannot
+ // reach it; the fix is a phrasing that is correct at every count rather than a plural table entry
+ // that cannot be applied. (Seen in a live reading, not predicted.)
+ 'ai.spend':       {en: 'Replies {r} · {p} prompt + {c} answer tokens', 'zh-Hans': '{r} 次回答 · 提示 {p} + 回答 {c} 个 token', 'zh-Hant': '{r} 次回答 · 提示 {p} + 回答 {c} 個 token'},
+ 'ai.spendNone':   {en: 'Nothing sent yet.', 'zh-Hans': '尚未发送任何内容。', 'zh-Hant': '尚未傳送任何內容。'},
+ 'ai.ask':         {en: 'Ask', 'zh-Hans': '提问', 'zh-Hant': '提問'},
+ 'ai.stop':        {en: 'Stop', 'zh-Hans': '停止', 'zh-Hant': '停止'},
+ 'ai.waiting':     {en: 'Waiting for OpenAI…', 'zh-Hans': '正在等待 OpenAI…', 'zh-Hant': '正在等待 OpenAI…'},
+ 'ai.you':         {en: 'You', 'zh-Hans': '你', 'zh-Hant': '你'},
+ 'ai.answer':      {en: 'Answer', 'zh-Hans': '回答', 'zh-Hant': '回答'},
+ 'ai.clear':       {en: 'Clear', 'zh-Hans': '清空', 'zh-Hant': '清空'},
+ 'ai.empty':       {en: 'Ask anything about the structures on screen. Each question is sent once, with this view as context.', 'zh-Hans': '可以询问屏幕上任何结构。每次提问只发送一次，并附带当前视图作为上下文。', 'zh-Hant': '可以詢問畫面上任何結構。每次提問只傳送一次，並附帶目前視圖作為脈絡。'},
+ // Errors are KEYED, so they render in the reader's language like every controller refusal (S4).
+ 'ai.noKey':       {en: 'There is no OpenAI key on this device.', 'zh-Hans': '本设备没有 OpenAI 密钥。', 'zh-Hant': '本裝置沒有 OpenAI 金鑰。'},
+ 'ai.unauthorized':{en: 'OpenAI rejected the key. Check it under Settings › AI, or paste a new one.', 'zh-Hans': 'OpenAI 拒绝了该密钥。请在“设置 › AI”中检查，或重新粘贴。', 'zh-Hant': 'OpenAI 拒絕了該金鑰。請在「設定 › AI」中檢查，或重新貼上。'},
+ 'ai.network':     {en: 'The request did not reach OpenAI.', 'zh-Hans': '请求未能送达 OpenAI。', 'zh-Hant': '請求未能送達 OpenAI。'},
+ 'ai.failed':      {en: 'OpenAI answered with an error ({n}).', 'zh-Hans': 'OpenAI 返回了错误（{n}）。', 'zh-Hant': 'OpenAI 傳回了錯誤（{n}）。'},
+ 'ai.stopped':     {en: 'Stopped.', 'zh-Hans': '已停止。', 'zh-Hant': '已停止。'},
+ // A proposed view — a PROPOSAL, never an application (RC11: "apply to view is NEVER automatic").
+ 'ai.proposal':    {en: 'The answer proposes a different view', 'zh-Hans': '该回答提出了另一个视图', 'zh-Hant': '該回答提出了另一個視圖'},
+ 'ai.adds':        {en: 'adds {n} structures', 'zh-Hans': '新增 {n} 个结构', 'zh-Hant': '新增 {n} 個結構'},
+ 'ai.drops':       {en: 'removes {n} structures', 'zh-Hans': '移除 {n} 个结构', 'zh-Hant': '移除 {n} 個結構'},
+ 'ai.same':        {en: 'changes no structures', 'zh-Hans': '结构没有变化', 'zh-Hant': '結構沒有變化'},
+ 'ai.apply':       {en: 'Apply to view', 'zh-Hans': '应用到视图', 'zh-Hant': '套用到視圖'},
+ 'ai.applied':     {en: 'Applied.', 'zh-Hans': '已应用。', 'zh-Hant': '已套用。'},
+ 'ai.applyNote':   {en: 'Nothing changes until you press this. The app checks it the same way it checks a shared link, and refuses it the same way.', 'zh-Hans': '在你点击之前不会有任何变化。应用会像检查分享链接一样检查它，并以同样的方式拒绝。', 'zh-Hant': '在你點擊之前不會有任何變化。應用會像檢查分享連結一樣檢查它，並以同樣的方式拒絕。'},
+ 'tabs.nth':       {en: 'snapshot {n} of this scene', 'zh-Hans': '此场景的第 {n} 个快照', 'zh-Hant': '此場景的第 {n} 個快照'},
 
  // ── Settings ───────────────────────────────────────────────────────────────────────────────────
  'settings.title':   {en: 'Settings', 'zh-Hans': '设置', 'zh-Hant': '設定'},
@@ -558,6 +618,10 @@ export const V2_ONE: Record<string, string> = {
  // encoded characters" is already correct English. A singular row identical to its plural is not
  // caution, it is a second copy of the same string waiting to drift.
  'tabs.note': '{n} snapshot on this device',
+ // S5b: the proposal diff counts STRUCTURES and its English singular differs, so both rows belong
+ // here. The two S5b rows that deliberately do NOT are audited beside the block in `V2` above.
+ 'ai.adds': 'adds {n} structure',
+ 'ai.drops': 'removes {n} structure',
  'tree.viewOverridesHide': 'This view is hiding {n} system your set has on — your own set is unchanged',
  'status.ready': 'Scene ready · {mb} MB · {n} chunk',
  'status.all': 'Whole body loaded · {n} chunk',

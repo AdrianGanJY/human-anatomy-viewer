@@ -116,7 +116,17 @@ export const writePinyin = (p: PinyinPrefs): void => put(PINYIN_KEY, p);
 /** A tab is the CONTROLLER's full scene blob plus the live camera pose (G6 as codex amended it:
  *  "a tab snapshot = the controller's full scene + camera, not the raw incoming blob"). The pose is
  *  six numbers, kept as a tuple so a partially-written one is detectable rather than half-applied. */
-export interface SceneTab {blob: string; title: string; cam: [number, number, number, number, number, number] | null}
+export interface SceneTab {
+ blob: string; title: string; cam: [number, number, number, number, number, number] | null;
+ /**
+  * ⚠️ WHEN THE SNAPSHOT WAS TAKEN — S5b prelude, and it is the only STABLE way to tell two
+  * snapshots of one scene apart. The label carries a positional ordinal (`tabOrdinals`), and
+  * positional means it renumbers when the cap evicts; this does not. `null` for every tab written
+  * before S5b, which is a legitimate reading and not corruption — the tooltip simply omits the
+  * time rather than inventing one.
+  */
+ at?: number | null;
+}
 export interface ScenePrefs {v: 1; tabs: SceneTab[]}
 export const SCENES_KEY = 'atlas.scenes', SCENES_CAP = 8;
 const isCam = (v: unknown): v is SceneTab['cam'] =>
@@ -139,11 +149,46 @@ export function readScenes(): ScenePrefs {
  const tabs = v.tabs
   .filter(isObj)
   .filter((t) => typeof t.blob === 'string' && t.blob.length > 0)
-  .map((t) => ({blob: t.blob as string, title: typeof t.title === 'string' ? t.title : '', cam: isCam(t.cam) ? t.cam : null}))
+  .map((t) => ({
+   blob: t.blob as string, title: typeof t.title === 'string' ? t.title : '', cam: isCam(t.cam) ? t.cam : null,
+   // `Number.isFinite` and not `typeof === 'number'`: `JSON.stringify(Infinity)` writes `null`, but
+   // a hand-edited value can be anything, and a non-finite millisecond reaches `toLocaleString` as
+   // "Invalid Date" — a tooltip that reads like a bug in the tooltip rather than in the data.
+   at: typeof t.at === 'number' && Number.isFinite(t.at) ? t.at : null,
+  }))
   .slice(-SCENES_CAP);
  return {v: 1, tabs};
 }
 export const writeScenes = (p: ScenePrefs): void => put(SCENES_KEY, {v: 1, tabs: p.tabs.slice(-SCENES_CAP)});
+
+/**
+ * ── WHICH "Hamstrings & pelvis" IS THIS? — S5b prelude, codex r21 LOW 1 ────────────────────────
+ *
+ * A tab's label is the scene's CAPTION, so two snapshots of one scene are two identical labels
+ * restoring two different cameras. Rename is out of this increment (`spec.md` §Rejected), so the
+ * interim is an ordinal — and it is only drawn where it is NEEDED: a title that occurs once takes
+ * no ordinal, because `· 1` beside a unique name is noise that teaches nothing.
+ *
+ * Returns one entry per tab, in strip order: the 1-based position among tabs SHARING that exact
+ * title, or `null` when the title is unique.
+ *
+ * ⚠️ POSITIONAL, AND THE LIMITATION IS THE REASON `at` EXISTS. Evicting the oldest of three
+ * `A`s renumbers the survivors 1 and 2, so the number is a position in a list and not an identity.
+ * The identity a reader can rely on is the snapshot TIME, which travels in the tooltip.
+ *
+ * Grouping is on the RAW title, so two untitled tabs (both drawn as `tabs.untitled`) are numbered
+ * 1 and 2 — the copy table is not consulted, and cannot drift away from this.
+ */
+export function tabOrdinals(tabs: readonly SceneTab[]): (number | null)[] {
+ const total = new Map<string, number>();
+ for (const t of tabs) total.set(t.title, (total.get(t.title) ?? 0) + 1);
+ const seen = new Map<string, number>();
+ return tabs.map((t) => {
+  const n = (seen.get(t.title) ?? 0) + 1;
+  seen.set(t.title, n);
+  return (total.get(t.title) ?? 0) > 1 ? n : null;
+ });
+}
 
 // ── atlas.openai — S5b ───────────────────────────────────────────────────────────────────────────
 /**
@@ -167,3 +212,44 @@ export const clearOpenAi = (): void => { try { localStorage.removeItem(OPENAI_KE
 /** `sk-***…abcd`. Takes the key as an argument rather than reading it, so a caller cannot
  *  accidentally obtain the whole secret by asking for the mask. */
 export const maskKey = (key: string): string => (key.length > 4 ? `sk-***…${key.slice(-4)}` : 'sk-***');
+
+/**
+ * ── S5b — THE UI IS STRUCTURALLY UNABLE TO OBTAIN THE KEY ──────────────────────────────────────
+ *
+ * `readOpenAi` above returns the secret, and opus-plan-review-2.md §G.3 is that the secret is read
+ * AT CALL TIME and never held in React state, a prop or a ref. A rule like that is kept by
+ * DISCIPLINE unless the shape makes it unnecessary — and discipline is what fails on the fourth
+ * edit by the fifth person.
+ *
+ * So `readOpenAi` has exactly ONE caller in the whole app (`app/v2/shell/ai.ts`, inside the request
+ * function), and every question the INTERFACE needs to ask is answered by a function here that
+ * cannot return the key:
+ *
+ *   `hasOpenAi()`      — is there one? a boolean
+ *   `openAiMask()`     — `sk-***…abcd`, derived on demand, never stored as a second copy
+ *   `readOpenAiModel()`— the model, which is not a secret
+ *   `saveOpenAiKey()`  — write one, PRESERVING the chosen model
+ *   `setOpenAiModel()` — change the model, PRESERVING the key without reading it into a caller
+ *
+ * A unit test asserts the dock and the Settings panel never mention `readOpenAi`, so the boundary
+ * is checked rather than asserted.
+ */
+export const hasOpenAi = (): boolean => readOpenAi() !== null;
+export const openAiMask = (): string | null => {
+ const p = readOpenAi();
+ return p ? maskKey(p.key) : null;
+};
+export const readOpenAiModel = (): string => readOpenAi()?.model || '';
+/** The key as the reader pasted it, trimmed. A blank save is a no-op, never a stored empty key
+ *  (which `readOpenAi` would reject anyway, leaving the UI saying "saved" over nothing). */
+export function saveOpenAiKey(key: string): boolean {
+ const k = key.trim();
+ if (!k) return false;
+ put(OPENAI_KEY, {v: 1, key: k, model: readOpenAiModel()});
+ return true;
+}
+export function setOpenAiModel(model: string): void {
+ const p = readOpenAi();
+ if (!p) return;
+ put(OPENAI_KEY, {v: 1, key: p.key, model: model.trim()});
+}

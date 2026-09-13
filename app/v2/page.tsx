@@ -39,7 +39,7 @@ import RefusalText from './refusal.tsx';
 import {emitAtlas,installAtlasTools,type AtlasState} from './tools';
 import {conceptAlpha,partAlphas,readEye,sceneAlphaMap,withSessionHidden,type EyeKind} from './visibility.ts';
 import {sceneDeclaresLang} from './scene-lang.ts';
-import {mark,postProbe,readProbe,watchLayoutShift} from './probe';
+import {mark,postProbe,readProbe,recordFailure,watchLayoutShift} from './probe';
 import Shell,{PhoneSheets,StudioField,StudioOverlays} from './shell/shell.tsx';
 import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
@@ -174,7 +174,17 @@ export default function V2() {
  // ─── the atlas ────────────────────────────────────────────────────────────────────────────
  useEffect(() => {
   const abort = new AbortController();
-  fetch('/models/atlas.json', {signal: abort.signal}).then((r) => {
+  const ATLAS_URL = '/models/atlas.json';
+  /**
+   * ⚠️ WHAT THE RESPONSE ACTUALLY WAS, kept for the catch — S5b prelude. The three failures below
+   * are thrown from inside the `then`, where the response is in scope, and caught in a `catch`
+   * where it is not; without this the record would say "a load failed" and nothing more, which is
+   * exactly the silence that made the 1366×1024 transient unattributable. Deliberately NOT state:
+   * nothing renders from it.
+   */
+  let seen: {status: number | null; type: string | null} = {status: null, type: null};
+  fetch(ATLAS_URL, {signal: abort.signal}).then((r) => {
+   seen = {status: r.status, type: r.headers.get('content-type')};
    // A mid-load Access expiry is NORMAL at a 24 h session, and it arrives as a REDIRECT to a
    // login page carrying HTTP 200, not as an error — so the status cannot detect it.
    // `r.redirected` is the only signal that actually means "you were sent to the gate".
@@ -186,6 +196,16 @@ export default function V2() {
    return r.json();
   }).then((d) => setAtlas(d as Atlas)).catch((e) => {
    if (e.name === 'AbortError') return;
+   // WHICH REQUEST, WITH WHAT STATUS — the console, the `data-atlas-failed` attribute and the probe
+   // panel. `seen.status === null` means the fetch never produced a response at all, which is the
+   // transient network shape; a status with a non-JSON type is the SPA/Access-page shape; a status
+   // with an ok type is a body that failed to parse. All three used to read as one word, `atlas`.
+   recordFailure({
+    url: ATLAS_URL,
+    status: seen.status,
+    detail: `${String((e as Error)?.message ?? e)} · content-type=${seen.type ?? 'none'}`
+      + (seen.status === null ? ' · no response (network or abort)' : ''),
+   });
    markError('atlas');
    if (String(e.message) === 'session') setExpired(true); else setError(tr('error.load'));
   });
@@ -901,7 +921,51 @@ export default function V2() {
      if (u.lang) applyLang(u.lang);
      return;
     }
-   } else return;
+   } else {
+    /**
+     * ── A STANDALONE WARM KEY IS AN ARRIVAL TOO — codex round 21, Low 3 (S5b prelude) ───────────
+     *
+     * This branch used to be `return`, and codex executed what that costs: `#system=muscular` and
+     * `#lang=zh-Hant` on a warm page carrying no scene, no explicit clear and no selection left
+     * "state and a previous refusal unchanged". Every link this app EMITS carries a scene or a
+     * selection, which is why it was non-blocking — the dropped case is a hand-edited address bar,
+     * a bookmark someone trimmed, or `window.atlas` writing one key.
+     *
+     * ⚠️ IT IS THE SAME RULE AS THE THREE BRANCHES ABOVE, NOT A NEW ONE. The candidate command is
+     * put through `noop`, so the reducer decides: a real change is dispatched, an identical one is
+     * committed WITHOUT a re-frame (and therefore clears a previous refusal and leaves a pending
+     * pose restore alone). Nothing here re-asks a question the controller already answers.
+     *
+     * ⚠️ `explicit: false` IS LOAD-BEARING — codex round 7, the High. `set-visible` defaults the
+     * flag to TRUE because every other caller is a click; a URL-derived set replayed as a human
+     * statement is exactly the defect round 7 measured (`intent:['skeletal']` with zero clicks).
+     * This carries the SET and never the AUTHORITY, which is what `apply-scene` already does with
+     * its own `visible` rider. It matches the cold path: `apply-legacy` updates `visibleIntent`
+     * from `url.visible` and likewise does not mark it explicit (controller.ts).
+     *
+     * ⚠️ AND `set-visible` CLEARS `isolate` — its documented, tooltipped semantic (RC8: the tree's
+     * system eye says so before the click). A standalone `#system=` therefore means exactly what
+     * the control means, which is the only reading that cannot drift between the two.
+     *
+     * ⚠️ THE LANGUAGE IS APPLIED DIRECTLY, not through `resolveArrivalLang`. That function resolves
+     * a tie between an ARRIVING scene's declaration and the link's `lang=`; here no scene is
+     * arriving, so there is no tie — the reader has stated a language after whatever scene is
+     * already on screen, and a later statement wins. Same treatment as the legacy and clear
+     * branches above, which is what stops the three drifting apart (round 19, M2).
+     *
+     * NAMED, NOT FIXED: the other standalone legacy fields (`view=`, `isolate=`, `explode=`,
+     * `rotate=`, `title=`, `note=`). Each needs a camera-intent verdict — `set-view` and
+     * `reset-view` DO re-frame, so making them reachable from a bare hash would give the pose
+     * restore a new abort path — and codex executed neither. S6 or later, with its own rows.
+     */
+    if (u.visible) {
+     const cmd: Command = {type: 'set-visible', visible: u.visible, explicit: false};
+     const same = noop(cmd);
+     if (same) commitNoop(same); else dispatch(cmd);
+    }
+    if (u.lang) applyLang(u.lang);
+    return;
+   }
    /**
     * ⚠️ THE WARM BRANCH CARRIES `system=` AND `lang=` THROUGH ONE TRANSACTION — codex rounds 6 and 7,
     * which took three attempts between them and are worth recording as a set:
@@ -1116,6 +1180,9 @@ export default function V2() {
    // nobody has ever been, which is worse than not restoring it — `store.ts` rejects a tuple that
    // is not six finite numbers on the way back in, and this is the matching half on the way out.
    cam: q ? [q.x, q.y, q.z, q.tx, q.ty, q.tz] : null,
+   // S5b prelude. The one field that distinguishes two snapshots of the SAME scene without a
+   // rename — the label's ordinal is positional and renumbers on eviction, this does not.
+   at: Date.now(),
   });
  }, []);
 
@@ -1410,6 +1477,10 @@ export default function V2() {
    scene={scene} sceneBlob={sceneBlob} picks={picks} basket={basket}
    askOpen={askOpen} onAsk={setAskOpen} scenesOpen={scenesOpen} onScenes={setScenesOpen}
    tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
+   // S5b: the phone's Ask sheet is the same component as the desktop dock, so it needs the same
+   // two collaborators — the UI-language name (for the model's context) and the controller (so a
+   // proposed view goes through the one atomic refusal, never a second application path).
+   nameOf={(id, fallback) => t.name(id, fallback)} dispatch={dispatch}
   />
   <StudioOverlays
    t={t} tr={tr} lang={lang} applyLang={applyLang} background={background} sheet={shell.sheet}
@@ -1469,7 +1540,10 @@ export default function V2() {
     // A REJECTED CHUNK MUST LEAVE THE BOOT STATE. `onSceneReady` never fires on a failed phase,
     // so without this the page kept its loading pill and never painted the error (review item 3).
     // Phase is advanced, NOT the readiness marker: `data-atlas-scene-ready` would be a lie.
-    onError={(e) => { markError('load'); setError(e); setPhase((p) => (p === 'boot' ? 'scene' : p)); }}
+    // S5b prelude: the RENDERER's own failure is recorded beside the atlas fetch's, in the same
+    // three places. Its message already names the cause (a chunk fetch, a WebGL context, a lost
+    // context); what it never carried was a machine-readable marker an oracle could read.
+    onError={(e) => { recordFailure({url: 'renderer', detail: e, surfaced: true}); markError('load'); setError(e); setPhase((p) => (p === 'boot' ? 'scene' : p)); }}
    />}
    {/* THE ONE ORCHESTRATED MOMENT: the field's paper ground carries a soft wash while the
        scene's own chunks are still arriving, and cross-dissolves away at the barrier. There is

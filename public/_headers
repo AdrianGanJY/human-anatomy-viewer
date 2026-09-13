@@ -1,0 +1,46 @@
+# ══ THE CONTENT SECURITY POLICY — L31 v2.1b+c, S5b ════════════════════════════════════════════
+#
+# Shipped in the SAME COMMIT as the in-app chat, because the chat is what makes it load-bearing:
+# from S5b the Ask dock renders MODEL-AUTHORED text on an origin whose localStorage holds an OpenAI
+# key. The policy cannot stop exfiltration to OpenAI — `connect-src` has to allow that host for the
+# feature to exist — but it stops exfiltration to an ATTACKER's host, which is the whole payoff of
+# an XSS here. (opus-plan-review-2.md §G.2, kickoff RC11.)
+#
+# ⚠️ THIS FILE IS NOT THE ONLY PLACE THE POLICY IS SET. `functions/_middleware.js` applies the same
+# string to every `text/html` response it returns, because `_headers` is documented as applying to
+# STATIC ASSET responses and every non-excluded path on this project goes through a Pages Function
+# (`public/_routes.json` includes `/*`). Rather than deploy and find out, both are shipped and a
+# unit test asserts the two strings are byte-identical. The live host is asserted after the deploy.
+#
+# ── EVERY DIRECTIVE, AND WHY IT HAS THE VALUE IT HAS (all MEASURED against `dist/`) ────────────
+#
+#   default-src 'self'      the floor. Anything not named below falls here.
+#   connect-src             'self' for the atlas, the chunks, the dictionaries, /api/timing;
+#                           api.openai.com for the chat, and NOTHING else. This single line is what
+#                           makes an injected script unable to POST the key anywhere useful.
+#   script-src 'self'       MEASURED: `dist/index.html` and `dist/v2/index.html` each carry exactly
+#                           one `<script type="module" crossorigin src="/assets/…">` and zero inline
+#                           scripts, so no 'unsafe-inline' and no hash is needed.
+#   style-src 'self'        MEASURED: zero `<style>` blocks and zero `style="` attributes in the
+#                           built HTML. React's `style={{…}}` writes through the CSSOM
+#                           (`node.style.prop = …`), which CSP does not govern — `style-src-attr`
+#                           covers style ATTRIBUTES, not property assignment. So 'unsafe-inline' is
+#                           NOT included, which is what RC11 asks for ("prefer no 'unsafe-inline'").
+#                           The sweep asserts zero `securitypolicyviolation` events at every
+#                           viewport, because this reasoning is the one that could be wrong.
+#   img-src 'self' data: blob:   the snapshot path: `toDataURL` plates and canvas blobs.
+#   font-src 'self'         the CJK stack is self-hosted; no font CDN.
+#   object-src 'none'       no plugins, ever.
+#   base-uri 'none'         an injected <base> can redirect every relative URL on the page.
+#   frame-ancestors 'none'  MEASURED SAFE FOR THE WIDGET: the Apps-SDK widget is delivered INLINE in
+#                           the MCP resource body (`functions/mcp.js` — `contents: [{uri, mimeType:
+#                           'text/html+skybridge', text: WIDGET_HTML}]`), so ChatGPT renders it in
+#                           its OWN sandbox and never frames a document from this origin. Nothing
+#                           on this origin is meant to be framed, so this is 'none' site-wide
+#                           rather than scoped per path.
+#   form-action 'none'      there is no form that posts anywhere; an injected one now cannot.
+#
+/*
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://api.openai.com; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

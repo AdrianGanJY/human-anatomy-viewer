@@ -708,6 +708,91 @@ test('M2 (round 20): a valid no-op arrival clears the PREVIOUS refusal', () => {
   assert.equal(s.marks.atlasPose, 'applied', 'and the pending pose still lands');
 });
 
+// ════ 3f. codex ROUND 21, LOW 3 — A STANDALONE WARM KEY IS AN ARRIVAL TOO ═════════════════════════
+
+/**
+ * codex r21 executed `#system=muscular` and `#lang=zh-Hant` on a warm page carrying NEITHER a scene,
+ * NOR an explicit clear, NOR a selection, and measured: "state and a previous refusal unchanged".
+ * The handler's `} else return;` — the fourth branch of the arrival chain — dropped them on the
+ * floor. Non-blocking for S5a because every link this app EMITS carries a scene or a selection, so
+ * the dropped case is a hand-edited or hand-shared address bar; named for S5b, fixed here.
+ *
+ * ⚠️ THE FIX IS THE SAME RULE, NOT A NEW ONE. Rounds 18–20 established that an arrival is applied
+ * when the REDUCER says something changed and committed-without-a-re-frame when it says nothing did.
+ * A standalone key is put through exactly that, with `set-visible` as the candidate command and
+ * `explicit:false` — which is what makes this a carrier of the set and not of AUTHORITY (round 7's
+ * High: a ghost's own serialised `system=` must never replay as a human statement).
+ */
+test('r21 L3: a STANDALONE #system= is applied, and does not open a generation', () => {
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const gen = s.gen();
+  const before = [...s.ctl().render.visible];
+  s.setUrl({hash: '#system=muscular'});
+  s.api().reapply();
+  assert.notDeepEqual(before, ['muscular'], 'the precondition: muscular is not what was already drawn');
+  assert.deepEqual([...s.ctl().render.visible].sort(), ['muscular'],
+    `the standalone key reached the controller; log: ${s.log.join(' -> ')}`);
+  assert.deepEqual([...(s.ctl().visibleIntent ?? [])].sort(), ['muscular'], 'and the intent it carries');
+  assert.notEqual(s.ctl().intentExplicit, true,
+    'but NOT authority — a URL-derived set must not read as a click (round 7, the High)');
+  assert.deepEqual([...(s.published()?.render.visible ?? [])].sort(), ['muscular'],
+    'published to React, not only written to the ref');
+  assert.equal(s.gen(), gen, 'a system change is not a re-frame, so no generation opens');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', 'and a pending pose restore still lands over it');
+});
+
+test('r21 L3: a STANDALONE #system= naming the CURRENT set is a no-op that still clears a refusal', () => {
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const tooMany = encodeScene(normalizeScene({
+    structures: Array.from({length: 25}, (_, i) => ({id: `FMA${20000 + i}`})),
+    caption: {title: 'too many'},
+  }));
+  s.setUrl({hash: `#scene=${tooMany}`});
+  s.api().reapply();
+  assert.ok(s.refused(), 'the refusal is on screen');
+  const gen = s.gen();
+  const drawn = [...s.ctl().render.visible];
+  s.setUrl({hash: `#system=${drawn.join(',')}`});
+  s.api().reapply();
+  assert.equal(s.refused(), null, 'an identical standalone key is still an arrival, and clears it');
+  assert.equal(s.gen(), gen, 'without opening a generation');
+  assert.deepEqual([...s.ctl().render.visible].sort(), [...drawn].sort(), 'and nothing is drawn differently');
+});
+
+test('r21 L3: a STANDALONE #lang= applies the language', () => {
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const gen = s.gen();
+  s.setUrl({hash: '#lang=zh-Hant'});
+  s.api().reapply();
+  assert.equal(s.lang(), 'zh-Hant', `the language reached applyLang; log: ${s.log.join(' -> ')}`);
+  assert.equal(s.gen(), gen, 'a language is not a view transition');
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied', 'and the pending pose still lands');
+});
+
+test('r21 L3: a bare fragment that carries NO key at all is still not a re-drive', () => {
+  // The round-17 case, re-asserted against the new branch: adding a standalone path must not turn
+  // `#v2-field` (our own skip link) into an arrival.
+  const s = scenario();
+  const t = s.tab('A', [1, 2, 3, 4, 5, 6]);
+  s.api().applyTab(t);
+  const gen = s.gen();
+  const writes = s.log.length;
+  s.setUrl({hash: '#v2-field'});
+  s.api().reapply();
+  assert.equal(s.gen(), gen, 'no generation');
+  assert.equal(s.log.length, writes, `nothing happened at all; log: ${s.log.slice(writes).join(' -> ')}`);
+  s.ready();
+  assert.equal(s.marks.atlasPose, 'applied');
+});
+
 // ════ 4. SENSITIVITY — delete each guard, assert the matching claim FAILS ══════════════════════════
 
 /**
@@ -716,6 +801,26 @@ test('M2 (round 20): a valid no-op arrival clears the PREVIOUS refusal', () => {
  * build in which the restore simply never runs.
  */
 const mutations = [
+  {
+    /**
+     * The r21 L3 branch. Its arm asserts the DEFECT codex measured, not merely "the test goes red":
+     * with the dispatch removed, the standalone key reaches nothing and the drawn set is unmoved —
+     * which is precisely the reading codex reported ("state and a previous refusal unchanged").
+     */
+    name: 'the standalone warm-key branch (r21 L3)',
+    mutate: (s) => s.replace('     if (same) commitNoop(same); else dispatch(cmd);', ''),
+    defect: (mk) => {
+      const s = mk();
+      armA(s);
+      const before = [...s.ctl().render.visible];
+      s.setUrl({hash: '#system=muscular'});
+      s.api().reapply();
+      const now = [...s.ctl().render.visible];
+      // `ok` means THE DEFECT IS PRESENT: the standalone key reached nothing and the drawn set is
+      // unmoved — codex's own reading, "state and a previous refusal unchanged".
+      return {ok: now.join(',') !== 'muscular', saw: `drawn ${before.join(',')} -> ${now.join(',')}`};
+    },
+  },
   {
     name: 'the signature check',
     mutate: (s) => s.replace("if (p.sig !== poseSig()) return 'stale';", ''),

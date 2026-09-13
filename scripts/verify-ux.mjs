@@ -166,6 +166,18 @@ const BARE_EN = 'sternum';
 /** `UX_VIEWPORTS=390x844,1920x860` runs a subset. The full sweep is six viewports x two pages and
  *  takes minutes; iterating on ONE failing viewport should not cost the other five. The default is
  *  every viewport, so a plain invocation is still the whole contract. */
+/**
+ * FAULT INJECTION, OFF BY DEFAULT - S5b prelude. `UX_FAULT=atlas-once` makes the FIRST
+ * `/models/atlas.json` of each viewport answer 503 and every later one succeed.
+ *
+ * It exists because the single-retry path below cannot otherwise be executed: a transient that
+ * happens once a fortnight is not a test, and a retry nobody has ever seen fire is the "guard that
+ * cannot fire" this project has a rule about. With it, `UX_VIEWPORTS=1440x900 UX_FAULT=atlas-once`
+ * is a one-viewport run that MUST print a RETRY line and MUST still end green.
+ *
+ * It is a sweep-script switch and reaches no shipped code. Unset, nothing below it changes.
+ */
+const FAULT = (process.env.UX_FAULT ?? '').trim();
 const ONLY = (process.env.UX_VIEWPORTS ?? '').split(',').map((s) => s.trim()).filter(Boolean);
 const SWEEP = ONLY.length ? VIEWPORTS.filter((v) => ONLY.includes(v.name)) : VIEWPORTS;
 if (!SWEEP.length) { console.error(`UX_VIEWPORTS matched none of: ${VIEWPORTS.map((v) => v.name).join(', ')}`); process.exit(2); }
@@ -190,6 +202,12 @@ const headers = (process.env.CF_ID && process.env.CF_SECRET)
   : {};
 
 const results = [];
+/**
+ * EVERY RETRY THIS SWEEP TOOK, in the order it took them - S5b prelude. Never empty silently and
+ * never summarised as a count: a run that needed a retry is a different kind of evidence from one
+ * that did not, and the difference has to survive into the log, the summary and the JSON.
+ */
+const RETRIES = [];
 /**
  * One row. `defer` names the COMMIT that owns the target when the target is not reachable by the
  * increment under test: the row still runs, still prints its measured value, and is listed in the
@@ -386,23 +404,84 @@ const newLedgerPage = async (context) => {
 for (const vp of SWEEP) {
   const context = await newContext(vp);
   const {page, ledger} = await newLedgerPage(context);
+  if (FAULT === 'atlas-once') {
+    let injected = false;
+    // A PAGE route, which takes precedence over the ledger's context route, and which CONTINUES
+    // every request after the first so the retry meets a healthy server.
+    await page.route('**/models/atlas.json', async (route) => {
+      if (injected) return route.continue();
+      injected = true;
+      await route.fulfill({status: 503, contentType: 'text/plain', body: 'UX_FAULT=atlas-once'});
+    });
+  }
   const consoleErrors = [];
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 160)); });
   page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e).slice(0, 160)));
 
   const url = `${base}${path}?lang=zh-Hans&scene=${BLOB}`;
   try {
-    await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
+    /**
+     * ══ ONE RETRY, ANNOUNCED — S5b prelude ════════════════════════════════════════════════════
+     *
+     * The planner's first sweep after the S5a deploy measured, at 1366×1024 ONLY, "The anatomy
+     * could not be loaded" — 0 systems, 0 structures, six palette rows cascading off it. The rerun
+     * was 590/0/7 clean. A transient fetch failure minutes after a deploy is the obvious reading,
+     * and the sweep had no way to state it: a red run and a flaky run look identical, so the only
+     * available move was "run it again and believe the second answer", which is not a method.
+     *
+     * So the entry is a function, it is called at most TWICE, and the second call is LOUD:
+     *
+     *   · the retry is pushed onto `RETRIES`, printed the moment it happens AND printed again in
+     *     the summary, and written into `oracles-*.json`. A sweep that needed a retry can never
+     *     read as a sweep that did not;
+     *   · it fires ONLY on `data-atlas-error=atlas` — the app's own verdict that the ATLAS FETCH
+     *     failed. A red row, a missing control, a wrong measurement: none of those retry, so a real
+     *     regression still fails on the first attempt exactly as before;
+     *   · ONCE. If the retry fails too, that is recorded as its own line and every row below goes
+     *     red on the real failure, which is the correct outcome for an app that genuinely cannot
+     *     load its atlas.
+     *
+     * ⚠️ IT COSTS NOTHING ON A HEALTHY RUN. The check reads two DOM attributes AFTER the existing
+     * readiness wait, so the happy path is unchanged and only a genuine failure pays for the
+     * second visit (and for the first one's readiness timeout, which it already paid before).
+     */
+    const enter = async () => {
+      await page.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
+      let ready = null, at = null;
+      try {
+        await page.waitForSelector(READY_SEL[variant], {timeout: 240000});
+        ready = 1;
+        // Sampled HERE, in the same turn the marker resolved — see the init-script warning above
+        // for why this cannot be read from inside the page's own observer.
+        at = Date.now();
+      } catch { /* the marker never arrived; recorded below as a null, not as a pass */ }
+      // `data-atlas-failed` is S5b's record of WHICH request failed (app/v2/probe.ts). On v1 it is
+      // never written, so the retry is v2-only by construction rather than by a variant check.
+      const failed = await page.evaluate(() => ({
+        err: document.documentElement.dataset.atlasError || '',
+        detail: document.documentElement.dataset.atlasFailed || '',
+      })).catch(() => ({err: '', detail: ''}));
+      return {ready, at, failed};
+    };
+    let entry = await enter();
+    if (entry.failed.err === 'atlas') {
+      const line = `[${vp.name}] ${label}: the ATLAS FAILED TO LOAD on the first visit`
+        + ` (${entry.failed.detail || 'no detail recorded'}) — retried ONCE`;
+      RETRIES.push(line);
+      console.log(`\n  RETRY  ${line}`);
+      entry = await enter();
+      if (entry.failed.err === 'atlas') {
+        const again = `[${vp.name}] ${label}: AND THE RETRY FAILED TOO`
+          + ` (${entry.failed.detail || 'no detail recorded'}) — every row below is a REAL failure, not a flake`;
+        RETRIES.push(again);
+        console.log(`  RETRY  ${again}`);
+      } else {
+        RETRIES.push(`[${vp.name}] ${label}: the retry SUCCEEDED — treat this viewport's rows as second-attempt readings`);
+      }
+    }
 
     // ── 3 BYTES ────────────────────────────────────────────────────────────────────────────
-    let readyMs = null, barrierAt = null;
-    try {
-      await page.waitForSelector(READY_SEL[variant], {timeout: 240000});
-      readyMs = 1;
-      // Sampled HERE, in the same turn the marker resolved — see the init-script warning above
-      // for why this cannot be read from inside the page's own observer.
-      barrierAt = Date.now();
-    } catch { /* the marker never arrived; recorded below as a null, not as a pass */ }
+    let readyMs = entry.ready, barrierAt = entry.at;
     const bytes = await page.evaluate(() => {
       // PREFER THE FROZEN NUMBER. v2 stamps the byte count at the phase barrier itself; reading
       // it live here would race the background chunks that keep arriving while this script
@@ -5764,6 +5843,451 @@ if (variant === 'v2') {
   }
 }
 
+
+/**
+ * ═══ S5b — THE IN-APP CHAT, ITS KEY, AND THE CSP ═══════════════════════════════════════════════
+ *
+ * This is the only group in the increment whose failure costs MONEY rather than pixels, and both
+ * ways it can fail — a leaked key, an unbounded bill — are invisible from a screenshot. So every
+ * row here asserts something a reader cannot see:
+ *
+ *   · the key is in `localStorage` and NOWHERE else a page can be read from;
+ *   · a page that HAS a key issues ZERO requests to api.openai.com until a human presses Ask;
+ *   · a streamed answer really arrives and really renders — against a MOCKED endpoint, never
+ *     Adrian's credit;
+ *   · a model-proposed 25-structure scene is REFUSED and the view does not move;
+ *   · a forced 401 leaves no `sk-` substring anywhere in the console or the DOM;
+ *   · the CSP blocks a script from another origin while the app still works.
+ *
+ * ⚠️ `api.openai.com` IS ROUTE-INTERCEPTED IN EVERY ROW BELOW. A suite that spends the key to
+ * prove the key is safe has missed the point, and a CI run that can reach OpenAI is a CI run that
+ * bills somebody. The interception also makes "zero requests on entry" measurable: an unexpected
+ * one would be FULFILLED by the stub and counted, rather than silently succeeding.
+ */
+{
+  const S5B = 'S5b';
+  const VP5B = {name: 's5b-1440', width: 1440, height: 900, dpr: 1, coarse: false};
+  /** A FAKE key, shaped like a real one so the `sk-` scanners have something to find. */
+  const FAKE_KEY = 'sk-proj-ORACLEoracleAAAABBBBCCCCDDDDEEEE7788';
+  const seed = `(k) => { try { localStorage.setItem('atlas.openai', JSON.stringify({v: 1, key: k, model: ''})); } catch {} }`;
+
+  /** An SSE body the production parser accepts, with usage so the spend indicator has a source. */
+  const sse = (pieces) => pieces
+    .map((p) => `data: ${JSON.stringify({choices: [{delta: {content: p}}]})}\n\n`).join('')
+    + `data: ${JSON.stringify({choices: [], usage: {prompt_tokens: 120, completion_tokens: 34}})}\n\n`
+    + 'data: [DONE]\n\n';
+
+  /**
+   * One context with the key seeded, the model endpoint stubbed, and every request recorded.
+   * `respond` decides what OpenAI "answers"; `null` means the row expects no call at all.
+   */
+  const chatContext = async (vp, respond) => {
+    const ctx = await newContext(vp);
+    await ctx.addInitScript(`(${seed})(${JSON.stringify(FAKE_KEY)})`);
+    const seen = [];
+    await ctx.route('https://api.openai.com/**', async (route) => {
+      const req = route.request();
+      seen.push({url: req.url(), auth: req.headers().authorization || '', body: req.postData() || ''});
+      const r = respond ? respond(req) : {status: 500, body: 'the oracle expected no call'};
+      await route.fulfill({
+        status: r.status,
+        headers: {'content-type': r.type || 'text/event-stream', 'access-control-allow-origin': '*'},
+        body: r.body,
+      });
+    });
+    const page = await ctx.newPage();
+    const console_ = [];
+    page.on('console', (m) => console_.push(`${m.type()}: ${m.text()}`));
+    page.on('pageerror', (e) => console_.push(`pageerror: ${String(e)}`));
+    const hosts = [];
+    page.on('request', (r) => { try { hosts.push(new URL(r.url()).host); } catch { /* data: */ } });
+    return {ctx, page, seen, console_, hosts};
+  };
+
+  /** Open the Ask dock by its tools-row button, then type a question into the box React owns. */
+  const OPEN_ASK = `(src) => {
+    const b = [...document.querySelectorAll('.v2-tools .v2-tbtn')]
+      .find((x) => new RegExp(src).test((x.textContent || '').trim()));
+    if (!b) return 'no-button';
+    if (b.className.includes('is-on')) return 'already';
+    b.click(); return 'opened';
+  }`;
+  const TYPE_ASK = `(text) => {
+    const el = document.querySelector('.v2-askbox');
+    if (!el) return false;
+    Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(el, text);
+    el.dispatchEvent(new Event('input', {bubbles: true}));
+    return true;
+  }`;
+  const PRESS_ASK = `() => {
+    const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-askbox'));
+    const b = [...(pane?.querySelectorAll('.v2-pane-foot button') ?? [])]
+      .find((x) => /^(Ask|提问|提問)$/.test((x.textContent || '').trim()));
+    if (!b) return 'no-ask-button';
+    b.click(); return 'pressed';
+  }`;
+
+  // ── 1. A KEY ON THE DEVICE COSTS NOTHING UNTIL A HUMAN PRESSES ASK ────────────────────────────
+  {
+    const {ctx, page, seen, hosts} = await chatContext(VP5B, null);
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(600);
+      const stored = await page.evaluate(() => {
+        const raw = localStorage.getItem('atlas.openai') || '';
+        return {stored: raw.includes('sk-'), chat: !!document.querySelector('.v2-askbox')};
+      });
+      const off = hosts.filter((h) => h !== new URL(base).host);
+      check(VP5B.name, `[${S5B}] a stored key makes ZERO requests to api.openai.com on entry, and opening the dock makes none either`,
+        stored.stored && stored.chat && seen.length === 0 && !off.includes('api.openai.com'),
+        `key on disk=${stored.stored} · dock rendered=${stored.chat} · intercepted OpenAI calls=${seen.length}`
+        + ` · off-origin hosts seen=${[...new Set(off)].join(',') || 'none'}`,
+        'zero — the model is spoken to when a human presses Ask, and at no other moment');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the entry-cost pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 2. THE KEY IS IN localStorage AND NOWHERE ELSE A PAGE CAN BE READ FROM ───────────────────
+  {
+    const {ctx, page, console_} = await chatContext(VP5B, () => ({status: 200, body: sse(['ok'])}));
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(400);
+      // Every surface the key could reach: the address bar, the history entry, the serialised
+      // scene, the probe panel, the whole rendered DOM, and the page's own storage-adjacent state.
+      const scan = await page.evaluate((key) => {
+        const where = [];
+        if (location.href.includes(key)) where.push('location.href');
+        if (JSON.stringify(history.state ?? null).includes(key)) where.push('history.state');
+        const blob = new URL(location.href).searchParams.get('scene') || '';
+        if (blob.includes(key)) where.push('the scene blob');
+        if ((document.querySelector('.v2-probe')?.textContent || '').includes(key)) where.push('the probe panel');
+        if ((document.body.innerText || '').includes(key)) where.push('the rendered text');
+        if ((document.documentElement.outerHTML || '').includes(key)) where.push('the DOM');
+        if (Object.keys(sessionStorage).some((k) => (sessionStorage.getItem(k) || '').includes(key))) where.push('sessionStorage');
+        // And the MASK is what the interface shows — present, and not the key.
+        const masked = (document.documentElement.outerHTML || '').includes('sk-***');
+        return {where, masked};
+      }, FAKE_KEY);
+      const inConsole = console_.filter((l) => l.includes(FAKE_KEY));
+      check(VP5B.name, `[${S5B}] the key is in localStorage and in NO other readable surface`,
+        scan.where.length === 0 && inConsole.length === 0,
+        `found in: ${scan.where.join(', ') || 'nothing'} · console lines carrying it: ${inConsole.length}`,
+        'the URL, history.state, the scene blob, the probe panel, the DOM, sessionStorage and the console are all clean');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the key-surface scan ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 3. A STREAMED ANSWER ARRIVES, RENDERS, AND IS SPENT EXACTLY ONCE ─────────────────────────
+  {
+    const {ctx, page, seen} = await chatContext(VP5B, () => ({
+      status: 200, body: sse(['The ', 'semitendinosus ', 'is posterior.']),
+    }));
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(400);
+      await page.evaluate(`(${TYPE_ASK})('what is this')`);
+      await page.waitForTimeout(200);
+      const pressed = await page.evaluate(`(${PRESS_ASK})()`);
+      // WAIT ON THE ANSWER, not on a clock — the S5a lesson about the URL write, one surface over.
+      const arrived = await page.waitForFunction(
+        () => /is posterior/.test(document.querySelector('.v2-ai-log')?.textContent || ''),
+        null, {timeout: 15000, polling: 100}).then(() => true).catch(() => false);
+      const read = await page.evaluate(() => ({
+        log: (document.querySelector('.v2-ai-log')?.textContent || '').slice(0, 200),
+        turns: document.querySelectorAll('.v2-ai-turn').length,
+        // ⚠️ THE ASK PANE, NOT THE FIRST PANE. At 1440 the ladder keeps Selection open beside Ask,
+        // so `querySelector('.v2-pane-body')` returned SELECTION's body and reported the spend
+        // indicator missing from a dock it was never in — an instrument bug that read exactly like
+        // a product one. The pane is found by the control only it contains.
+        spend: (() => {
+          const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-askbox'));
+          return (pane?.textContent || '').includes('120');
+        })(),
+      }));
+      const auth = seen[0]?.auth || '';
+      const body = seen[0] ? JSON.parse(seen[0].body || '{}') : {};
+      check(VP5B.name, `[${S5B}] one press = ONE request, bearing the key, to api.openai.com only`,
+        pressed === 'pressed' && seen.length === 1 && auth === `Bearer ${FAKE_KEY}`
+          && new URL(seen[0].url).host === 'api.openai.com' && body.stream === true
+          && !body.tools && !body.functions,
+        `press=${pressed} · requests=${seen.length} · host=${seen[0] ? new URL(seen[0].url).host : '-'}`
+        + ` · bearer matches the stored key=${auth === `Bearer ${FAKE_KEY}`} · stream=${body.stream}`
+        + ` · tools=${body.tools === undefined ? 'absent' : 'PRESENT'}`,
+        'exactly one streamed request, no tools, no retry');
+      check(VP5B.name, `[${S5B}] the streamed answer renders as TEXT, in two turns, with the spend counted`,
+        arrived && read.turns === 2 && /is posterior/.test(read.log) && read.spend,
+        `arrived=${arrived} · turns=${read.turns} · log="${read.log.replace(/\s+/g, ' ').slice(0, 90)}"`
+        + ` · the 120-prompt-token reading is displayed=${read.spend}`,
+        'the question and the answer, and a visible session spend');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the streamed-answer pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 4. A PROPOSED 25-STRUCTURE SCENE IS REFUSED, AND THE VIEW DOES NOT MOVE ──────────────────
+  {
+    const tooMany = {structures: Array.from({length: 25}, (_, i) => ({id: `FMA${20000 + i}`}))};
+    const {ctx, page} = await chatContext(VP5B, () => ({
+      status: 200,
+      body: sse(['Try this view.\n\n```scene\n', JSON.stringify(tooMany), '\n```\n']),
+    }));
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(400);
+      await page.evaluate(`(${TYPE_ASK})('show me everything')`);
+      await page.waitForTimeout(200);
+      await page.evaluate(`(${PRESS_ASK})()`);
+      const proposed = await page.waitForFunction(
+        () => !!document.querySelector('.v2-ai-prop'), null, {timeout: 15000, polling: 100},
+      ).then(() => true).catch(() => false);
+      const before = await page.evaluate(() => ({
+        ids: window.atlas?.state?.().ids?.length ?? -1,
+        blob: new URL(location.href).searchParams.get('scene') || '',
+      }));
+      // ⚠️ NOTHING HAPPENS UNTIL THE CLICK. The row asserts BOTH halves: the proposal sat there
+      // without applying itself, and then the explicit click was REFUSED by the controller.
+      const applied = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.v2-ai-prop button')]
+          .find((x) => /Apply|应用|套用/.test(x.textContent || ''));
+        if (!b) return 'no-apply-button';
+        b.click(); return 'clicked';
+      });
+      await page.waitForTimeout(700);
+      const after = await page.evaluate(() => ({
+        ids: window.atlas?.state?.().ids?.length ?? -1,
+        blob: new URL(location.href).searchParams.get('scene') || '',
+        refusal: (document.querySelector('.v2-refusal')?.textContent || document.body.innerText || '').includes('24'),
+      }));
+      check(VP5B.name, `[${S5B}] a model-proposed 25-structure scene is a PROPOSAL, and the explicit apply is REFUSED`,
+        proposed && applied === 'clicked' && before.ids > 0
+          && after.ids === before.ids && after.blob === before.blob,
+        `proposal card rendered=${proposed} · apply=${applied} · ids ${before.ids} -> ${after.ids}`
+        + ` · the blob is ${after.blob === before.blob ? 'unchanged' : 'CHANGED'}`
+        + ` · a 24-bound message is on screen=${after.refusal}`,
+        'the card appears, nothing applies on its own, and the click leaves picks and URL identical');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the proposal-refusal pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 5. A FORCED 401 LEAVES NO `sk-` ANYWHERE ────────────────────────────────────────────────
+  {
+    // The stub echoes the key back, which the real endpoint does not do — because the guard has to
+    // hold for the bodies nobody measured (a reflecting proxy, a gateway, a future endpoint).
+    const {ctx, page, console_} = await chatContext(VP5B, () => ({
+      status: 401, type: 'application/json',
+      body: JSON.stringify({error: {message: `Incorrect API key provided: ${FAKE_KEY}.`}}),
+    }));
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(400);
+      await page.evaluate(`(${TYPE_ASK})('who am i')`);
+      await page.waitForTimeout(200);
+      await page.evaluate(`(${PRESS_ASK})()`);
+      const shown = await page.waitForFunction(
+        () => !!document.querySelector('.v2-json-err'), null, {timeout: 15000, polling: 100},
+      ).then(() => true).catch(() => false);
+      await page.waitForTimeout(400);
+      const dom = await page.evaluate(() => ({
+        html: document.documentElement.outerHTML,
+        err: (document.querySelector('.v2-json-err')?.textContent || '').slice(0, 160),
+      }));
+      const domLeak = dom.html.includes(FAKE_KEY) || /sk-(?!\*)[A-Za-z0-9_-]{3,}/.test(dom.html);
+      const conLeak = console_.filter((l) => l.includes(FAKE_KEY) || /sk-(?!\*)[A-Za-z0-9_-]{3,}/.test(l));
+      check(VP5B.name, `[${S5B}] a forced 401 is explained WITHOUT echoing the key — no sk- run in the DOM or the console`,
+        shown && !domLeak && conLeak.length === 0,
+        `the error is on screen=${shown} · DOM carries an sk- run=${domLeak}`
+        + ` · console lines carrying one=${conLeak.length} · shown="${dom.err.replace(/\s+/g, ' ')}"`,
+        'a keyed message, the body quoted with every sk- run masked, and nothing in the console');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the 401 pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 6. WITHOUT A KEY, THE DOCK IS EXACTLY WHAT S5a SHIPPED ──────────────────────────────────
+  {
+    const ctx = await newContext(VP5B);
+    const page = await ctx.newPage();
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      await page.evaluate(`(${OPEN_ASK})('Ask|提问|提問')`);
+      await page.waitForTimeout(400);
+      await page.evaluate(`(${TYPE_ASK})('what is this')`);
+      await page.waitForTimeout(300);
+      const state = await page.evaluate(() => {
+        const pane = [...document.querySelectorAll('.v2-pane')].find((x) => x.querySelector('.v2-askbox'));
+        const foot = [...(pane?.querySelectorAll('.v2-pane-foot a, .v2-pane-foot button') ?? [])]
+          .map((x) => (x.textContent || '').trim());
+        const link = pane?.querySelector('.v2-pane-foot a');
+        return {
+          foot,
+          href: link?.getAttribute('href') || '',
+          rel: link?.getAttribute('rel') || '',
+          chat: !!document.querySelector('.v2-ai-log'),
+          sendButton: foot.some((t) => /^(Ask|提问|提問)$/.test(t)),
+        };
+      });
+      check(VP5B.name, `[${S5B}] with NO key the dock is S5a's hand-off exactly — no chat, no send button`,
+        !state.chat && !state.sendButton && state.href.startsWith('https://chatgpt.com/?q=')
+          && state.href.includes(encodeURIComponent('what is this')) && /noopener/.test(state.rel),
+        `chat log present=${state.chat} · a send button=${state.sendButton} · foot=[${state.foot.join(' | ')}]`
+        + ` · the ChatGPT link carries the question=${state.href.includes(encodeURIComponent('what is this'))}`,
+        'the S5a hand-off, unchanged — the chat is OPTIONAL and its absence is the default');
+    } catch (e) {
+      check(VP5B.name, `[${S5B}] the no-key pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+
+  // ── 7. THE CSP ──────────────────────────────────────────────────────────────────────────────
+  /**
+   * ⚠️ THE POLICY IS READ OUT OF `public/_headers`, NOT TYPED HERE. A hand-copied policy in the
+   * oracle is a second source of truth that passes while the shipped one is wrong — the exact
+   * family this suite exists to catch.
+   *
+   * ⚠️ AND IT IS *INJECTED*, because `vite preview` does not read `_headers` and `wrangler pages
+   * dev` cannot serve this project locally (`functions/_middleware.js` 301s every non-canonical
+   * host, including localhost). So this proves the POLICY — that the app works under it and that a
+   * foreign script is blocked by it. That the LIVE HOST actually sends it is a different claim,
+   * asserted after the deploy against `anatomy.adrian.my` with the adr token. Both are needed;
+   * neither substitutes for the other.
+   */
+  {
+    const policy = (() => {
+      const src = readFileSync(new URL('../public/_headers', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+      const lines = src.split('\n');
+      const at = lines.findIndex((l) => l.trim() === '/*');
+      const row = lines.slice(at + 1).find((l) => /^\s+Content-Security-Policy:/.test(l));
+      return row ? row.replace(/^\s*Content-Security-Policy:\s*/, '').trim() : '';
+    })();
+    // SWEEP, not VIEWPORTS: a `UX_VIEWPORTS=` run must be able to narrow this the way it narrows
+    // everything else. The full sweep sets SWEEP to all six, which is what the kickoff asks for.
+    for (const vp of SWEEP) {
+      const ctx = await newContext(vp);
+      const page = await ctx.newPage();
+      const violations = [];
+      const console_ = [];
+      page.on('console', (m) => { if (m.type() === 'error') console_.push(m.text().slice(0, 160)); });
+      try {
+        // The document response, with the shipped policy on it.
+        await page.route((u) => u.href.startsWith(base) && !/\.(js|css|json|png|svg|woff2?|bin)(\?|$)/.test(u.pathname),
+          async (route) => {
+            const res = await route.fetch();
+            const headers = {...res.headers(), 'content-security-policy': policy};
+            await route.fulfill({response: res, headers});
+          });
+        await page.addInitScript(() => {
+          window.__csp = [];
+          document.addEventListener('securitypolicyviolation', (e) => {
+            window.__csp.push(`${e.violatedDirective} <- ${String(e.blockedURI).slice(0, 60)}`);
+          });
+        });
+        await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+        const ready = await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).then(() => true).catch(() => false);
+        await page.waitForTimeout(2000);
+        const live = await page.evaluate(() => ({
+          csp: window.__csp || [],
+          systems: document.querySelectorAll('.v2-tree-row[data-kind=system], .v2-sysrow').length,
+          text: (document.body.innerText || '').length,
+          sent: (document.querySelector('meta[http-equiv]') || {}).outerHTML || '',
+        }));
+        violations.push(...live.csp);
+        check(vp.name, `[${S5B}] the app runs clean under its own CSP — zero violations, nothing unstyled`,
+          ready && live.csp.length === 0 && live.text > 200,
+          `readiness=${ready} · violations=[${live.csp.join(' ; ') || 'none'}] · rendered text=${live.text} chars`,
+          'no securitypolicyviolation of any directive — in particular none for style-src, which is'
+          + ' the directive whose omission of \'unsafe-inline\' this measurement is defending');
+        // AND THE POLICY REALLY BITES. A guard that cannot fire is not tested: this injects a script
+        // from another origin and asserts the browser refuses it.
+        const blocked = await page.evaluate(() => new Promise((done) => {
+          const s = document.createElement('script');
+          s.src = 'https://evil.example.invalid/x.js';
+          s.onerror = () => done('error');
+          s.onload = () => done('LOADED');
+          document.head.appendChild(s);
+          setTimeout(() => done('timeout'), 2500);
+        }));
+        const after = await page.evaluate(() => window.__csp || []);
+        const scriptViolation = after.filter((v) => v.startsWith('script-src'));
+        check(vp.name, `[${S5B}] and it BITES — a script from another origin is refused by script-src`,
+          blocked !== 'LOADED' && scriptViolation.length === 1,
+          `the foreign script ${blocked === 'LOADED' ? 'LOADED' : `did not load (${blocked})`}`
+          + ` · script-src violations recorded=${scriptViolation.length} (${scriptViolation[0] || '-'})`,
+          'exactly one script-src violation, and the script never ran');
+      } catch (e) {
+        check(vp.name, `[${S5B}] the CSP pass ran`, false, String(e).slice(0, 200), 'no throw');
+      } finally { await ctx.close(); }
+    }
+  }
+
+  // ── 8. THE PHONE: THE SAME CHAT IN THE A8 SHEET, AND RC5 STILL HOLDS ────────────────────────
+  {
+    const vpPhone = VIEWPORTS.find((v) => v.name === '390x844') ?? {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true};
+    const {ctx, page, seen} = await chatContext(vpPhone, () => ({status: 200, body: sse(['posterior thigh.'])}));
+    try {
+      await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+      await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+      await page.waitForTimeout(2500);
+      const opened = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.v2-actions button, .v2-actions a')]
+          .find((x) => /Ask|提问|提問/.test((x.textContent || '').trim()));
+        if (!b) return 'no-invoker';
+        b.click(); return 'opened';
+      });
+      await page.waitForTimeout(500);
+      const typed = await page.evaluate(`(${TYPE_ASK})('where is it')`);
+      await page.waitForTimeout(200);
+      const pressed = await page.evaluate(() => {
+        const b = [...document.querySelectorAll('.v2-sheet-foot button')]
+          .find((x) => /^(Ask|提问|提問)$/.test((x.textContent || '').trim()));
+        if (!b) return 'no-ask-button';
+        b.click(); return 'pressed';
+      });
+      const arrived = await page.waitForFunction(
+        () => /posterior thigh/.test(document.querySelector('.v2-ai-log')?.textContent || ''),
+        null, {timeout: 15000, polling: 100}).then(() => true).catch(() => false);
+      check(vpPhone.name, `[${S5B}] the phone's A8 sheet is the SAME chat — one request, and the answer renders`,
+        opened === 'opened' && typed && pressed === 'pressed' && arrived && seen.length === 1,
+        `sheet=${opened} · typed=${typed} · press=${pressed} · answer arrived=${arrived} · requests=${seen.length}`,
+        'the sheet opens, one request goes out, and the streamed answer lands in it');
+      // RC5(a): the geometry constants, measured again with a chat mounted above the margin.
+      const geo = await page.evaluate(() => {
+        const px = (el) => (el ? Math.round(el.getBoundingClientRect().height) : -1);
+        return {
+          header: px(document.querySelector('.v2-head')),
+          rail: Math.round(document.querySelector('.v2-rail')?.getBoundingClientRect().width ?? -1),
+          margin: px(document.querySelector('.v2-margin')),
+        };
+      });
+      check(vpPhone.name, `[${S5B}] RC5: the phone geometry constants are unmoved by the chat sheet`,
+        geo.header === 56 && geo.rail === 45 && geo.margin === 108,
+        `header=${geo.header} (want 56) · rail=${geo.rail} (want 45) · margin=${geo.margin} (want 108)`,
+        '56 / 45 / 108 — a sheet is a scrim ABOVE the margin and may not move it');
+    } catch (e) {
+      check(vpPhone.name, `[${S5B}] the phone chat pass ran`, false, String(e).slice(0, 200), 'no throw');
+    } finally { await ctx.close(); }
+  }
+}
+
 await browser.close();
 
 const pass = results.filter((r) => r.state === 'pass').length;
@@ -5789,6 +6313,7 @@ const summary = {
   scene: {blob: BLOB, primaries: PRIMARY_IDS, frame: FRAME_IDS, focus: FOCUS_ID},
   bare: {id: BARE_ID, en: BARE_EN},
   pass, fail: fail.length, defer: deferred.length, total: results.length,
+  retries: RETRIES,
   byViewport,
   deferred: deferred.map((r) => ({viewport: r.viewport, oracle: r.oracle, measured: r.measured, want: r.want, owner: r.defer})),
   results,
@@ -5804,10 +6329,15 @@ if (deferred.length) {
   console.log(`\nDEFERRED (${deferred.length}) — targets this increment cannot reach; owner named, threshold NOT retuned:`);
   for (const r of deferred) console.log(`  [${r.viewport}] ${r.oracle} :: ${r.measured} want=${r.want} owner=${r.defer}`);
 }
+if (RETRIES.length) {
+  console.log(`\nRETRIES (${RETRIES.length}) - an atlas load failed and the viewport was entered a SECOND time:`);
+  for (const r of RETRIES) console.log(`  ${r}`);
+}
 if (fail.length) {
   console.log(`\nFAILED (${fail.length}):`);
   for (const r of fail) console.log(`  [${r.viewport}] ${r.oracle} :: ${r.measured} want=${r.want}`);
 }
 console.log(`\nSUITE ${label}: ${pass} pass · ${fail.length} fail · ${deferred.length} deferred  of ${results.length}` +
+  (RETRIES.length ? `  (${RETRIES.length} RETRY line(s) - see above)` : '') +
   `  ->  ${join(outDir, `oracles-${label}.json`)}`);
 process.exit(fail.length === 0 ? 0 : 1);

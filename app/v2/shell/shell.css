@@ -617,3 +617,45 @@ button.v2-tab[disabled]{opacity:.45;cursor:default}
 /* The bounds, stated once and always — so a reader who is ABOUT to hit them can see them coming
    rather than discovering them through a refusal. */
 .v2-limits{margin:0 0 10px;font-size:var(--v2-type-xs);line-height:16px;color:var(--v2-ink-3)}
+
+/* ══ S5b — THE IN-APP CHAT ══════════════════════════════════════════════
+   TOKENS ONLY, no hex literals (G1) — and only tokens that EXIST: the first draft of this block
+   used --v2-mono, --v2-ink-1, --v2-line-1 and --v2-type-xs's sibling --v2-type-sm from memory, and
+   three of those four are not defined anywhere in this project. An undefined custom property does
+   not error; it makes the declaration invalid at computed-value time and the element silently
+   inherits, which is a styling bug that looks like a layout bug. The monospace stack is written out
+   the same way .v2-json and .v2-jsonbox write it, because that is where it already lives.
+
+   Every rule here paints a surface that does not exist without a key on the device, EXCEPT
+   .v2-ai-settings, which is the Settings tab that puts one there. */
+.v2-ai-settings{padding:4px 0}
+.v2-ai-keyrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+/* The mask is a fixed badge so `sk-***…abcd` reads as one token and not as prose. */
+.v2-ai-mask{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:var(--v2-type-sm);background:var(--v2-surface-2);
+ border:1px solid var(--v2-line-2);border-radius:6px;padding:3px 8px;color:var(--v2-ink-2)}
+.v2-ai-keyinput{flex:1 1 180px;min-width:0;height:32px;padding:0 10px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+ font-size:var(--v2-type-xs);color:var(--v2-ink);background:var(--v2-surface-2);
+ border:1px solid var(--v2-line);border-radius:var(--v2-radius-sm)}
+.v2-ai-keyinput:focus-visible{outline:2px solid var(--v2-accent);outline-offset:1px}
+
+/* The conversation. It scrolls INSIDE the pane body, so the composer and the foot never leave the
+   screen — a chat whose input scrolls away is a chat you have to scroll to answer. */
+.v2-ai-log{display:flex;flex-direction:column;gap:14px;margin:10px 0;max-height:46vh;overflow-y:auto}
+.v2-ai-turn>b{display:block;font-size:var(--v2-type-xs);letter-spacing:.04em;text-transform:uppercase;
+ color:var(--v2-ink-3);margin-bottom:4px}
+/* `pre-wrap` is what makes the model's own paragraphs survive without a markdown renderer — the
+   reply is TEXT, and text keeps its line breaks or it is not the text that was written. */
+.v2-ai-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:var(--v2-type-sm);
+ line-height:1.55;color:var(--v2-ink)}
+.v2-ai-turn.is-user .v2-ai-text{background:var(--v2-accent-soft);border-radius:var(--v2-radius-sm);padding:8px 10px}
+.v2-ai-text a{color:var(--v2-accent);text-underline-offset:2px}
+
+/* A PROPOSAL, drawn as a card rather than as a link in the prose: it is an action with a
+   consequence, and it must not read like part of the sentence around it. */
+.v2-ai-prop{margin-top:10px;border:1px solid var(--v2-accent);border-radius:var(--v2-radius-sm);padding:10px;
+ background:var(--v2-accent-soft)}
+.v2-ai-prop>b{display:block;font-size:var(--v2-type-sm);margin-bottom:4px}
+.v2-ai-propfoot{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+/* The phone sheet's body: the same panel, scrolling inside the sheet rather than inside a pane. */
+.v2-ai-sheetbody{display:flex;flex-direction:column;min-height:0}
+.v2-ai-sheetbody .v2-ai-log{max-height:38dvh}
