@@ -5260,15 +5260,33 @@ if (variant === 'v2') {
         (${TYPE})('.v2-jsonbox', JSON.stringify(draft, null, 1));
         await wait(260);
         btn(/Apply|应用|套用/)?.click();
-        await wait(800);
+        await wait(300);
         return {removed: removed.id, backToReadOnly: !document.querySelector('.v2-jsonbox')};
       })()`);
+      /**
+       * ⚠️ WAIT FOR THE URL TO CARRY THE EDIT, NOT FOR A CLOCK.
+       *
+       * `writeUrlState` is debounced 200 ms (app/v2/page.tsx), and under a full sweep — twelve
+       * contexts, SwiftShader, a live WebGL canvas — 200 ms of debounce is not 200 ms of wall time.
+       * Sweep 2 measured `url changed=false` with `ids 5 -> 4`: the controller HAD applied and the
+       * URL had not caught up. Isolated, the same claim passed. That is a starved observer, the
+       * family this suite already documents for the release wait, arriving at the URL write.
+       *
+       * Waiting on the CONDITION also strengthens the row: if the URL never carries the edit, this
+       * fails with the measured wait rather than passing because the sleep happened to be long
+       * enough on a quiet machine. (The same lesson as the `stage-probe` flake: wait on the URL
+       * write, not on a longer sleep.)
+       */
+      const urlCaughtUp = await page.waitForFunction(
+        (old) => (new URL(location.href).searchParams.get('scene') || '') !== old,
+        before.blob, {timeout: 8000, polling: 100},
+      ).then(() => true).catch(() => false);
       const after = await page.evaluate(`(${READ})()`);
       const decoded = after.blob ? decodeScene(after.blob) : null;
       check(VP5.name, `[${S5_V}] a valid JSON edit applies THROUGH the controller — scene, selection and URL all move`,
-        !did.error && before.ids > 0 && after.ids === before.ids - 1 && after.url !== before.url
+        !did.error && before.ids > 0 && after.ids === before.ids - 1 && urlCaughtUp && after.url !== before.url
           && !!decoded && !decoded.structures.some((x) => x.id === did.removed) && did.backToReadOnly,
-        did.error || `removed ${did.removed} · ids ${before.ids} -> ${after.ids} · url changed=${after.url !== before.url}`
+        did.error || `removed ${did.removed} · ids ${before.ids} -> ${after.ids} · the URL caught up within 8 s=${urlCaughtUp}`
           + ` · the re-encoded blob carries ${decoded?.structures.length} structures and`
           + ` ${decoded?.structures.some((x) => x.id === did.removed) ? 'STILL NAMES' : 'no longer names'} the removed one`
           + ` · editor closed on success=${did.backToReadOnly}`,
@@ -5288,6 +5306,26 @@ if (variant === 'v2') {
       await page.waitForTimeout(2200);
       await page.evaluate(`(${OPEN_DOCK})('Scene JSON|场景 JSON|場景 JSON')`);
       await page.waitForTimeout(400);
+      /**
+       * ⚠️ THE CAMERA HAS TO BE STILL BEFORE "THE CAMERA DID NOT MOVE" MEANS ANYTHING.
+       *
+       * Sweep 2 measured `camera identical=false` on a refusal that provably changed nothing (the
+       * ids and the blob were byte-identical in the same reading). The entry fit is still easing
+       * when the dock opens, and the pose is compared at four decimal places — so under sweep load
+       * the row was measuring the tail of the arrival animation and attributing it to the refusal.
+       *
+       * So the baseline is taken only after two consecutive readings agree. If it never settles the
+       * row says so, rather than comparing two points on a moving curve.
+       */
+      const settled = await page.waitForFunction(() => {
+        const n = window.__atlasNav;
+        if (!n) return false;
+        const q = n.pose();
+        const k = [q.x, q.y, q.z, q.tx, q.ty, q.tz].map((v) => v.toFixed(4)).join(',');
+        const prev = window.__s5aPrevPose;
+        window.__s5aPrevPose = k;
+        return prev === k;
+      }, null, {timeout: 10000, polling: 250}).then(() => true).catch(() => false);
       const before = await page.evaluate(`(${READ})()`);
       const out = await page.evaluate(`(async () => {
         const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -5310,9 +5348,9 @@ if (variant === 'v2') {
       })()`);
       const after = await page.evaluate(`(${READ})()`);
       check(VP5.name, `[${S5_V}] an INVALID draft refuses with its LINE — picks, blob and camera identical`,
-        !out.error && /\d/.test(out.err) && out.kept && out.labelled
+        !out.error && settled && /\d/.test(out.err) && out.kept && out.labelled
           && before.ids === after.ids && before.blob === after.blob && before.cam === after.cam,
-        out.error || `error="${out.err.replace(/\s+/g, ' ').slice(0, 64)}" · draft retained=${out.kept}`
+        out.error || `camera settled before the baseline=${settled} · error="${out.err.replace(/\s+/g, ' ').slice(0, 56)}" · draft retained=${out.kept}`
           + ` · engine text quoted separately=${out.labelled}`
           + ` · ids ${before.ids}->${after.ids} · blob identical=${before.blob === after.blob}`
           + ` · camera identical=${before.cam === after.cam}`,
