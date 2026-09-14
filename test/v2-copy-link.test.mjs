@@ -25,6 +25,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {initialState, reduce} from '../app/v2/controller.ts';
 import {buildQuery, canonicalUrl} from '../app/url-state.ts';
+import {urlInputsOf} from '../app/v2/url-inputs.ts';
 import {DEFAULT_VISIBLE} from '../app/anatomy.ts';
 import {encodeScene, normalizeScene} from '../app/scene-codec.js';
 
@@ -34,19 +35,19 @@ const baseRender = {
   view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET,
 };
 
-/** What `page.tsx` hands the serializer, read from the CONTROLLER and from nothing else. */
-const inputsOf = (c, lang = 'en') => ({
-  state: c.render,
-  selectIds: c.picks,
-  caption: c.scene
-    ? (c.scene.caption?.place === 'in' ? {title: c.scene.caption.title, note: c.scene.caption.note} : {})
-    : {},
-  lang,
-  flags: {},
-  blob: c.blob || (c.scene ? encodeScene(c.scene) : ''),
-  snap: false,
+/**
+ * ⚠️ THE PRODUCTION FUNCTION, NOT A TRANSCRIPTION OF IT — codex round 29, HIGH.
+ *
+ * This used to be a hand-written copy of what `page.tsx` passes, and that is exactly the shape of
+ * the defect round 29 found: the copy control and the URL writer each built their own argument list
+ * and drifted (`flags: {}` and `snap: false` against the writer's live values). A test that re-types
+ * the mapping cannot catch the mapping drifting. `urlInputsOf` is what the page calls, for BOTH
+ * paths, and it is what this file calls.
+ */
+const inputsOf = (c, facts = {}) => urlInputsOf(c, {
+  lang: 'en', legacyCaption: {}, stage: false, probe: false, snap: false, ...facts,
 });
-const copiedFrom = (c, lang) => canonicalUrl('https://h', '/v2/', inputsOf(c, lang));
+const copiedFrom = (c, facts) => canonicalUrl('https://h', '/v2/', inputsOf(c, facts));
 
 // ── codex round 28, HIGH 1: a named view changes neither `scene` nor `select` ────────────────
 
@@ -76,7 +77,7 @@ test('the language and the caption travel too — the other two fields the compa
     caption: {title: '腘绳肌', note: '一行说明', place: 'in'},
   });
   const {state} = initialState({scene, sceneBlob: encodeScene(scene), select: ['FMA9611']}, baseRender);
-  const url = copiedFrom(state, 'zh-Hant');
+  const url = copiedFrom(state, {lang: 'zh-Hant'});
   assert.match(url, /lang=zh-Hant/, 'the UI language the reader is in');
   assert.match(url, /title=/, 'and the scene caption');
 });
@@ -115,13 +116,24 @@ test('HIGH 2 — a cold arrival whose FRAGMENT is authoritative copies the accep
   assert.equal(new URL(url).hash, '', 'and no fragment to outrank it on reload');
 });
 
-test('the copied link never carries the session flags, whatever the page is doing', () => {
+test('the copied link carries the display flags EXACTLY as the writer does — including not at all', () => {
+  /**
+   * ⚠️ THIS ROW REVERSED AT ROUND 29, deliberately, and the reversal is the fix.
+   *
+   * It used to assert that a copied link never carries `stage`/`probe`, on the reading that they
+   * describe THIS screen rather than the view. That reading is defensible and it is also how the
+   * defect got in: the control hardcoded `flags: {}` while the writer passed the live values, and a
+   * field the two treat differently is a field that can be wrong. Equivalence is the invariant that
+   * can be proved; a per-field judgement call is the one that cannot.
+   *
+   * So: absent when they are off (the ordinary case, unchanged for every reader), present when the
+   * page really is in that mode — and identical to the address bar either way.
+   */
   const {state} = initialState({select: ['FMA9611']}, baseRender);
-  // `stage`/`probe` describe THIS screen. `inputsOf` passes `flags: {}` and the writer's own
-  // explicit-flags rule (url-state.ts) means absent is absent.
-  const url = copiedFrom(state);
-  assert.doesNotMatch(url, /stage=/);
-  assert.doesNotMatch(url, /probe=/);
+  assert.doesNotMatch(copiedFrom(state), /stage=|probe=/, 'off is off');
+  const staged = copiedFrom(state, {stage: true, probe: true});
+  assert.match(staged, /stage=1/);
+  assert.match(staged, /probe=1/);
 });
 
 // ── the refactor is behaviour-preserving ─────────────────────────────────────────────────────
@@ -183,4 +195,93 @@ test('RED-PROOF: the address bar and the controller disagree, and the copy follo
   // merely different, it is what the writer produces.
   const settledAddressBar = `https://h/v2/?${buildQuery(inputsOf(after))}`;
   assert.equal(copied, settledAddressBar, 'the copy equals what the writer will write');
+});
+
+// ── round 29's HIGH: the copy and the writer are ONE argument list ───────────────────────────
+
+/**
+ * ⚠️ THE EQUIVALENCE, ASSERTED ACROSS A SET OF STATES — the planner's own test for round 29's HIGH.
+ *
+ * The defect was two argument lists kept in step by hand: the copy passed `flags: {}` and
+ * `snap: false` while the writer passed the live ones, so a non-default render flag was dropped
+ * from a shared link and the recipient landed somewhere else. Both paths call `urlInputsOf` now,
+ * so the equivalence is structural — and this row is what says so, over every field codex named.
+ *
+ * `writerQuery` is what the debounced effect will put in the address bar; `copyQuery` is what the
+ * control puts on the clipboard. They are the same call, and the RED-PROOF below mutates ONE input
+ * to show this row can fail.
+ */
+const STATES = [
+  ['the default view', {}, {}],
+  ['view=back', {view: 'back'}, {}],
+  ['isolate on', {isolate: true}, {}],
+  ['explode 0.6', {explode: 0.6}, {}],
+  ['system=muscular', {visible: ['muscular']}, {}],
+  ['snap on', {}, {snap: true}],
+  ['presentation mode', {}, {stage: true}],
+  ['the probe panel', {}, {probe: true}],
+  ['a caption', {}, {legacyCaption: {title: 'T', note: 'N'}}],
+  ['zh-Hant', {}, {lang: 'zh-Hant'}],
+  ['view=back AND snap', {view: 'back'}, {snap: true}],
+];
+
+test('round 29 HIGH — the copy and the writer build the SAME query, for every render flag', () => {
+  for (const [name, render, facts] of STATES) {
+    const {state} = initialState({select: ['FMA9611']}, {...baseRender, ...render});
+    // The controller keeps its own `render`, so reach past it for the flags a URL carries but a
+    // seed does not set — this is the state the page would be in, not a synthetic one.
+    const c = {...state, render: {...state.render, ...render}};
+    const inputs = inputsOf(c, facts);
+    // ONE object, two destinations: `writeUrlFrom` puts `buildQuery(inputs)` in the address bar,
+    // `canonicalUrl` puts it on the clipboard.
+    const writerQuery = buildQuery(inputs);
+    const copyQuery = new URL(canonicalUrl('https://h', '/v2/', inputs)).search.replace(/^\?/, '');
+    assert.equal(copyQuery, writerQuery, `${name}: the copy and the address bar must agree`);
+  }
+});
+
+test('…and each of those flags really does reach the query (the row is not vacuous)', () => {
+  // Without this, the equivalence above would pass just as happily if `buildQuery` ignored
+  // everything — two identical empty strings agree perfectly.
+  const q = (render, facts) => {
+    const {state} = initialState({select: ['FMA9611']}, {...baseRender, ...render});
+    return buildQuery(inputsOf({...state, render: {...state.render, ...render}}, facts));
+  };
+  assert.match(q({view: 'back'}, {}), /view=back/);
+  assert.match(q({isolate: true}, {}), /isolate=1/);
+  assert.match(q({explode: 0.6}, {}), /explode=0\.60/);
+  assert.match(q({visible: ['muscular']}, {}), /system=muscular/);
+  assert.match(q({}, {snap: true}), /snap=1/);
+  assert.match(q({}, {stage: true}), /stage=1/);
+  assert.match(q({}, {probe: true}), /probe=1/);
+  assert.match(q({}, {lang: 'zh-Hant'}), /lang=zh-Hant/);
+  assert.match(q({}, {legacyCaption: {title: 'T'}}), /title=T/);
+});
+
+test('RED-PROOF: mutating ONE input breaks the equivalence, so the row can fail', () => {
+  // codex round 29's HIGH, reconstructed: the copy hardcodes `snap: false` while the writer passes
+  // the live flag. If anyone reintroduces a second argument list, this is the shape it takes.
+  const {state} = initialState({select: ['FMA9611']}, baseRender);
+  const writerInputs = inputsOf(state, {snap: true, stage: true});
+  const copyInputsAsRound29BuiltThem = {...writerInputs, snap: false, flags: {}};
+  assert.notEqual(buildQuery(copyInputsAsRound29BuiltThem), buildQuery(writerInputs),
+    'if these are ever equal the assertion above proves nothing');
+  assert.doesNotMatch(buildQuery(copyInputsAsRound29BuiltThem), /snap=1|stage=1/, 'what the reader lost');
+  assert.match(buildQuery(writerInputs), /snap=1/);
+});
+
+test('round 29 MEDIUM — the blob is encoded from the scene, never taken from a cached field', () => {
+  // A `state.blob` that is one transaction behind the fields beside it produces a copied link that
+  // is indistinguishable from a correct one. `urlInputsOf` encodes from `c.scene`, so a skewed
+  // cache cannot reach the URL — asserted by handing it a DELIBERATELY WRONG cached blob.
+  const scene = normalizeScene({
+    mode: 'explore', lang: 'en',
+    structures: [{id: 'FMA9611', role: 'primary'}],
+    camera: {view: 'three-quarter', focus: [], explode: 0}, caption: {title: '', note: ''},
+  });
+  const {state} = initialState({scene, sceneBlob: encodeScene(scene), select: ['FMA9611']}, baseRender);
+  const skewed = {...state, blob: 'STALE-CACHED-BLOB'};
+  const q = new URLSearchParams(buildQuery(inputsOf(skewed)));
+  assert.equal(q.get('scene'), encodeScene(scene), 'the canonical scene, not the cached string');
+  assert.notEqual(q.get('scene'), 'STALE-CACHED-BLOB');
 });

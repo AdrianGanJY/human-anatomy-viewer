@@ -221,19 +221,41 @@ export function canonicalUrl(origin:string,path:string,i:UrlInputs):string{
  const q=buildQuery(i);
  return `${origin}${path}${q?`?${q}`:''}`;
 }
-/** Mirror the scene into the query string. Defaults are omitted so a plain visit keeps a clean URL. */
+/** Whether the document is in snap mode — the writer's own module flag, exposed so a caller can
+ *  hand it back in and get a byte-identical query. S7: `page.tsx` passes it through
+ *  `urlInputsOf`, so Copy link and the writer cannot disagree about it (codex round 29, HIGH). */
+export function snapMode(){return snapOn;}
+/**
+ * Mirror a state into the address bar. S7: it takes the SAME `UrlInputs` object Copy link builds,
+ * so the two paths are structurally one — `writeUrlFrom(i)` and `canonicalUrl(o,p,i)` differ only in
+ * where the string goes. Round 29's HIGH was two argument lists kept in step by hand.
+ */
+export function writeUrlFrom(i:UrlInputs){
+ const query=buildQuery(i);
+ const flags=i.flags??{};
+ return commitUrl(query,flags);
+}
+/** Mirror the scene into the query string. Defaults are omitted so a plain visit keeps a clean URL.
+ *  The v1 entry point: `app/page.tsx` calls this and passes no flags. v2 goes through
+ *  `writeUrlFrom` with an `urlInputsOf` object. */
 export function writeUrlState(state:SceneState,selectIds:readonly string[],caption:{title?:string;note?:string},lang:Lang='en',flags:DisplayFlags={}){
  // THE SAME FUNCTION THE COPY CONTROL USES — that is the whole point of the extraction above.
  // `lastBlob` and `snapOn` are this module's state and are passed IN, so the pure half has none.
  const query=buildQuery({state,selectIds,caption,lang,flags,blob:lastBlob,snap:snapOn});
- // A spent hash is dropped only when the caller asks AND the hash actually carries one of our keys
- // -- an unrelated fragment (a future anchor link) is not ours to delete.
- //
- // ASKED THROUGH THE PARSER, NOT A REGEX ON THE RAW STRING. `URLSearchParams` percent-DECODES key
- // names, so `#%73cene=X` is `scene=X` to every reader in this file — and a raw-text regex does not
- // see it. codex executed both (review 2, High 2): `#scene=X` was dropped and the edit survived a
- // reload, while `#%73cene=X` was retained and RESTORED the removed structure. The fence has to use
- // the same decoding as the thing it is fencing.
+ return commitUrl(query,flags);
+}
+/**
+ * The address-bar half, shared by both writers. A spent hash is dropped only when the caller asks
+ * AND the hash actually carries one of our keys -- an unrelated fragment (a future anchor link) is
+ * not ours to delete.
+ *
+ * ASKED THROUGH THE PARSER, NOT A REGEX ON THE RAW STRING. `URLSearchParams` percent-DECODES key
+ * names, so `#%73cene=X` is `scene=X` to every reader in this file — and a raw-text regex does not
+ * see it. codex executed both (review 2, High 2): `#scene=X` was dropped and the edit survived a
+ * reload, while `#%73cene=X` was retained and RESTORED the removed structure. The fence has to use
+ * the same decoding as the thing it is fencing.
+ */
+function commitUrl(query:string,flags:DisplayFlags){
  const ownsAKey=(h:string)=>{
   try{
    for(const key of new URLSearchParams(h.replace(/^#/,'')).keys()){

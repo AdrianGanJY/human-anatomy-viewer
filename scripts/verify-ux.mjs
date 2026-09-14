@@ -7247,7 +7247,16 @@ if (variant === 'v2') {
      * and "poll until non-empty" stops on THAT text — measured, and it reported a stale copy
      * against a control that had copied correctly.
      */
-    const raceOf = async (edit) => page.evaluate(async (js) => {
+    const raceOf = async (edit) => {
+      /**
+       * ⚠️ `bringToFront` FIRST — the clipboard needs a FOCUSED document, and this block opens and
+       * closes other pages between races. Sweep s7j lost exactly one of three races to it: the
+       * removal copied nothing while the two around it copied correctly, and both races reproduced
+       * GREEN in isolation. `holdUntilMoved` in this same file already does this for the same
+       * reason (Chromium throttles and de-focuses a page that is not frontmost).
+       */
+      await page.bringToFront().catch(() => {});
+      return page.evaluate(async (js) => {
       try { await navigator.clipboard.writeText(''); } catch { /* reported as an empty read */ }
       // eslint-disable-next-line no-eval
       eval(js);
@@ -7260,22 +7269,47 @@ if (variant === 'v2') {
       }
       const st = window.atlas.state();
       return {copied, ids: st.ids.slice(), view: st.view, lang: st.lang, blob: st.blob};
-    }, edit);
+      }, edit);
+    };
 
-    /** Open a copied link in its own page and read back what the CONTROLLER there holds. */
+    /**
+     * Open a copied link in its own page and read back what it SETTLES to.
+     *
+     * ⚠️ THE ASSERTION IS THE WHOLE QUERY, NOT A LIST OF FIELDS — codex round 29's LOW, and the
+     * right answer to it. Round 29's HIGH was a hand-written field list drifting from another hand-
+     * written field list; answering it with a THIRD hand-written list in the oracle would repeat the
+     * mistake one layer up, and whichever field I forgot would be the one that breaks.
+     *
+     * So: the reopened page runs the same debounced writer, so once it settles its own address bar
+     * IS its canonical query. Comparing that to the copied query compares every render-affecting
+     * field at once — view, isolate, explode, system, snap, lang, caption, scene, select and the
+     * display flags — and cannot omit one. The state fields come back too, but only so a failure
+     * says something a human can read.
+     */
     const reopen = async (url) => {
       const pg = await ctx.newPage();
       try {
         await pg.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
         await pg.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
-        await pg.waitForTimeout(1200);
+        // The writer is debounced by 200 ms; this is the only place in this block that waits, and it
+        // waits for the REOPENED page to mirror itself, not for the control under test.
+        await pg.waitForTimeout(1500);
         return await pg.evaluate(() => {
           const st = window.atlas?.state?.();
-          return st ? {ids: st.ids.slice(), view: st.view, lang: st.lang, blob: st.blob,
-            title: document.querySelector('.v2-cap b')?.textContent || ''} : null;
+          return {
+            search: location.search.replace(/^\?/, ''),
+            ids: st ? st.ids.slice() : null, view: st?.view, lang: st?.lang, blob: st?.blob,
+            visible: st?.visible?.slice(), isolate: st?.framing?.isolate, stage: st?.stage,
+            title: document.querySelector('.v2-cap b')?.textContent || '',
+          };
         });
-      } catch (e) { return {error: String(e).slice(0, 70)}; } finally { await pg.close(); }
+      } catch (e) { return {error: String(e).slice(0, 70)}; } finally {
+        await pg.close();
+        // Give the focus back to the page under test — the next race reads the clipboard.
+        await page.bringToFront().catch(() => {});
+      }
     };
+    const queryOf = (u) => { try { return new URL(u).search.replace(/^\?/, ''); } catch { return null; } };
 
     // ── codex round 28, HIGH 1: a NAMED VIEW changes neither `scene` nor `select` ─────────────
     // Its measurement against the wait-based design: `Polling timers created: 0 · Copied
@@ -7299,14 +7333,40 @@ if (variant === 'v2') {
       + ` · scene matches=${du?.searchParams.get('scene') === dropRace.blob}`,
       'the copied selection IS the controller selection');
 
-    // ── round 28, MEDIUM 1: reopen it, do not merely read its fields ──────────────────────────
+    // ── round 28 MEDIUM 1 + round 29 LOW: reopen it, and compare EVERY field at once ──────────
     const back = du ? await reopen(dropRace.copied) : {error: 'no url'};
-    check(vp7.name, `[${S7}] and the link REOPENS the same controller state — ids, view, lang, scene`,
+    check(vp7.name, `[${S7}] the reopened page settles to the IDENTICAL query — every render field, not a list`,
+      !!back && !back.error && back.search === queryOf(dropRace.copied),
+      `copied=${queryOf(dropRace.copied)?.slice(0, 110)} · reopened=${String(back?.search ?? back?.error).slice(0, 110)}`,
+      'byte-identical canonical queries');
+    check(vp7.name, `[${S7}] and the reopened controller holds the same view — ids, view, lang, scene`,
       !!back && !back.error && back.ids?.join(',') === dropRace.ids.join(',')
         && back.view === dropRace.view && back.lang === dropRace.lang && back.blob === dropRace.blob,
       `reopened ids=[${back?.ids?.join(',') ?? back?.error}] view=${back?.view} lang=${back?.lang}`
       + ` · scene matches=${back?.blob === dropRace.blob}`,
       'the same ids, the same view, the same language, the same scene');
+
+    /**
+     * ── ROUND 29's HIGH, IN A BROWSER: the non-default RENDER FLAGS ───────────────────────────
+     *
+     * Its counterexample was "a non-default render flag the copy hardcoded away". `view`, `isolate`
+     * and `system` are all reachable from `window.atlas` and the controller, and all three used to
+     * be at risk together with `snap` and the display flags.
+     *
+     * ⚠️ `snap` IS ASSERTED IN THE UNIT SUITE AND NOT HERE, and that is a real limitation stated
+     * rather than papered over: `/v2/` calls `setModes(false, false)` on mount and never enters snap
+     * mode, so no browser sequence can produce `snap=1` on this tier. `test/v2-copy-link.test.mjs`
+     * carries the `view=back AND snap` case codex named, against the production mapping.
+     */
+    const flagged = await raceOf(`window.atlas.setView('back')`);
+    let fu = null; try { fu = new URL(flagged.copied); } catch { /* reported below */ }
+    const flagBack = fu ? await reopen(flagged.copied) : {error: 'no url'};
+    check(vp7.name, `[${S7}] HIGH (r29): a non-default render flag survives copy AND reopen`,
+      !!fu && fu.searchParams.get('view') === 'back' && !flagBack.error
+        && flagBack.search === queryOf(flagged.copied) && flagBack.view === 'back',
+      `copied view=${fu?.searchParams.get('view') ?? '(absent)'} · reopened view=${flagBack?.view}`
+      + ` · query identical=${flagBack?.search === queryOf(flagged.copied)}`,
+      'view=back in the copy, in the reopened query, and in the reopened controller');
 
     // ── the pending rule: a half-applied arrival has no link ──────────────────────────────────
     const pending = await page.evaluate(() => {

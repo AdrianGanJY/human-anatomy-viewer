@@ -32,7 +32,7 @@ import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
 import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
 import {decodeScene,encodeScene,normalizeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
-import {canonicalUrl,markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
+import {canonicalUrl,markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,snapMode,writeUrlFrom} from '../url-state';
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type Reason, type V2State} from './controller';
 import RefusalText from './refusal.tsx';
@@ -44,6 +44,8 @@ import Shell,{PhoneSheets,StudioField,StudioOverlays} from './shell/shell.tsx';
 import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
+// S7: the ONE argument list both URL paths read (codex round 29, HIGH).
+import {captionOf,urlInputsOf} from './url-inputs.ts';
 // S7: the three share controls' pure half — the filename, the copied URL and the plate URL.
 import {pngBlobFrom,snapshotName} from './shell/share.ts';
 
@@ -63,16 +65,6 @@ const NO_IDS: string[] = [];
  *  a caller this page does not control, so it needs a value check the TYPE cannot give it. */
 const VIEW_NAMES: View[] = ['three-quarter', 'front', 'side', 'back'];
 const MB = (n: number) => (n / 1048576).toFixed(1);
-/**
- * S7 — WHICH CAPTION A PAGE HAS, as a pure function of the scene. In scene mode the caption lives
- * in the scene (and only when it asks to be drawn `in` the view); otherwise it is the legacy
- * `?title=`/`?note=` pair. Module scope because the render and the copy control both need it and
- * neither may own it.
- */
-const captionOf = (scene: Scene | null, legacy: {title?: string; note?: string}) => {
- if (!scene) return legacy;
- return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
-};
 
 const baseState: SceneState = {explode: 0, visible: DEFAULT_VISIBLE, selected: [], isolate: false, view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET};
 
@@ -323,7 +315,6 @@ export default function V2() {
   * completion token) each looked right and each left a hole codex executed; `url-state.ts` carries
   * the full account beside the function.
   */
- useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
@@ -1280,28 +1271,48 @@ export default function V2() {
  }, [say]);
 
  /**
-  * ══ THE LINK FOR WHAT IS ON SCREEN — SERIALIZED, NOT READ ════════════════════════════════════
+  * ══ THE ONE ARGUMENT LIST ════════════════════════════════════════════════════════════════════
   *
-  * The controller's canonical state through `buildQuery`, which is the function the URL writer
-  * calls. The copied link therefore equals what the writer WOULD write, whenever it next gets
-  * around to it — no flush, no poll, no token, no clock. There is no await in this function and no
-  * timer behind it.
+  * Both URL paths — the debounced writer above and Copy link below — ask THIS for their inputs, so
+  * "does the copy carry field X?" is not a question anybody can answer differently in two places.
   *
-  * `flags: {}` because `stage` and `probe` describe THIS screen and not the view, and `snap: false`
-  * because a shared link opens the viewer rather than the chrome-free renderer.
+  * ⚠️ ROUND 29's HIGH WAS TWO ARGUMENT LISTS. The copy passed `flags: {}` and `snap: false` while
+  * the writer passed the live `{stage, probe}` and `snapOn`; any non-default render flag the copy
+  * hardcoded away was dropped from a shared link, and the recipient landed somewhere else. Keeping
+  * two lists in step by hand is the same defect waiting for the next field.
+  *
+  * Everything the controller owns is read DISPATCH-fresh off `ctlRef`; everything it does not
+  * (language, the legacy caption, the two display flags, snap mode) comes through a ref or through
+  * `url-state`'s own accessor, because this runs inside a click and cannot wait for a render.
   */
- const linkForNow = useCallback(() => {
-  const c = ctlRef.current;
-  return canonicalUrl(location.origin, location.pathname, {
-   state: c.render,
-   selectIds: c.picks,
-   caption: captionOf(c.scene, legacyCaptionRef.current),
-   lang: langRef.current,
-   flags: {},
-   blob: c.blob || (c.scene ? encodeScene(c.scene) : ''),
-   snap: false,
-  });
- }, []);
+ const currentUrlInputs = useCallback(() => urlInputsOf(ctlRef.current, {
+  lang: langRef.current,
+  legacyCaption: legacyCaptionRef.current,
+  stage: stageRef.current,
+  probe: probeMode,
+  snap: snapMode(),
+ }), []);
+
+ /**
+  * THE LINK FOR WHAT IS ON SCREEN — SERIALIZED, NOT READ. The same inputs, through the same
+  * `buildQuery` the writer calls, so the copied link equals what the writer WOULD write whenever it
+  * next gets around to it. No flush, no poll, no token, no clock: there is no await in this
+  * function and no timer behind it.
+  */
+ const linkForNow = useCallback(
+  () => canonicalUrl(location.origin, location.pathname, currentUrlInputs()), [currentUrlInputs]);
+
+ /**
+  * THE ADDRESS BAR, MIRRORED FROM THE RENDER, DEBOUNCED — and it reads the SAME argument list the
+  * control above does. It lives here rather than beside the other effects precisely so the two
+  * calls are adjacent: anyone changing one has the other on the screen.
+  *
+  * ⚠️ NOTHING READS `location.search` TO ANSWER "WHAT IS THE CURRENT VIEW?" — planner ruling after
+  * codex rounds 27 and 28. The deps stay the RENDER values because they are what should re-arm the
+  * debounce; the VALUES written come from `currentUrlInputs()` at fire time, which is the trailing
+  * edge and therefore the freshest thing available.
+  */
+ useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlFrom(currentUrlInputs()), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode, currentUrlInputs]);
 
  const copyLink = useCallback(() => {
   // ⚠️ A HALF-APPLIED ARRIVAL IS NOT A VIEW. While the scene is still landing the controller holds
