@@ -6950,9 +6950,22 @@ if (variant === 'v2') {
         // The document response, with the shipped policy on it.
         await page.route((u) => u.href.startsWith(base) && !/\.(js|css|json|png|svg|woff2?|bin)(\?|$)/.test(u.pathname),
           async (route) => {
-            const res = await route.fetch();
+            /**
+             * ⚠️ A TRANSPORT ERROR HERE KILLS THE WHOLE PROCESS, and it did — sweep s7g, after 700
+             * green rows: `route.fetch: read ECONNRESET` on `/models/body-6.bin.gz` arrived as an
+             * UNHANDLED REJECTION and node exited, taking the summary and `oracles-s7g.json` with
+             * it. The `finally` below already unroutes for the TargetClosedError version of this;
+             * it cannot catch a handler that throws while the page is still live.
+             *
+             * A failed fetch is not a finding — the local preview server dropped a connection under
+             * a long multi-context run. So it is ABORTED, which the page sees as a failed
+             * subresource (and every row here asserts on the CSP, not on chunk delivery), instead
+             * of ending the sweep.
+             */
+            let res;
+            try { res = await route.fetch(); } catch { await route.abort().catch(() => {}); return; }
             const headers = {...res.headers(), 'content-security-policy': policy};
-            await route.fulfill({response: res, headers});
+            await route.fulfill({response: res, headers}).catch(() => {});
           });
         await page.addInitScript(() => {
           window.__csp = [];
