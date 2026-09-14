@@ -7233,11 +7233,18 @@ if (variant === 'v2') {
       const before = window.atlas.state().ids.slice();
       const dropped = before[before.length - 1];
       window.atlas.remove(dropped);
-      // NO WAIT. The whole point is to read the clipboard inside the 200 ms the writer is waiting.
+      // THE CLICK LANDS INSIDE THE 200 ms THE WRITER IS WAITING — that is the whole point, and it
+      // is where the defect lived. What is NOT asserted is that the copy is instantaneous: the
+      // control now waits for the URL to become true before reading it, so the row waits for the
+      // clipboard to fill (bounded) and then asks whether what landed there is CURRENT. An early
+      // read would measure the wait, not the correctness — my first version did exactly that and
+      // reported an empty clipboard as a failure of the fix.
       document.querySelector('.v2-tools [data-act="copy-link"]').click();
-      await new Promise((r) => setTimeout(r, 120));
       let copied = '';
-      try { copied = await navigator.clipboard.readText(); } catch (e) { copied = `ERR:${e}`; }
+      for (let i = 0; i < 30 && !copied; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        try { copied = await navigator.clipboard.readText(); } catch (e) { copied = ''; }
+      }
       return {dropped, after: window.atlas.state().ids.slice(), copied,
         blob: window.atlas.state().blob};
     });
@@ -7249,6 +7256,9 @@ if (variant === 'v2') {
       `removed=${race.dropped} · now=[${race.after.join(',')}] · copied select=[${copiedIds.join(',')}]`
       + ` · scene matches=${ru?.searchParams.get('scene') === race.blob}`,
       'the structure just removed is absent from the copied link');
+    check(vp7.name, `[${S7}] and the copy really completes — the wait is bounded, not indefinite`,
+      !!race.copied, `clipboard after the bounded wait=${race.copied ? 'filled' : 'EMPTY'}`,
+      'non-empty within 1.5 s');
 
     /**
      * ── 3. SHARE PLATE: NOT SHIPPED, AND THIS ROW SAYS SO ────────────────────────────────────

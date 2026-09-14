@@ -279,22 +279,40 @@ export default function V2() {
  // `stage` and `probeMode` are passed EXPLICITLY, which is what makes them survive the debounced
  // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
  // therefore omits the key instead of preserving whatever the URL happened to say.
+ useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
+
  /**
-  * ⚠️ S7 — THE WRITE IS NAMED NOW, BECAUSE SOMETHING HAS TO BE ABLE TO FLUSH IT (codex round 27,
-  * HIGH 2). It is debounced by 200 ms, and Copy link read `location.href` immediately: codex
-  * executed the real reducer and writer and got `copied before debounce: [FMA7485, FMA9611]`
-  * against `current picks: [FMA7485]` — the control silently handed over the PREVIOUS view.
+  * ══ S7 — WAIT FOR THE URL TO BECOME TRUE, NEVER WRITE IT A SECOND TIME ═══════════════════════
   *
-  * A ref rather than a dependency, because the flush is called from a callback that must not be
-  * rebuilt on every transaction, and the debounce is deliberately left in place: the flush is for
-  * the one caller that needs the URL to be true RIGHT NOW.
+  * codex round 27, HIGH 2: the write above is debounced by 200 ms and Copy link read
+  * `location.href` immediately, so copying inside that window handed over the PREVIOUS view
+  * (`copied before debounce: [FMA7485, FMA9611]` against `current picks: [FMA7485]`).
+  *
+  * ⚠️ MY FIRST FIX WAS A FLUSH, AND MY OWN NEW SWEEP ROW FAILED IT — which is the whole reason
+  * that row exists. A flush callback assigned during RENDER closes over the RENDER's `state`,
+  * `picks` and `caption`; `dispatch` writes `ctlRef.current` synchronously and re-renders after, so
+  * calling it in the same task rewrote the URL with exactly the stale values it was meant to
+  * repair. (`writeUrlState` also reads `lastBlob`, which `markScene` sets in an EFFECT — stale for
+  * the same reason.) This is page.tsx's own render-fresh-vs-dispatch-fresh lesson, and I walked
+  * straight into it.
+  *
+  * So this does not write. It WAITS for the one writer to catch up, on the CONDITION rather than
+  * on a duration — the suite's own rule after the `stage-probe` flake ("wait on the URL write, not
+  * on a longer sleep"). Bounded at 600 ms; on a timeout the caller copies what is there, and the
+  * oracle that asserts currency goes red honestly instead of hanging.
   */
- const writeUrlNow = useRef(() => {});
- writeUrlNow.current = () => {
-  if (!atlas) return;
-  writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true});
- };
- useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlNow.current(), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
+ const urlSettled = useCallback(async () => {
+  const matches = () => {
+   const q = new URLSearchParams(location.search);
+   const c = ctlRef.current;
+   const want = c.blob || (c.scene ? encodeScene(c.scene) : '');
+   if (want && q.get('scene') !== want) return false;
+   if (!want && q.get('scene')) return false;
+   return (q.get('select') ?? '') === c.picks.join(',');
+  };
+  for (let i = 0; i < 24 && !matches(); i++) await new Promise((r) => setTimeout(r, 25));
+  return matches();
+ }, []);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
@@ -1240,13 +1258,14 @@ export default function V2() {
   } catch { say('share.copyFailed'); return false; }
  }, [say]);
 
- const copyLink = useCallback(() => {
-  // FLUSH BEFORE READING. The URL is the source of truth for this control and it is 200 ms behind
-  // the controller by design; without this, copying inside that window shares the previous scene
-  // (codex round 27, HIGH 2, with an executed counterexample).
-  writeUrlNow.current();
+ const copyLink = useCallback(async () => {
+  // WAIT FOR THE URL, THEN READ IT. The URL is this control's source of truth and it is 200 ms
+  // behind the controller by design; copying inside that window shares the previous scene
+  // (codex round 27, HIGH 2, with an executed counterexample). See `urlSettled` for why this waits
+  // rather than writing — the flush I tried first wrote the stale render's values.
+  await urlSettled();
   return copy(shareLink(location.href), 'share.copied');
- }, [copy]);
+ }, [copy, urlSettled]);
 
 
 
