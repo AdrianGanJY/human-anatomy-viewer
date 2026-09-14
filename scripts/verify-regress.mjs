@@ -154,7 +154,38 @@ const browser = await chromium.launch({executablePath: CHROME_EXE, args: CHROME_
  * transitions — but no `verify-regress` case drives a control through the phone's sheet, and saying
  * so is better than implying otherwise.
  */
+/**
+ * ⚠️ S6 TOOK THE MARGIN AWAY FROM THIS TIER, AND THE ANSWER IS THE SAME ONE AS ABOVE.
+ *
+ * Everything the note above says about 1024x768 was true until S6, which replaced the legacy tablet
+ * page with the studio chrome and ONE shared right sheet, closed on entry. So `.v2-margin`,
+ * `.v2-row-x` and `.v2-set-foot` are gone at this width and both cases below reported their
+ * PREREQUISITES unmet — "0 remove controls", "the Clear control :: absent" — which is the honest
+ * outcome the prerequisites exist for, and is why they went BROKEN rather than silently green.
+ *
+ * The subject of those cases is the CONTROLLER contract, not the chrome, so they keep their tier and
+ * OPEN the panel their controls now live in (`openSelection` below). That is the same principle the
+ * note above applied: cover the surface that actually renders, and never let a case quietly swap
+ * which product it is testing.
+ */
 const MARGIN_TIER = [1024, 768, true];
+/**
+ * Open the tablet's Selection panel if this tier has one. A no-op everywhere else, so the cases stay
+ * tier-agnostic: on the phone the margin already shows the set list, and in the studio the Selection
+ * dock is open by default.
+ */
+const openSelection = async (page) => {
+  const opened = await page.evaluate(() => {
+    if (!document.querySelector('.v2.v2-tablet')) return 'not-a-tablet';
+    const b = [...document.querySelectorAll('.v2-tools button')]
+      .find((x) => /^(Selection|所选结构|所選結構)$/.test((x.getAttribute('aria-label') || '').trim()));
+    if (!b) return 'no-button';
+    if (b.getAttribute('aria-pressed') === 'true') return 'already';
+    b.click(); return 'opened';
+  });
+  if (opened === 'opened') await page.waitForTimeout(700);
+  return opened;
+};
 const fresh = async (width = 1440, height = 900, coarse = false) => {
   const context = await browser.newContext({
     viewport: {width, height}, deviceScaleFactor: 1, hasTouch: coarse, isMobile: coarse,
@@ -732,6 +763,7 @@ if (want('plural')) {
     await waitScene(page);
     await page.waitForTimeout(1500);
     await openMargin(page);
+    await openSelection(page);
     const count = await page.evaluate(() => document.querySelector('.v2-count')?.textContent?.trim() ?? null);
     assert('one selected mesh prints the singular', count === '1 piece', `"${count}"`, '"1 piece"');
     // And the plural still works, or "fix the singular" becomes "break the plural".
@@ -739,6 +771,7 @@ if (want('plural')) {
     await waitScene(page);
     await page.waitForTimeout(1500);
     await openMargin(page);
+    await openSelection(page);
     const many = await page.evaluate(() => document.querySelector('.v2-count')?.textContent?.trim() ?? null);
     assert('three selected meshes still print the plural', many === '3 pieces', `"${many}"`, '"3 pieces"');
     prereq('no page error', errors.length === 0, errors.slice(0, 2).join(' | ') || 'none', 'none');
@@ -775,6 +808,7 @@ if (want('edited-scene-persists')) {
     await waitAll(page);
     await page.waitForTimeout(SETTLE);
     await openMargin(page);
+    await openSelection(page);
 
     const before = await atlasState(page);
     prereq('the scene starts with all five structures', (before?.ids ?? []).length === 5,
@@ -940,7 +974,8 @@ if (want('review2-paths')) {
       await waitScene(page); await waitAll(page);
       await page.waitForTimeout(SETTLE);
       await openMargin(page);
-      const clearBtn = (await page.$('.v2-clear-all')) ?? (await page.$$('.v2-set-foot button')).at(-1);
+      await openSelection(page);
+            const clearBtn = (await page.$('.v2-clear-all')) ?? (await page.$$('.v2-set-foot button')).at(-1);
       prereq('the Clear control was found', !!clearBtn, clearBtn ? 'present' : 'absent', 'present');
       if (clearBtn) await clickAt(page, clearBtn);
       await page.waitForFunction(() => !/(\?|&)scene=/.test(location.search), null, {timeout: 15000})
@@ -996,13 +1031,23 @@ if (want('review2-paths')) {
       await waitScene(page); await waitAll(page);
       await page.waitForTimeout(SETTLE);
       await openMargin(page);
-      const before = await atlasState(page);
+      await openSelection(page);
+            const before = await atlasState(page);
       prereq('the percent-encoded hash really applied the scene', (before?.ids ?? []).length === 5,
         `${(before?.ids ?? []).length} ids from #%73cene=`, '5');
       // remove a member, then reload
       const xs = await page.$$('.v2-row-x, .v2-card-x');
       prereq('a remove control was found', xs.length > 0, `${xs.length} remove controls`, '> 0');
-      if (xs.length) await clickAt(page, xs[xs.length - 1]);
+      // ⚠️ SCROLL IT INTO VIEW FIRST — S6. `clickAt` presses a POINT, and in the tablet's Selection
+      // sheet the last card sits below the fold of a bounded scroller: the press landed on whatever
+      // was painted at those coordinates and the scene did not change, which the case then reported
+      // as "the edit did not apply". The same lesson as the Ask panel's Apply button, in the driver
+      // rather than in the product.
+      if (xs.length) {
+        await xs[xs.length - 1].evaluate((el) => el.scrollIntoView({block: 'center'}));
+        await page.waitForTimeout(250);
+        await clickAt(page, xs[xs.length - 1]);
+      }
       await page.waitForFunction(() => (window.atlas?.state?.().ids ?? []).length === 4, null, {timeout: 15000})
         .catch(() => { /* the assertion reports what it found */ });
       await page.waitForTimeout(600);
@@ -1085,7 +1130,8 @@ if (want('plain-entry-widths')) {
       await waitAll(page);
       await page.waitForTimeout(2500);
       await openMargin(page);
-
+      await openSelection(page);
+      
       const find = async (label) => {
         const handle = await page.evaluateHandle((l) => [...document.querySelectorAll('button')]
           .find((b) => (b.textContent || '').trim() === l || (b.getAttribute('aria-label') || '').trim() === l) ?? null, label);
@@ -1164,7 +1210,44 @@ if (want('plain-entry-widths')) {
         await page.keyboard.press('Escape');
         await page.waitForTimeout(300);
       }
-      if (inStudio) {
+      /**
+       * ⚠️ THE TABLET HAS NO SIDEBAR SINCE S6 — and this is the same polarity change the S6 sweep
+       * carries, recorded here rather than quietly edited.
+       *
+       * `.v2-studio` is the CHROME class now, so 1100 and 1179 take the studio branch — but at those
+       * widths S6's arrangement puts Layers in the shared RIGHT SHEET, closed on entry (`spec.md`:
+       * "the brief asks tablet Layers in the right sheet … desktop Layers remains left"). So the
+       * sidebar assertion measured `0 rows open, collapsed=false, 0 rows after restoring`: a real
+       * red, against a sidebar that is not supposed to be there.
+       *
+       * The REQUIREMENT is unchanged — Layers lists the real inventory and its control works — so
+       * the tablet gets the same claim through its own surface: press Layers, count the rows in the
+       * sheet, press again, and the sheet closes.
+       */
+      const isTablet = await page.evaluate(() => !!document.querySelector('.v2.v2-tablet'));
+      if (isTablet) {
+        const layersBtn = await reachable('Layers');
+        let openRows = 0, closed = null;
+        if (layersBtn.ok) {
+          await clickAt(page, layersBtn.el);
+          await page.waitForTimeout(700);
+          openRows = await page.evaluate(() => document.querySelectorAll('.v2-tree-row').length);
+          // In portrait the sheet is an overlay with a scrim over the toolbar, so the tab that
+          // closes it is the one INSIDE the sheet — which is exactly why S6 put it there.
+          await page.evaluate(() => {
+            const inSheet = document.querySelector('.v2-stab.is-on');
+            const b = inSheet ?? [...document.querySelectorAll('.v2-tools button')]
+              .find((x) => (x.getAttribute('aria-label') || '').trim() === 'Layers');
+            b?.click();
+          });
+          await page.waitForTimeout(700);
+          closed = await page.evaluate(() => document.querySelectorAll('.v2-pane, .v2-modal.is-right').length);
+        }
+        assert(`[${width}px] the tablet's Layers SHEET lists the systems, and the same control closes it`,
+          layersBtn.ok && openRows >= 15 && closed === 0,
+          `${openRows} rows in the sheet, ${closed} panel(s) after closing`,
+          '>= 15 rows, then 0 panels');
+      } else if (inStudio) {
         // The studio's Layers sidebar is OPEN by default, so the system list is on screen without a
         // press -- and the toggle must still work, so it is pressed twice and the list counted both
         // times. Fifteen rows either way, which is also a check that the tree is the real inventory
