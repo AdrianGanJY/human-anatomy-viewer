@@ -7232,6 +7232,19 @@ if (variant === 'v2') {
     const race = await page.evaluate(async () => {
       const before = window.atlas.state().ids.slice();
       const dropped = before[before.length - 1];
+      /**
+       * ⚠️ THE CLIPBOARD IS EMPTIED FIRST, and forgetting that made this row lie TWICE.
+       *
+       * A previous row in this same context already copied the FULL selection. So "poll until the
+       * clipboard is non-empty" stops on the FIRST read — which returns the PREVIOUS row's text,
+       * five ids including the one just removed — and the row reports a stale copy against a
+       * product that copied correctly 700 ms later. Measured in isolation with the sweep's exact
+       * sequence: `prior copy: [5 ids] · copied@120: [5 ids] STALE · copied@820: [4 ids] ok`.
+       *
+       * A non-empty clipboard is not evidence that THIS copy landed. Emptying it first is what
+       * makes the wait below mean what its name says.
+       */
+      try { await navigator.clipboard.writeText(''); } catch { /* reported as an empty read below */ }
       window.atlas.remove(dropped);
       // THE CLICK LANDS INSIDE THE 200 ms THE WRITER IS WAITING — that is the whole point, and it
       // is where the defect lived. What is NOT asserted is that the copy is instantaneous: the
