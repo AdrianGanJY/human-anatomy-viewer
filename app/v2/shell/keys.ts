@@ -562,8 +562,16 @@ export const modalOpen = (s: OverlayState): boolean =>
  * Ctrl+K is DECLINED over any other modal — stacking a palette on a dialog is worse than leaving
  * the chord to the browser. Its OWN palette is not a decline: a second Ctrl+K re-focuses the input,
  * which is why `findOpen` is subtracted here rather than absent from `modalOpen`.
+ *
+ * ⚠️ AND NEITHER IS THE TABLET'S SHEET, in EITHER presentation. `setFindOpen` already CLOSES the
+ * portrait sheet before opening the palette (round 25, Medium 1), so there is never a stack — and
+ * declining instead would delete a working path rather than fix one. My first version of this
+ * predicate did exactly that, and the strike scan at 768x1024 caught it within one sweep:
+ * `UNREACHED palette`, because Ctrl+K over an open sheet had become a no-op. The dispatcher's
+ * SUPPRESSION of camera commands still counts that sheet (`modalOpen`); only Find is exempt.
  */
-export const findDeclined = (s: OverlayState): boolean => modalOpen({...s, findOpen: false});
+export const findDeclined = (s: OverlayState): boolean =>
+ modalOpen({...s, findOpen: false, tSheet: null});
 
 /**
  * A modal that opens inside the same document fires no blur, no `pointercancel` and no

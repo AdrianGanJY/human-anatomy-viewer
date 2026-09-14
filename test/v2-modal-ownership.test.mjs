@@ -43,7 +43,13 @@ test('Ctrl+K is declined while another modal owns the screen — never two at on
   for (const k of ['keysOpen', 'settingsOpen', 'scenesOpen', 'askSheetOpen']) {
     assert.equal(findDeclined(with_({[k]: true})), true, `Find must decline over ${k}`);
   }
-  assert.equal(findDeclined(with_({tSheet: 'layers', tabletInline: false})), true, 'over the portrait sheet');
+  // ⚠️ AND NOT THE TABLET'S PORTRAIT SHEET, which is the one overlay Find REPLACES rather than
+  // stacks on (`use-shell.ts` `setFindOpen` closes it — codex round 25, Medium 1). Declining there
+  // is not the safe half of that rule, it is the loss of a working path: my first version of this
+  // predicate folded it in, and the strike scan at 768x1024 immediately reported `UNREACHED
+  // palette` — Ctrl+K over an open sheet did nothing at all.
+  assert.equal(findDeclined(with_({tSheet: 'layers', tabletInline: false})), false,
+    'Find REPLACES the portrait sheet; it must not be declined by it');
 });
 
 test('Find is NOT declined by its own palette — a second Ctrl+K re-focuses it', () => {

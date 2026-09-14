@@ -7225,7 +7225,18 @@ if (variant === 'v2') {
     const plateBtn = await named('plate');
     const opened = ctx.waitForEvent('page', {timeout: 10000}).catch(() => null);
     if (plateBtn) await page.mouse.click(plateBtn.x, plateBtn.y);
+    /**
+     * ⚠️ A NEW TAB'S `url()` IS `about:blank` UNTIL IT NAVIGATES. The `page` event fires when the
+     * target is CREATED, not when it has been given its address — so the first version of this row
+     * read an empty string and called a working control broken (`url=`, twice, on a sweep whose
+     * other five S7 rows all passed). The wait is bounded and soft: a genuinely dead control still
+     * reports `about:blank`, which fails the assertion below with its real measurement.
+     */
     const tab = await opened;
+    if (tab) {
+      await tab.waitForURL((u) => String(u) !== 'about:blank', {timeout: 8000}).catch(() => {});
+      await tab.waitForLoadState('domcontentloaded').catch(() => {});
+    }
     const plateUrl = tab ? tab.url() : '';
     let pu = null; try { pu = new URL(plateUrl); } catch { /* reported below */ }
     check(vp7.name, `[${S7}] 分享图版 opens the plate for the CONTROLLER's scene`,
