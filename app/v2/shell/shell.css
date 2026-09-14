@@ -795,3 +795,29 @@ body.v2-stage .v2.v2-studio.v2-tablet{grid-template-columns:1fr;grid-template-ro
  .v2-modal .v2-tbtn,.v2-modal-body button,.v2-sheet-foot button{min-height:44px}
  .v2-modal-body .v2-tick,.v2-modal-body .v2-eye{min-height:44px;min-width:44px}
 }
+
+/* ── S7: THE TOAST ─────────────────────────────────────────────────────────────────────────────
+   The result of an act the reader just performed — a snapshot saved, a link copied. `spec.md` D11
+   keeps REFUSALS out of this shape on purpose: a refusal is a statement about the scene, it
+   outlives the moment, and it stays in the amber panel beside the control that earned it.
+
+   `position:fixed` and bottom-centred at every tier: it must not be clipped by `.v2-tools`'s
+   `overflow:hidden` (codex round 24's High), must not cost a layout shift, and must not sit under
+   the phone's margin — which is why it rides above `--v2-margin-peek` plus the safe area rather
+   than at a fixed offset. `pointer-events:none`: it can never eat the tap that follows it.
+   z-index is above the scrim (900) so a message earned inside Settings is visible. */
+.v2-toast{position:fixed;left:50%;bottom:calc(124px + env(safe-area-inset-bottom,0px));
+ transform:translateX(-50%);z-index:960;max-width:min(520px,calc(100vw - 32px));
+ background:var(--v2-ink);color:var(--v2-surface);border-radius:12px;padding:11px 16px;
+ font-size:var(--v2-type-sm,13px);line-height:1.4;box-shadow:var(--v2-shadow);pointer-events:none;
+ animation:v2toast .18s ease-out}
+/* In the studio there is no margin to clear, so it sits just above the status row. */
+.v2-studio .v2-toast,body.v2-stage .v2-toast{bottom:calc(32px + 16px)}
+@keyframes v2toast{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}
+@media (prefers-reduced-motion:reduce){.v2-toast{animation:none}}
+
+/* S7: the key-pad preference's narrow mode. `arrows` is a 3-column cluster, `full` the 6-column
+   block the app has always drawn; the column count comes from `padRows`, so the grid and the rows
+   cannot disagree. */
+.v2-pad[data-cols="3"]{grid-template-columns:repeat(3,40px)}
+@media (pointer:coarse){.v2-studio .v2-pad[data-cols="3"]{grid-template-columns:repeat(3,48px)}}

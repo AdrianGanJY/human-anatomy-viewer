@@ -34,7 +34,10 @@ import {reduce} from '../app/v2/controller.ts';
 import {decodeScene, encodeScene, normalizeScene, sceneFocusId, sceneSelectIds} from '../app/scene-codec.js';
 import {SYSTEMS} from '../app/anatomy.ts';
 import {isLang} from '../app/i18n/ui.ts';
-import {POSE_CMDS, NEUTRAL_CMDS} from '../app/v2/shell/keys.ts';
+// S7: `findDeclined` joined the extracted dispatcher body when modal ownership became ONE rule
+// (codex round 26, Medium 1). It is imported REAL, like `POSE_CMDS` — a stub here would let the
+// extraction pass while production declined the wrong things.
+import {POSE_CMDS, NEUTRAL_CMDS, findDeclined} from '../app/v2/shell/keys.ts';
 // The REAL declaration reader — a stub here made every scene look undeclared, which is exactly
 // the fact codex round 19's M2 turns on.
 import {sceneDeclaresLang} from '../app/v2/scene-lang.ts';
@@ -134,7 +137,11 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
   const ctx = {
     useCallback: (f) => f, useRef: (v) => ({current: v}),
     reduce, decodeScene, encodeScene, normalizeScene, sceneSelectIds, sceneFocusId,
-    SYSTEMS, isLang, POSE_CMDS, URLSearchParams, console,
+    SYSTEMS, isLang, POSE_CMDS, findDeclined, URLSearchParams, console,
+    // The overlay state the dispatcher body reads. Nothing is open in these scenarios: this suite
+    // is about the POSE, and an open modal would decline every command it measures.
+    overlays: {keysOpen: false, settingsOpen: false, findOpen: false, scenesOpen: false,
+     askSheetOpen: false, tSheet: null, tabletInline: false},
     location: {search, hash},
     pendingPose: {current: null},
     poseRestoreRef: {current: null},

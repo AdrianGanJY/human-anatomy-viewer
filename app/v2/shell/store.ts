@@ -112,6 +112,28 @@ export function readPinyin(): PinyinPrefs {
 }
 export const writePinyin = (p: PinyinPrefs): void => put(PINYIN_KEY, p);
 
+// ── atlas.keypad — S7 ────────────────────────────────────────────────────────────────────────────
+/**
+ * THE LAST OF S0's ELEVEN PLACEHOLDERS, and the only one that was actively WRONG rather than merely
+ * dead: its segmented control drew `off` as the selected value while the on-screen pad was on the
+ * screen. So the fallback here is `full` — what the app has always drawn — and not the `off` the
+ * placeholder claimed. A reader with no stored preference sees no change.
+ *
+ * Same versioned-object shape as `atlas.pinyin`, for the same reason (a bare string cannot carry a
+ * version, so a later build could not tell a human's choice from its own default).
+ */
+export type KeypadMode = 'off' | 'arrows' | 'full';
+export const KEYPAD_MODES: readonly KeypadMode[] = ['off', 'arrows', 'full'];
+export interface KeypadPrefs {v: 1; mode: KeypadMode}
+export const KEYPAD_KEY = 'atlas.keypad';
+export function readKeypad(): KeypadPrefs {
+ const v = raw(KEYPAD_KEY);
+ return isObj(v) && v.v === 1 && typeof v.mode === 'string' && (KEYPAD_MODES as string[]).includes(v.mode)
+  ? {v: 1, mode: v.mode as KeypadMode}
+  : {v: 1, mode: 'full'};
+}
+export const writeKeypad = (p: KeypadPrefs): void => put(KEYPAD_KEY, p);
+
 // ── atlas.scenes — S5a ───────────────────────────────────────────────────────────────────────────
 /** A tab is the CONTROLLER's full scene blob plus the live camera pose (G6 as codex amended it:
  *  "a tab snapshot = the controller's full scene + camera, not the raw incoming blob"). The pose is

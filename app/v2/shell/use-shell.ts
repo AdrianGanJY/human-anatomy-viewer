@@ -8,9 +8,9 @@
  * and cheap: two matchMedia listeners and a localStorage read.
  */
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import {HOLD, HOLD_CODES, POSE_CMDS, installDispatcher, type Command as KeyCommand, type Dispatcher} from './keys.ts';
+import {HOLD, HOLD_CODES, POSE_CMDS, clearsHeldKeys, findDeclined, installDispatcher, modalOpen, type Command as KeyCommand, type Dispatcher, type OverlayState} from './keys.ts';
 import {isStudio, ladder, openDock, tierOf, type Tier} from './layout.ts';
-import {effectiveDocks, readDocks, readPinyin, readScenes, writeDocks, writePinyin, writeScenes, SCENES_CAP, type DockKey, type SceneTab} from './store.ts';
+import {effectiveDocks, readDocks, readKeypad, readPinyin, readScenes, writeDocks, writeKeypad, writePinyin, writeScenes, SCENES_CAP, type DockKey, type KeypadMode, type SceneTab} from './store.ts';
 import type {AskState, Turn as AskTurn} from './ask.tsx';
 import {loadPinyin, pinyinOf} from '../pinyin.ts';
 
@@ -101,6 +101,10 @@ export interface ShellState {
   * indistinguishable to a row, which is correct — a row draws nothing in both cases.
   */
  py(id: string, shown: string): string | null;
+ /** ── S7 ─────────────────────────────────────────────────────────────────────────────────── */
+ /** What the on-screen key pad draws: `off` / `arrows` / `full`, from `localStorage['atlas.keypad']`.
+  *  It changes what is DRAWN and never what the keys do — see the note beside `setKeypad`. */
+ keypad: KeypadMode; setKeypad(m: KeypadMode): void;
  /** ── S5a ─────────────────────────────────────────────────────────────────────────────────── */
  /**
   * THE SNAPSHOT TABS, from `localStorage['atlas.scenes']` (the shape S0 declared, RC12).
@@ -199,6 +203,12 @@ export function useShell(
   * for one sheet is the defect S5b already paid for with the Ask draft.
   */
  scenesOpen = false,
+ /**
+  * ⚠️ AND THE PHONE'S ASK SHEET, FOR THE SAME REASON — codex round 26, Medium 1. It was absent from
+  * ownership entirely: with a button inside that sheet focused, `Digit2` still dispatched a named
+  * view behind it. Owned by `page.tsx` like Scenes, because the phone's margin opens it.
+  */
+ askSheetOpen = false,
 ): ShellState {
  const vp = useViewport();
  const tier = tierOf(vp.w, vp.h, vp.coarse);
@@ -297,6 +307,24 @@ export function useShell(
  );
 
  /**
+  * ── S7 — THE KEY-PAD PREFERENCE ───────────────────────────────────────────────────────────────
+  *
+  * The eleventh and last of S0's placeholders, and the only one that was actively WRONG: its
+  * segmented control drew `off` as the selected value while the pad was on the screen. It lives
+  * here, beside pinyin, because Settings is hosted at every width and the pad is rendered by
+  * `StudioField` — one owner, two readers, exactly as the pinyin toggle is.
+  *
+  * ⚠️ IT CHANGES WHAT IS DRAWN, NEVER WHAT THE KEYS DO. The dispatcher is untouched: `off` hides
+  * six buttons, it does not take W/A/S/D away from a reader with a keyboard. A setting that
+  * silently disabled the keyboard would be a much larger promise than this control makes.
+  */
+ const [keypad, setKeypadState] = useState<KeypadMode>(() => readKeypad().mode);
+ const setKeypad = useCallback((mode: KeypadMode) => {
+  setKeypadState(mode);
+  writeKeypad({v: 1, mode});
+ }, []);
+
+ /**
   * ── S5a — THE SNAPSHOT LIST ───────────────────────────────────────────────────────────────────
   *
   * Read ONCE, lazily, and through `readScenes`, which is corruption-tolerant by construction: a
@@ -387,7 +415,15 @@ export function useShell(
   * presentations in would have taken the keyboard away from the tier that has the most room for it.
   */
  const modalRef = useRef(false);
- modalRef.current = keysOpen || settingsOpen || findOpen || scenesOpen || !!(tSheet && !tabletInline);
+ // ⚠️ S7 — ONE RULE, ONE READER (`keys.ts` `modalOpen`). This expression, the `find` decline below
+ // and the held-key effect at the bottom of this file were three hand-written lists that round 26
+ // measured disagreeing with each other. They are three CALLS now.
+ // ⚠️ `askSheetOpen` IS ANDed WITH THE TIER HERE, and only here: the same `askOpen` flag drives the
+ // desktop's Ask DOCK, which is not a modal and must not take the keyboard. The phone's A8 sheet is
+ // the modal, and `vp.w < 768` is exactly the condition under which it renders.
+ const overlays: OverlayState = {keysOpen, settingsOpen, findOpen, scenesOpen,
+  askSheetOpen: askSheetOpen && vp.w < 768, tSheet, tabletInline};
+ modalRef.current = modalOpen(overlays);
  /**
   * ⚠️ GUARD 7 READS `chrome`, NOT `studio`, SINCE S6 — and that is the guard's own rule applied, not
   * a widening of it. `keys.ts`: "withhold a command iff its SURFACE is studio-only". The camera
@@ -433,7 +469,9 @@ export function useShell(
    * leaving the chord alone, and declining hands the event back untouched.
    */
   if (cmd === 'find') {
-   if (keysOpen || settingsOpen) return false;
+   // S7: `findDeclined` is `modalOpen` minus Find itself — so Scenes and the phone's Ask sheet now
+   // decline it too (round 26, M1: Ctrl+K over Scenes produced BOTH open).
+   if (findDeclined(overlays)) return false;
    if (findOpen) { document.querySelector<HTMLElement>('.v2-find [data-autofocus]')?.focus(); return true; }
    setFindOpen(true);
    return true;
@@ -537,7 +575,10 @@ export function useShell(
  // same document fires none of those.
  // S6: the tablet's OVERLAY sheet is a modal too — it traps focus and takes the pointer, so a key
  // held when it opens has the same missing-keyup problem as Settings.
- useEffect(() => { if (keysOpen || settingsOpen || findOpen || (tSheet && !tabletInline)) window.dispatchEvent(new Event('blur')); }, [keysOpen, settingsOpen, findOpen, tSheet, tabletInline]);
+ // S7: through the same rule, so Scenes and the phone's Ask sheet clear a held key as well —
+ // round 26 held `W`, opened Scenes, and `KeyW` stayed in the set with the camera panning behind it.
+ useEffect(() => { if (clearsHeldKeys(overlays)) window.dispatchEvent(new Event('blur')); },
+  [keysOpen, settingsOpen, findOpen, scenesOpen, askSheetOpen, tSheet, tabletInline]);
 
  return {
   tier, studio, tablet, chrome, sheet: vp.w < 768, coarse: vp.coarse,
@@ -556,6 +597,7 @@ export function useShell(
   press: useCallback((code: string) => dispRef.current?.press(code), []),
   release: useCallback((code: string) => dispRef.current?.release(code), []),
   pinyin, setPinyin, py,
+  keypad, setKeypad,
   askState: {draft: askDraft, setDraft: setAskDraft, turns: askTurns, setTurns: setAskTurns},
   tabs, addTab, tabsFull: tabs.length >= SCENES_CAP,
  };

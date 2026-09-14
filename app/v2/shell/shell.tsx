@@ -16,11 +16,15 @@
  * behind eleven specific controls, and each of those carries `aria-disabled` and a tooltip naming
  * the group that brings it.
  *
- * INERT ≠ DISABLED, and conflating them is a defect every later group would inherit:
+ * ⚠️ S7 — THE INERT CONVENTION IS SPENT. All eleven are wired; nothing in `app/v2/` carries
+ * `.v2-inert` or an `S<n>` tooltip any more, and two guards keep it that way: a source scan in
+ * `test/v2-share.test.mjs` (which can see an unmounted modal) and a DOM scan at all six viewports
+ * in `verify-ux.mjs` (which can see what a source scan cannot, a class applied at runtime). The
+ * distinction it drew still governs the app and is kept here because the SECOND half is live:
  *   INERT    — "this is where that will be". Focusable, dashed neutral border, tooltip `S1`…`S5`.
- *              Enter and Space announce and do nothing. `.v2-inert`.
+ *              RETIRED at S7: no control is a placeholder any more.
  *   DISABLED — "not now, and here is why": Fit with nothing selected, Ask with an empty box, `+`
- *              at cap 8. Real `disabled`, with the reason adjacent and readable.
+ *              at cap 8, the tree's undecidable eye. Real `disabled`, with the reason adjacent.
  *
  * ══ WHAT IS ALREADY LIVE, because the controller exists ════════════════════════════════════════
  * Selection (the set, roles, piece counts, remove, clear, focus, hide-others), Info (the
@@ -62,7 +66,9 @@ declare const __ATLAS_DEPS__: string | undefined;
 const ATLAS_DEPS = typeof __ATLAS_DEPS__ === 'string' ? __ATLAS_DEPS__ : '';
 import type {NavMode, TabletTab} from './use-shell.ts';
 import Overlay from './overlay.tsx';
-import {DOCK_KEYS, clearOpenAi, openAiMask, readOpenAiModel, saveOpenAiKey, setOpenAiModel, tabOrdinals, type DockKey, type SceneTab} from './store.ts';
+import {DOCK_KEYS, KEYPAD_MODES, clearOpenAi, openAiMask, readOpenAiModel, saveOpenAiKey, setOpenAiModel, tabOrdinals, type DockKey, type KeypadMode, type SceneTab} from './store.ts';
+// S7: the pure half of the three share controls and of the key-pad preference.
+import {padRows} from './share.ts';
 import AskPanel, {OPENAI_CHANGED, type AskState} from './ask.tsx';
 import {MODELS, modelOf} from './ai.ts';
 import {LIMITS} from '../../scene-codec.js';
@@ -171,6 +177,19 @@ export interface ShellProps {
  tabsFull: boolean;
  onSnapshot(): void;
  onApplyTab(t: SceneTab): void;
+ /** ── S7 ─────────────────────────────────────────────────────────────────────────────────────
+  *  The three controls that shipped inert at S0 and stayed inert through S6 — Adrian found them on
+  *  the live site. All four callbacks live in `page.tsx`: the capture needs `__atlasCapture`, the
+  *  link needs the address the URL writer has written, and both plate acts need the controller's
+  *  scene through `atlas.plate()`. */
+ onCapture(): void;
+ onCopyLink(): void;
+ onOpenPlate(): void;
+ onCopyPlate(): void;
+ /** Enter presentation mode. S1 bound `Shift+S` and S6 gave the stage a persistent way out, but
+  *  ENTERING it had no pointer at all — which on a coarse 1366x1024 desktop means it did not
+  *  exist. It lives in the studio's More menu. */
+ onStage(): void;
  /** S5b: owned by `useShell` so closing the dock cannot discard a draft (round 22, Medium 5). */
  askState: AskState;
 }
@@ -232,11 +251,6 @@ const tabTip = (
 /** The tablet sheet's three panels, in the order `spec.md` draws them. */
 const TABLET_TABS: TabletTab[] = ['layers', 'selection', 'info'];
 
-const PAD: ({label: string; code: string} | null)[] = [
- null, {label: 'W', code: 'KeyW'}, null, null, {label: '↑', code: 'ArrowUp'}, null,
- {label: 'A', code: 'KeyA'}, {label: 'S', code: 'KeyS'}, {label: 'D', code: 'KeyD'},
- {label: '←', code: 'ArrowLeft'}, {label: '↓', code: 'ArrowDown'}, {label: '→', code: 'ArrowRight'},
-];
 
 export function StudioField(p: {
  tr: ShellProps['tr']; caption: ShellProps['caption']; state: SceneState;
@@ -244,8 +258,11 @@ export function StudioField(p: {
  navMode: NavMode; onNavMode(m: NavMode): void;
  held: ReadonlySet<string>; press(code: string): void; release(code: string): void;
  onFit(): void; onHome(): void; onSnapshot(): void;
+ /** S7: `off` / `arrows` / `full` from `atlas.keypad`. */
+ keypad: KeypadMode;
 }) {
  const {tr} = p;
+ const pad = padRows(p.keypad);
  /**
   * ⚠️ AND EVEN IF THE PAD ITSELF GOES AWAY UNDER THE FINGER.
   *
@@ -258,7 +275,10 @@ export function StudioField(p: {
   * (round 3, Medium: the `[studio]` dependency missed `stage`).
   */
  const release = p.release;
- useEffect(() => () => { for (const k of PAD) if (k) release(k.code); }, [release]);
+ // S7: `padRows('full')` is the COMPLETE set of pad codes, not the currently drawn one —
+ // a reader who switches the pad to `off` while holding W unmounts the key under their finger,
+ // which is the same missing-keyup this cleanup exists for.
+ useEffect(() => () => { for (const k of padRows('full').flat()) if (k) release(k.code); }, [release]);
  /**
   * ⚠️ A PAD KEY MUST BE RELEASED EVEN IF THE FINGER LEAVES IT. `pointerup` fires on the element
   * the pointer is OVER, so dragging off a key delivers the up somewhere else and the camera pans
@@ -320,8 +340,12 @@ export function StudioField(p: {
    <button type="button" className="v2-pbtn" aria-label={tr('nav.keypad')} title={tr('nav.keypad')} onClick={() => p.onKeys(true)}><Ico d={P.keys}/></button>
    <button type="button" className="v2-pbtn" aria-label={tr('nav.info')} onClick={() => p.onKeys(true)}><Ico d={P.info}/></button>
   </div>
-  <div className="v2-pad" aria-label={tr('nav.keypad')} role="group">
-   {PAD.map((k, i) => (k
+  {/* S7: THE PAD IS A PREFERENCE NOW (`atlas.keypad`). `off` draws nothing, `arrows` drops the
+      letter block, `full` is what the app has always drawn and remains the default for a reader who
+      has never chosen. `data-cols` carries the row width so the grid and `padRows` cannot disagree
+      about how many columns a mode needs. */}
+  {pad.length > 0 && <div className="v2-pad" aria-label={tr('nav.keypad')} role="group" data-cols={pad[0].length}>
+   {pad.flat().map((k, i) => (k
     ? <button
        type="button" key={i}
        className={`v2-cap-key ${p.held.has(k.code) ? 'is-down' : ''}`}
@@ -333,7 +357,7 @@ export function StudioField(p: {
        {...hold(k.code)}
       >{k.label}</button>
     : <span key={i} className="v2-cap-key is-gap" aria-hidden="true"/>))}
-  </div>
+  </div>}
   <div className="v2-legend">
    <div><span>{tr('legend.inView')}</span><b>{p.structures}</b></div>
    <div><span>{tr('legend.pieces')}</span><b>{p.pieces.toLocaleString()}</b></div>
@@ -601,14 +625,36 @@ export default function Shell(p: ShellProps) {
    onClick={() => p.dispatch({type: 'set-isolate', on: !p.state.isolate})}>{tr('margin.hideOthers')}</button>
   <button type="button" className="v2-tbtn" disabled={!p.basket.length} onClick={p.clearPicks}>{tr('margin.clear')}</button>
   <span className="v2-grow"/>
-  <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.camera}/>{tr('nav.snapshot')}</button>
-  <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.link}/>{tr('nav.link')}</button>
-  <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1"><Ico d={P.plate}/>{tr('nav.plate')}</button>
+  {/* ── S7: THE THREE THAT WERE INERT ───────────────────────────────────────────────────────────
+      Adrian, on the live site: "the toolbar's 截图 / 复制链接 / 分享图版 still carry the S1 tooltip
+      and do nothing". They are three different acts and they are deliberately three plain buttons:
+      the SECOND way to share a plate ("copy the link" rather than "open it") is in More below,
+      because a menu that opens under a pointer is a worse default than the act itself. */}
+  {/* ⚠️ `data-act` IS FOR THE ORACLES, and it is here because its absence produced a FALSE RED.
+      The sweep's first S7 pass reported `button=MISSING` for all three: its driver matched the
+      English labels while the §9 scene declares 简体, so it was looking for "Snapshot" on a button
+      that says 截图. A driver that selects a control by its TRANSLATED TEXT measures the language,
+      not the control — and this app has three of them. */}
+  <button type="button" className="v2-tbtn" data-act="snapshot" title={tr('keys.snapStage')}
+   onClick={p.onCapture}><Ico d={P.camera}/>{tr('nav.snapshot')}</button>
+  <button type="button" className="v2-tbtn" data-act="copy-link" onClick={p.onCopyLink}><Ico d={P.link}/>{tr('nav.link')}</button>
+  <button type="button" className="v2-tbtn" data-act="plate" title={tr('share.plateCold')}
+   onClick={p.onOpenPlate}><Ico d={P.plate}/>{tr('nav.plate')}</button>
   {/* THE COARSE DESKTOP'S SCENES TRIGGER (codex round 24, Medium 3). At >=1180 with a fine pointer
       the snapshots are the status strip's tabs; on a coarse pointer those tabs are refused as
       28 px targets and this 44 px button is what replaces them. */}
   {p.coarse && <button type="button" className="v2-tbtn" onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>}
-  <button type="button" className="v2-tbtn v2-inert" aria-disabled="true" title="S1" aria-label={tr('nav.more')}><Ico d={P.more}/></button>
+  {/* ── S7: THE STUDIO'S More IS REAL NOW, and it holds the three things that had no pointer at all.
+      PRESENTATION MODE is the one that matters: S1 made `Shift+S` enter the stage and S6 gave it a
+      persistent way out, but entering it was reachable ONLY from the keyboard — on a 1366x1024
+      coarse desktop that is not reachable at all. Copy-plate-link is share-plate's second half, and
+      Scenes is here for the same reason it is in the tablet's More. */}
+  <More label={tr('nav.more')}>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="stage" onClick={p.onStage}>{tr('nav.stage')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-plate" onClick={p.onCopyPlate}>{tr('share.plateCopy')}</button>
+   <span className="v2-popsep"/>
+   <button type="button" role="menuitem" className="v2-popitem" onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>
+  </More>
  </div>;
 
  /**
@@ -677,8 +723,14 @@ export default function Shell(p: ShellProps) {
        return to one, at both coarse tiers. */}
    <button type="button" role="menuitem" className="v2-popitem"
     onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>
-   <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.link')}</button>
-   <button type="button" role="menuitem" className="v2-popitem v2-inert" aria-disabled="true" title="S1">{tr('nav.plate')}</button>
+   {/* ── S7: THE TABLET'S SHARE GROUP, LIVE. The capture is here and NOT in the pill, because the
+       tablet's pill is the desktop's and the desktop's camera button is already wired; one act,
+       two surfaces, one callback. `spec.md`'s tablet priority order puts the share group last. */}
+   <span className="v2-popsep"/>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="snapshot" onClick={p.onCapture}>{tr('nav.snapshot')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-link" onClick={p.onCopyLink}>{tr('nav.link')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="plate" onClick={p.onOpenPlate}>{tr('nav.plate')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-plate" onClick={p.onCopyPlate}>{tr('share.plateCopy')}</button>
   </More>
  </div>;
 
@@ -1278,6 +1330,9 @@ export function StudioOverlays(p: {
   *  control, one writer, both tiers. */
  pinyin: boolean; onPinyin(on: boolean): void;
  py(id: string, shown: string): string | null;
+ /** S7: the key-pad preference. Same reasoning as pinyin — Settings is hosted at every width, so
+  *  the control lives with the overlay and the state lives in the hook the page always calls. */
+ keypad: KeypadMode; onKeypad(m: KeypadMode): void;
 }) {
  const {tr, lang} = p;
  const [tab, setTab] = useState<'general' | 'language' | 'ai' | 'about'>('general');
@@ -1327,10 +1382,16 @@ export function StudioOverlays(p: {
     <div className="v2-srow-act"><span className="v2-static">{tr(p.background === 'dark' ? 'settings.dark' : 'settings.light')}</span></div>
    </div>
    <div className="v2-srow">
-    <div><b>{tr('settings.keypad')}</b><p>{tr('nav.touch')}</p>
-     <div className="v2-seg" style={{marginTop: 10}} title="S1">
-      {(['off', 'arrows', 'full'] as const).map((k) => <button type="button" key={k}
-       className={`v2-inert ${k === 'off' ? 'is-on' : ''}`} aria-disabled="true" title="S1">{tr(`settings.${k}`)}</button>)}
+    <div><b>{tr('settings.keypad')}</b><p>{tr('settings.keypadNote')}</p>
+     {/* ⚠️ S7 — LIVE, and it was the LAST of S0's eleven placeholders. It was also the only one that
+         was WRONG rather than merely dead: it drew `off` as the selected value while the pad was on
+         the screen, so a reader who opened Settings was told the app was in a state it was not in.
+         The default is `full` — what has always been drawn — so nobody's screen changes until they
+         choose. It changes what is DRAWN, never what the keys do (`use-shell.ts` says why). */}
+     <div className="v2-seg" style={{marginTop: 10}} role="group" aria-label={tr('settings.keypad')}>
+      {KEYPAD_MODES.map((k) => <button type="button" key={k}
+       className={p.keypad === k ? 'is-on' : ''} aria-pressed={p.keypad === k}
+       onClick={() => p.onKeypad(k)}>{tr(`settings.${k}`)}</button>)}
      </div>
     </div>
    </div>

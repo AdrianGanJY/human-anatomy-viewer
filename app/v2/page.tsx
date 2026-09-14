@@ -44,6 +44,8 @@ import Shell,{PhoneSheets,StudioField,StudioOverlays} from './shell/shell.tsx';
 import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
+// S7: the three share controls' pure half — the filename, the copied URL and the plate URL.
+import {plateLink,pngBlobFrom,shareLink,snapshotName} from './shell/share.ts';
 
 /** THE STATIC SAFE INSET, in CSS pixels. A CONSTANT, never a DOM measurement — the critic's
  *  ruling (build-plan.md:127) and the whole point of item 2 above. Its table collapses to one
@@ -61,6 +63,19 @@ const NO_IDS: string[] = [];
  *  a caller this page does not control, so it needs a value check the TYPE cannot give it. */
 const VIEW_NAMES: View[] = ['three-quarter', 'front', 'side', 'back'];
 const MB = (n: number) => (n / 1048576).toFixed(1);
+/**
+ * S7 — THE PLATE FOR WHAT IS ON SCREEN, from the CONTROLLER's own scene. Module scope on purpose:
+ * both callers (the `atlas.plate()` tool surface and the toolbar's Share-plate control) read the
+ * same refs, and a second spelling of this string is exactly how a tool and a button come to
+ * disagree about what "this view" means.
+ */
+const plateUrlOf = (c: {blob: string; scene: Scene | null; picks: string[]}, lang: Lang) =>
+ plateLink({
+  origin: location.origin,
+  blob: c.blob || (c.scene ? encodeScene(c.scene) : ''),
+  ids: c.picks,
+  lang,
+ });
 
 const baseState: SceneState = {explode: 0, visible: DEFAULT_VISIBLE, selected: [], isolate: false, view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET};
 
@@ -489,8 +504,10 @@ export default function V2() {
  // `conceptsById`/`parts` are here so `state()` can RE-DERIVE the focused concept the same way the
  // render does — `resolvePicks(conceptsById, parts, picks)` — from dispatch-fresh picks. Carrying the
  // rendered `focused` object instead is what made `state().name` describe the previous selection.
- const live = useRef({lang, phase, bytes, stage, t, plate, conceptsById, parts});
- live.current = {lang, phase, bytes, stage, t, plate, conceptsById, parts};
+ // S7: `caption` joins them because the SNAPSHOT is named after the scene's title, and the snapshot
+ // command is installed once into the dispatcher — it cannot close over a render's caption.
+ const live = useRef({lang, phase, bytes, stage, t, plate, conceptsById, parts, caption});
+ live.current = {lang, phase, bytes, stage, t, plate, conceptsById, parts, caption};
  /**
   * S4 — THE RESOLVED PER-MESH ALPHA, for `atlas.alphas()`. A ref because `meshAlpha` is computed
   * far below this point in the render (it needs `renderState`), and a ref assigned during RENDER
@@ -529,7 +546,13 @@ export default function V2() {
    const c = ctlRef.current;
    const blob = c.blob || (c.scene ? encodeScene(c.scene) : '');
    const ids = c.picks;
-   return {blob, ids, url: `${location.origin}/api/snap?select=${ids.join(',')}${blob ? `&scene=${blob}` : ''}&snap=1`};
+   // S7: THROUGH `plateUrlOf`, which adds the reader's LANGUAGE. `/api/snap` defaults `lang` to
+   // `en` (workers/snap/src/helpers.mjs:145), so every plate a 简体 reader shared was an English
+   // picture of their Chinese view. English is byte-identical to the spelling this line used to
+   // build, so no existing caller of `atlas.plate()` sees a different string. ONE builder, shared
+   // with the toolbar's Share-plate control: a tool surface and a button that can disagree about
+   // what "this view's plate" means is the drift this project keeps paying for.
+   return {blob, ids, url: plateUrlOf(ctlRef.current, live.current.lang)};
   },
   state: (): AtlasState => {
    const l = live.current, c = ctlRef.current;
@@ -1089,6 +1112,24 @@ export default function V2() {
   * `scale: 2` is the real supersample. The first version passed `1`, which clamps to `MIN_SCALE`
   * and supersamples nothing, under a comment that claimed it did.
   */
+ /**
+  * ── S7: THE ONE FLEETING MESSAGE ──────────────────────────────────────────────────────────────
+  *
+  * Reserved for the RESULT OF AN ACT the reader just performed — a snapshot saved, a link copied.
+  * `spec.md` D11 is explicit that a REFUSAL is not this: a refusal is a statement about the scene,
+  * it outlives the moment, and it stays in the amber panel beside the control that earned it.
+  *
+  * Keyed, never a sentence — it has to follow the language like everything else. The bump counter
+  * is what makes pressing the same control twice re-announce rather than look broken.
+  */
+ const [notice, setNotice] = useState<{k: string; n: number} | null>(null);
+ const say = useCallback((k: string) => setNotice((p) => ({k, n: (p?.n ?? 0) + 1})), []);
+ useEffect(() => {
+  if (!notice) return;
+  const id = setTimeout(() => setNotice(null), 3600);
+  return () => clearTimeout(id);
+ }, [notice]);
+
  // The command handler is installed ONCE (the dispatcher's extension seam), so it cannot close over
  // `stage` — it reads the live value through a ref, the same discipline `useShell` uses.
  const stageRef = useRef(stage);
@@ -1109,13 +1150,110 @@ export default function V2() {
   } finally {
    w.__atlasCaptureRelease?.();
   }
-  if (!url) return false;
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `anatomy-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.png`;
-  a.click();
+  if (!url) { say('share.shotFailed'); return false; }
+  /**
+   * ── S7: THE NAME, AND THE PHONE'S SHARE SHEET ────────────────────────────────────────────────
+   *
+   * The name is what the PNG carries into the folder it lands in; `anatomy-20260914T031517.png`
+   * told a reader nothing about which of eleven views it was. `snapshotName` takes the scene's
+   * title, or the structures, and is the only part of this that can be unit-tested.
+   *
+   * On a phone a download goes somewhere a reader may never find. `navigator.share` with files is
+   * the platform's own answer — and it is FEATURE-DETECTED with `canShare({files})`, not with
+   * `'share' in navigator`: desktop Chrome has `share` and refuses files, and the refusal is a
+   * rejected promise AFTER the capture, i.e. a lost snapshot. The download is the fallback, and on
+   * a share cancelled by the reader nothing is said at all (a cancel is not a failure).
+   */
+  const name = snapshotName({title: live.current.caption.title, ids: ctlRef.current.picks, at: new Date()});
+  const download = () => {
+   const a = document.createElement('a');
+   a.href = url;
+   a.download = name;
+   a.click();
+   say('share.saved');
+  };
+  /**
+   * ⚠️ THE SHARE SHEET IS GATED ON A COARSE POINTER, NOT ON THE CAPABILITY — and the capability
+   * gate was a real defect my own oracle caught before this shipped.
+   *
+   * Desktop Chrome implements `navigator.share` AND `canShare({files})`, so a capability test takes
+   * the share branch on a 1440 px monitor: the download never happens, the OS sheet may not open,
+   * and the `catch` below — written for "the reader cancelled" — swallows the failure silently. The
+   * S1 snapshot oracle measured exactly that: `data URL MISSING, 0 chars`, deterministically.
+   *
+   * A phone download lands somewhere a reader may never find, which is why the sheet exists at all;
+   * a desktop download lands in Downloads, which is where a desktop reader looks. So the TIER picks
+   * the path, and a share that fails for any reason other than the reader's own cancellation falls
+   * back to the download rather than leaving them with nothing.
+   */
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer:coarse)').matches;
+  const blob = coarse ? pngBlobFrom(url) : null;
+  const file = blob && typeof File === 'function' ? new File([blob], name, {type: 'image/png'}) : null;
+  const nav = navigator as Navigator & {canShare?: (d: unknown) => boolean};
+  if (file && typeof nav.share === 'function' && nav.canShare?.({files: [file]})) {
+   nav.share({files: [file], title: live.current.caption.title || name})
+    .then(() => say('share.shared'))
+    .catch((e: unknown) => {
+     // A cancel is the reader's decision and says nothing. Anything else is a failure of the sheet,
+     // and the picture still has to reach them.
+     if ((e as {name?: string})?.name === 'AbortError') return;
+     download();
+    });
+   return true;
+  }
+  download();
   return true;
- }, []);
+ }, [say]);
+
+ /**
+  * ── S7: COPY LINK AND SHARE PLATE ──────────────────────────────────────────────────────────────
+  *
+  * Both were inert from S0 to S6 and Adrian found them on the live site. Neither needs the
+  * controller directly: the LINK is the address `writeUrlState` has already written for the current
+  * transaction (so there is still exactly one URL writer), and the PLATE is that same scene handed
+  * to `/api/snap`.
+  *
+  * ⚠️ `Ctrl/⌘+L` IS NOT BOUND, deliberately — it is the browser's address bar, and taking it would
+  * be the worst kind of shortcut theft (`spec.md`'s key map has no ⌘L for the same reason).
+  */
+ const copy = useCallback(async (text: string, okKey: string) => {
+  try {
+   // `navigator.clipboard` is undefined in an insecure context and its write can be refused by
+   // permissions policy; both land here, and the message names where the link still is.
+   await navigator.clipboard.writeText(text);
+   say(okKey);
+   return true;
+  } catch { say('share.copyFailed'); return false; }
+ }, [say]);
+
+ const copyLink = useCallback(() => copy(shareLink(location.href), 'share.copied'), [copy]);
+
+ /** The plate for what is on screen. `atlas.plate()` is the one builder — the control and the tool
+  *  surface must not be able to disagree about what "this view's plate" means. */
+ const plateOf = useCallback(() => {
+  const c = ctlRef.current;
+  // A PLATE OF NOTHING IS A PICTURE OF NOTHING. `/api/snap` requires `select` and answers 400
+  // without it (workers/snap/src/index.mjs:133), so an empty selection would open a tab on an
+  // error page — the control saying nothing while appearing to work.
+  if (!c.picks.length) { say('share.plateNone'); return null; }
+  return plateUrlOf(c, live.current.lang);
+ }, [say]);
+
+ const openPlate = useCallback(() => {
+  const url = plateOf();
+  if (!url) return;
+  // COLD-RENDER HONESTY: the first request after a `SITE_BUILD` bump is a real Browser Rendering
+  // run, not a cache hit, and it takes about half a minute. A reader watching a blank tab with no
+  // explanation concludes the control is broken.
+  say('share.plateCold');
+  // `noopener` on a gated origin: the plate is a picture, it has no business reaching back.
+  window.open(url, '_blank', 'noopener,noreferrer');
+ }, [plateOf, say]);
+
+ const copyPlate = useCallback(() => {
+  const url = plateOf();
+  if (url) void copy(url, 'share.plateCopied');
+ }, [plateOf, copy]);
 
 
  /**
@@ -1157,7 +1295,11 @@ export default function V2() {
  abortPoseRestore,
  // codex round 25, Medium 1: the Scenes sheet is an overlay at every tier and must suppress the
  // camera keys like any other. It is owned here because the PHONE opens the same surface.
- scenesOpen);
+ scenesOpen,
+ // S7 / codex round 26, Medium 1: and the phone's Ask sheet, which owned none of the keyboard.
+ // Passed RAW — the hook ANDs it with its own live tier reading, because the desktop's Ask is a
+ // dock and not a modal at all, and the hook is the only thing here that re-renders on a resize.
+ askOpen);
  /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
   *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
   *  callbacks would put a hook after a conditional return path in a file this size. */
@@ -1485,6 +1627,10 @@ export default function V2() {
    treeQuery={treeQuery} onTreeQuery={setTreeQuery}
    py={shell.py} pinyin={shell.pinyin} onPinyin={shell.setPinyin}
    tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
+   // S7: the three that shipped inert. The page owns them because two need the controller and the
+   // third needs the capture hook — the shell owns the buttons, as it does for Find.
+   onCapture={snapshot} onCopyLink={copyLink} onOpenPlate={openPlate} onCopyPlate={copyPlate}
+   onStage={() => setStage(true)}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
       In the studio it is Ctrl+K's centred modal; below 768 it is `spec.md`'s A4 bottom sheet,
@@ -1522,7 +1668,14 @@ export default function V2() {
    // phone's sheet — `sheet` is still what decides the PRESENTATION, and it is false at >=768.
    studio={shell.chrome}
    pinyin={shell.pinyin} onPinyin={shell.setPinyin} py={shell.py}
+   keypad={shell.keypad} onKeypad={shell.setKeypad}
   />
+  {/* S7 — THE TOAST. Outside every tier's chrome and `position:fixed`, so it is reachable on the
+      phone, the tablet and the studio, cannot be clipped by `.v2-tools`'s `overflow:hidden` (codex
+      round 24's High), and cannot cost a layout shift. `role="status"` and `aria-live="polite"`:
+      it announces itself without stealing focus from the control that produced it. The `key` is
+      the bump counter, so the same message twice re-mounts and re-announces. */}
+  {notice && <div className="v2-toast" role="status" aria-live="polite" key={notice.n}>{tr(notice.k)}</div>}
   {/* THE HEADER IS PAINTED FROM THE URL, IN THE FIRST FRAME. It never resizes afterwards:
       its height is fixed in CSS, so the title arriving, the name arriving and the model
       arriving all land inside a box that was already there. That is CLS 0 by construction
@@ -1535,6 +1688,28 @@ export default function V2() {
    <div className="v2-lang" role="group" aria-label={tr('lang.aria')}>
     {LANGS.map((l) => <button type="button" key={l} lang={l} className={lang === l ? 'is-on' : ''} aria-pressed={lang === l} onClick={() => applyLang(l)}>{LANG_LABELS[l]}</button>)}
    </div>
+   {/* ── S7: THE PHONE'S SETTINGS GEAR (`spec.md` A6/A7: 44 px, right of the language chips) ─────
+       Adrian, on the live site: "also openai api — on the phone there is no way to reach Settings".
+       He was right, and the reason is worth writing down because the surface was NOT missing.
+       S4 gave the phone a Settings invoker in `.v2-actions`, which lives inside
+       `.v2-margin-scroll` — `display:none` at the peek detent. So reaching Settings on a phone
+       meant dragging the margin open and scrolling a wrapped row of six buttons, and the AI tab
+       (the key entry, the whole in-app chat) was behind that. A feature nobody can find is a
+       feature that does not ship.
+
+       RC5 holds by construction: `.v2-head` is a fixed 56 px grid ROW (v2.css:91), the gear is the
+       same 44 px box the language chips already are, and `.v2-head-text` is `flex:1` so the title
+       gives up the width. Nothing below the header can move. The `.v2-actions` invoker STAYS —
+       both oracles select it by text, and a second door is not a defect. */}
+   <button type="button" className="v2-head-gear" data-act="settings" aria-haspopup="dialog" aria-expanded={shell.settingsOpen}
+    aria-label={tr('settings.open')} title={tr('settings.open')}
+    onClick={() => shell.setSettingsOpen(true)}>
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6"
+     strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+     <circle cx="12" cy="12" r="3"/>
+     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v.09a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </svg>
+   </button>
   </header>}
 
   <div className="v2-field" id="v2-field">
@@ -1621,6 +1796,7 @@ export default function V2() {
     onFit={() => { abortPoseRestore(); (window as unknown as {__atlasNav?: {fit(): string}}).__atlasNav?.fit(); }}
     onHome={() => { abortPoseRestore(); (window as unknown as {__atlasNav?: {home(): void}}).__atlasNav?.home(); }}
     onSnapshot={snapshot}
+    keypad={shell.keypad}
    />}
   </div>
 
@@ -1699,6 +1875,15 @@ export default function V2() {
       onClick={() => setAskOpen(true)}>{tr('panel.ask')}</button>
      <button type="button" aria-haspopup="dialog" aria-expanded={scenesOpen}
       onClick={() => setScenesOpen(true)}>{tr('tabs.short')}</button>
+     {/* ── S7: THE PHONE'S SHARE PAIR ────────────────────────────────────────────────────────────
+         The studio got 截图 and 复制链接 wired in the same commit; without these two the phone was
+         the tier where the picture a reader is looking at could not leave the device at all.
+         `snapshot` prefers `navigator.share({files})` HERE — a phone download lands somewhere a
+         reader may never find, and the share sheet is the platform's own answer. The plate is NOT
+         on this row deliberately: it is a 30-second cold render behind Access, which is a studio
+         act, and the copied link already carries the whole view. */}
+     <button type="button" data-act="snapshot" onClick={() => snapshot()}>{tr('nav.snapshot')}</button>
+     <button type="button" data-act="copy-link" onClick={() => { void copyLink(); }}>{tr('nav.link')}</button>
     </div>
 
     {/* ⚠️ S3: THE VIEWS ROW AND THE DESCRIPTION STAND DOWN WHILE THE LAYERS PANEL IS OPEN, and that

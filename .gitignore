@@ -51,3 +51,7 @@ workers/*/node_modules/
 # (scripts/zh-grades.json) and the applied fixes (scripts/zh-fixes.json) are committed;
 # the raw per-batch files are reproducible work product.
 /.zh-grade/
+
+# S7: the local preview server used by the verification gate writes here.
+.preview-*.log
+.preview-*.err

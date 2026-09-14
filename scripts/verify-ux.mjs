@@ -1655,6 +1655,34 @@ if (variant === 'v2') {
         `data-tier=${g.tier} .v2-studio=${g.studio} .v2-tablet=${g.tablet}`,
         `${vp.tier}, chrome=${wantChrome}, tablet=${wantTablet}`);
 
+      /**
+       * ── S7: THE INERT CONVENTION IS SPENT ─────────────────────────────────────────────────────
+       *
+       * S0 shipped eleven controls that LOOK finished and do nothing, each carrying `.v2-inert`,
+       * `aria-disabled` and a tooltip naming the group that would wire it. That was the right way
+       * to ship a shell — and it has an expiry date, which Adrian found on the live site three
+       * groups after the last of those groups shipped: 截图 / 复制链接 / 分享图版 still said "S1".
+       *
+       * ⚠️ IT MATCHES THE CONVENTION, NOT `aria-disabled` — the two are deliberately different
+       * things (`shell.tsx`'s header block, `opus-plan-review-2.md` §B). A tree eye that declines
+       * because the scene cannot carry the statement, and an Ask link that declines on an empty
+       * query, are TRUE disabled states with a reason beside them; they must survive this row. A
+       * placeholder tooltip `S<n>` cannot.
+       *
+       * Runs at EVERY viewport, because the tablet's More and the phone's sheets host their own
+       * copies of these controls and a scan at 1440 alone would have missed both.
+       */
+      const inert = await page.evaluate(() => {
+        const tag = (n) => `${n.tagName.toLowerCase()}${n.className ? `.${String(n.className).split(/\s+/)[0]}` : ''}[${(n.textContent || n.getAttribute('aria-label') || '').trim().slice(0, 24)}]`;
+        const byClass = [...document.querySelectorAll('.v2-inert')];
+        const byTip = [...document.querySelectorAll('[title]')].filter((n) => /^S\d[a-z]?$/.test(n.getAttribute('title') || ''));
+        const all = [...new Set([...byClass, ...byTip])];
+        return {n: all.length, sample: all.slice(0, 4).map(tag)};
+      });
+      check(vp.name, `[${STUDIO_V}] S7: no control is still a placeholder — zero .v2-inert and zero "S<n>" tooltips`,
+        inert.n === 0, `inert controls=${inert.n}${inert.n ? ` :: ${inert.sample.join(' · ')}` : ''}`,
+        '0 — the inert convention is spent; a true disabled state carries a reason instead');
+
       if (vp.tier.startsWith('studio') || vp.tier === 'tablet') {
         // THE FIXED ROWS, RENDERED. 52 / 44 / 32 in every studio tier including coarse — `spec.md`
         // decision 4 fixes the synthesis's inconsistent heights rather than carrying them in.
@@ -7057,6 +7085,293 @@ if (variant === 'v2') {
     } catch (e) {
       check(vpPhone.name, `[${S5B}] the phone chat pass ran`, false, String(e).slice(0, 200), 'no throw');
     } finally { await ctx.close(); }
+  }
+}
+
+/**
+ * ═══ S7 — THE THREE SHARE CONTROLS, END TO END ═════════════════════════════════════════════════
+ *
+ * Adrian found these on the LIVE site: 截图 / 复制链接 / 分享图版 still carrying their S1 tooltip and
+ * doing nothing, three groups after the last group that was supposed to wire them. The unit suite
+ * asserts the three strings; this asserts the three ACTS, because a correct filename attached to a
+ * button that never fires is exactly the shape of the defect being repaired.
+ *
+ *   · SNAPSHOT — a real download, a real PNG, at the FIELD's size, with subject pixels in it. The
+ *     bytes are handed back into the page and drawn on a canvas: "the file is big" is a proxy, and
+ *     this project has paid for proxies (the S5b plate was `holes 0.61%` while every local check
+ *     was green). No `/api/snap` request may be made — the capture is local by design.
+ *   · COPY LINK — the clipboard's actual contents, decoded, and then OPENED in a second page to
+ *     prove the round trip. A link that copies and does not reopen is a link that does not work.
+ *   · SHARE PLATE — the URL the new tab is given, with `/api/snap` ROUTE-INTERCEPTED so the sweep
+ *     never spends Browser Rendering minutes. The assertion is that its canonical params are the
+ *     controller's scene, which is the only thing the app controls; whether the renderer then
+ *     draws it is `verify-render`'s lane.
+ */
+{
+  const S7 = 'S7';
+  const vp7 = {name: 's7-1440', width: 1440, height: 900, dpr: 1, coarse: false};
+  const ctx = await newContext(vp7);
+  // The clipboard is a permission, and without it `writeText` rejects and the control reports its
+  // own failure honestly — which would make this row measure the GRANT rather than the control.
+  await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], {origin: new URL(base).origin}).catch(() => {});
+  const page = await ctx.newPage();
+  /** Every plate request is answered here. A sweep that reaches the real renderer bills the account
+   *  and takes 30 s per row; a sweep that reaches it by ACCIDENT does so silently. */
+  const snapSeen = [];
+  await ctx.route('**/api/snap*', (route) => {
+    snapSeen.push(route.request().url());
+    route.fulfill({status: 200, contentType: 'image/png', body: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')});
+  });
+  try {
+    await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+    await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    /**
+     * ⚠️ BY `data-act`, NOT BY LABEL — and the first version of this block selected by label and
+     * reported `button=MISSING` for all three controls that were sitting right there. The §9 scene
+     * declares 简体, so the buttons say 截图 / 复制链接 / 分享图版; a driver matching "Snapshot"
+     * measures the UI LANGUAGE and calls a working control absent. The app carries a stable
+     * `data-act` for exactly this.
+     */
+    const named = (act) => page.evaluate((want) => {
+      const b = document.querySelector(`.v2-tools [data-act="${want}"]`);
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return {x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), aria: b.getAttribute('aria-disabled')};
+    }, act);
+
+    // ── 1. SNAPSHOT ───────────────────────────────────────────────────────────────────────────
+    const shotBtn = await named('snapshot');
+    const dl = page.waitForEvent('download', {timeout: 20000}).catch(() => null);
+    // MOUSE AT COORDINATES, never `page.click` — the project's own Playwright lesson: a synthesised
+    // click on a control the field overlays reports success while landing on nothing.
+    if (shotBtn) await page.mouse.click(shotBtn.x, shotBtn.y);
+    const file = await dl;
+    const bytes = file ? await file.createReadStream().then(async (s) => {
+      const chunks = []; for await (const c of s) chunks.push(c); return Buffer.concat(chunks);
+    }).catch(() => null) : null;
+    const fieldBox = await page.evaluate(() => {
+      const r = document.querySelector('.v2-field')?.getBoundingClientRect();
+      return r ? {w: Math.round(r.width), h: Math.round(r.height)} : null;
+    });
+    // PNG IHDR: width and height are big-endian 32-bit at byte 16 and 20.
+    const png = bytes && bytes.length > 24 && bytes.slice(1, 4).toString() === 'PNG'
+      ? {w: bytes.readUInt32BE(16), h: bytes.readUInt32BE(20), bytes: bytes.length} : null;
+    check(vp7.name, `[${S7}] the toolbar's 截图 downloads a PNG the size of the field`,
+      !!png && !!fieldBox && png.w === fieldBox.w && png.h === fieldBox.h,
+      `button=${shotBtn ? `@${shotBtn.x},${shotBtn.y} aria-disabled=${shotBtn.aria}` : 'MISSING'}`
+      + ` · file=${file ? file.suggestedFilename() : 'none'} · png=${png ? `${png.w}x${png.h} ${png.bytes}b` : 'not a PNG'}`
+      + ` · field=${fieldBox ? `${fieldBox.w}x${fieldBox.h}` : '?'}`,
+      'a PNG whose pixel dimensions are the field\'s CSS box');
+    check(vp7.name, `[${S7}] the downloaded file is named after the scene, not after the clock alone`,
+      !!file && /^[^/\\:*?"<>|]+-\d{8}-\d{4}\.png$/.test(file.suggestedFilename())
+        && !/^anatomy-/.test(file.suggestedFilename()),
+      `name=${file ? file.suggestedFilename() : 'none'}`,
+      'the scene title (or its ids), then -yyyymmdd-hhmm.png');
+    // THE PIXELS, not the byte count. Drawn in the page and counted: a capture that returned a
+    // cleared drawing buffer is a valid PNG of the right size and is entirely one colour.
+    const pixels = bytes ? await page.evaluate(async (b64) => {
+      const img = new Image();
+      await new Promise((ok, no) => { img.onload = ok; img.onerror = no; img.src = `data:image/png;base64,${b64}`; });
+      const c = document.createElement('canvas');
+      c.width = Math.min(img.width, 400); c.height = Math.min(img.height, 300);
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, c.width, c.height);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      const seen = new Set();
+      for (let i = 0; i < d.length; i += 4) seen.add(`${d[i] >> 3},${d[i + 1] >> 3},${d[i + 2] >> 3}`);
+      return {colours: seen.size, px: c.width * c.height};
+    }, bytes.toString('base64')).catch((e) => ({error: String(e).slice(0, 80)})) : null;
+    check(vp7.name, `[${S7}] the snapshot has the SUBJECT in it — not a cleared buffer of the right size`,
+      !!pixels && pixels.colours > 8,
+      `distinct colours=${pixels?.colours ?? 'n/a'}${pixels?.error ? ` (${pixels.error})` : ''} over ${pixels?.px ?? 0} sampled px`,
+      '> 8 — a blank or cleared capture is one or two');
+    check(vp7.name, `[${S7}] the snapshot is LOCAL — it spends no Browser Rendering`,
+      snapSeen.length === 0, `/api/snap requests during the capture=${snapSeen.length}`, '0');
+
+    // ── 2. COPY LINK ──────────────────────────────────────────────────────────────────────────
+    const linkBtn = await named('copy-link');
+    if (linkBtn) await page.mouse.click(linkBtn.x, linkBtn.y);
+    await page.waitForTimeout(400);
+    const copied = await page.evaluate(() => navigator.clipboard.readText().catch((e) => `ERR:${e}`));
+    const here = await page.evaluate(() => ({
+      blob: window.atlas?.state?.().blob ?? '', href: location.href, lang: window.atlas?.state?.().lang,
+    }));
+    let cu = null; try { cu = new URL(copied); } catch { /* an error string, reported below */ }
+    check(vp7.name, `[${S7}] 复制链接 puts THIS scene on the clipboard, without the session flags`,
+      !!cu && cu.searchParams.get('scene') === here.blob && !cu.searchParams.has('stage') && !cu.searchParams.has('probe'),
+      `copied=${String(copied).slice(0, 120)} · scene matches=${cu?.searchParams.get('scene') === here.blob}`,
+      'the controller\'s current blob, no stage/probe');
+    // THE ROUND TRIP. A URL that copies and does not reopen is a URL that does not work, and this
+    // is the only row that can tell the two apart.
+    let round = 'not attempted';
+    if (cu) {
+      const p2 = await ctx.newPage();
+      try {
+        await p2.goto(copied, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await p2.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        await p2.waitForTimeout(1200);
+        round = await p2.evaluate(() => window.atlas?.state?.().blob ?? 'no-atlas');
+      } catch (e) { round = `threw:${String(e).slice(0, 60)}`; } finally { await p2.close(); }
+    }
+    check(vp7.name, `[${S7}] the copied link REOPENS the same scene`,
+      round === here.blob && !!here.blob,
+      `reopened blob=${String(round).slice(0, 40)}… · original=${here.blob.slice(0, 40)}…`,
+      'the same scene blob');
+
+    // ── 3. SHARE PLATE ────────────────────────────────────────────────────────────────────────
+    const plateBtn = await named('plate');
+    const opened = ctx.waitForEvent('page', {timeout: 10000}).catch(() => null);
+    if (plateBtn) await page.mouse.click(plateBtn.x, plateBtn.y);
+    const tab = await opened;
+    const plateUrl = tab ? tab.url() : '';
+    let pu = null; try { pu = new URL(plateUrl); } catch { /* reported below */ }
+    check(vp7.name, `[${S7}] 分享图版 opens the plate for the CONTROLLER's scene`,
+      !!pu && pu.pathname === '/api/snap' && pu.searchParams.get('scene') === here.blob
+        && pu.searchParams.get('snap') === '1' && (pu.searchParams.get('select') || '').length > 0,
+      `url=${plateUrl.slice(0, 140)}`,
+      '/api/snap with this scene, select and snap=1');
+    // The language is the one the reader is in — /api/snap defaults to English, so a Chinese reader
+    // who shared a plate shipped an English picture of their Chinese view.
+    check(vp7.name, `[${S7}] the plate URL carries the reader's language`,
+      !!pu && (here.lang === 'en' ? !pu.searchParams.has('lang') : pu.searchParams.get('lang') === here.lang),
+      `ui lang=${here.lang} · plate lang=${pu?.searchParams.get('lang') ?? '(absent)'}`,
+      'absent in English, explicit otherwise');
+    if (tab) await tab.close();
+  } catch (e) {
+    check(vp7.name, `[${S7}] the share pass ran`, false, String(e).slice(0, 200), 'no throw');
+  } finally {
+    await page.unrouteAll({behavior: 'ignoreErrors'}).catch(() => {});
+    await ctx.close();
+  }
+}
+
+/**
+ * === S7 - THE PHONE'S SETTINGS ENTRY ==========================================================
+ *
+ * Adrian: "also openai api - on the phone there is no way to reach Settings". The SURFACE was not
+ * missing: S4 hosted the Settings sheet at every width and put an invoker in `.v2-actions`. But
+ * `.v2-actions` lives inside `.v2-margin-scroll`, which is `display:none` at the peek detent a chat
+ * link opens on - so reaching the AI tab meant dragging the margin up and scrolling a wrapped row.
+ *
+ * These rows assert the DOOR (a 44 px gear in the header, where `spec.md` A6/A7 draws it) and what
+ * is behind it (four tabs, and an AI key entry that really stores and really removes). The key is
+ * FAKE and the endpoint is never reached: this block makes no request to api.openai.com at all.
+ *
+ * RC5 is re-measured here rather than assumed - the gear is new markup inside the one region whose
+ * height is a protected constant.
+ */
+{
+  const S7P = 'S7';
+  const vp7p = VIEWPORTS.find((v) => v.name === '390x844')
+    ?? {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true};
+  const FAKE = 'sk-proj-S7oracleAAAABBBBCCCCDDDDEEEE4321';
+  const ctx = await newContext(vp7p);
+  const page = await ctx.newPage();
+  let openai = 0;
+  await ctx.route('https://api.openai.com/**', (route) => { openai += 1; route.fulfill({status: 500, body: ''}); });
+  try {
+    await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
+    await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    // 1. THE DOOR ITSELF - present, in the header, and a real touch target.
+    const gear = await page.evaluate(() => {
+      const b = document.querySelector('.v2-head [data-act="settings"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect(), h = document.querySelector('.v2-head').getBoundingClientRect();
+      return {w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x + r.width / 2),
+        y: Math.round(r.y + r.height / 2), inHeader: r.top >= h.top - 1 && r.bottom <= h.bottom + 1,
+        label: b.getAttribute('aria-label')};
+    });
+    check(vp7p.name, `[${S7P}] the phone header carries a 44 px Settings gear (spec.md A6/A7)`,
+      !!gear && gear.w >= 44 && gear.h >= 44 && gear.inHeader,
+      `gear=${gear ? `${gear.w}x${gear.h} in-header=${gear.inHeader} label="${gear.label}"` : 'MISSING'}`,
+      '>= 44x44, inside .v2-head');
+    // THE PEEK DETENT IS THE WHOLE POINT: the S4 invoker exists there and is INVISIBLE.
+    const peekReach = await page.evaluate(() => {
+      const det = document.querySelector('.v2')?.dataset.detent;
+      const old = document.querySelector('.v2-actions [data-act="settings"]');
+      return {detent: det, marginInvokerVisible: !!(old && old.getBoundingClientRect().height > 0)};
+    });
+    check(vp7p.name, `[${S7P}] and it is reachable at the PEEK detent, where the margin's own invoker is not`,
+      peekReach.detent === 'peek' && peekReach.marginInvokerVisible === false && !!gear,
+      `detent=${peekReach.detent} · margin invoker visible=${peekReach.marginInvokerVisible} · gear present=${!!gear}`,
+      'peek, margin invoker hidden, gear present');
+
+    // 2. IT OPENS THE SHEET, WITH ALL FOUR TABS.
+    if (gear) await page.mouse.click(gear.x, gear.y);
+    await page.waitForTimeout(600);
+    const sheet = await page.evaluate(() => {
+      const panel = document.querySelector('.v2-modal');
+      const tabs = [...document.querySelectorAll('.v2-mtabs [role="tab"]')].map((n) => (n.textContent || '').trim());
+      return {open: !!panel, isSheet: !!document.querySelector('.v2-scrim.is-sheet'), tabs};
+    });
+    check(vp7p.name, `[${S7P}] the gear opens Settings as a bottom SHEET with its four tabs`,
+      sheet.open && sheet.isSheet && sheet.tabs.length === 4,
+      `open=${sheet.open} sheet=${sheet.isSheet} tabs=[${sheet.tabs.join(' | ')}]`,
+      'a sheet with General / Language / AI / About');
+
+    // 3. THE AI TAB REALLY STORES A KEY - the reason Adrian asked for this door.
+    const stored = await page.evaluate(async (key) => {
+      const tab = [...document.querySelectorAll('.v2-mtabs [role="tab"]')][2];
+      if (!tab) return {step: 'no-ai-tab'};
+      tab.click();
+      await new Promise((r) => setTimeout(r, 250));
+      const input = document.querySelector('.v2-ai-keyinput');
+      const save = document.querySelector('.v2-ai-settings form button[type="submit"]');
+      if (!input || !save) return {step: 'no-key-form', hasInput: !!input, hasSave: !!save};
+      // The field is UNCONTROLLED by design (the key is never in React state), so a native value
+      // write plus the form's own submit is exactly how a human uses it.
+      input.value = key;
+      save.click();
+      await new Promise((r) => setTimeout(r, 300));
+      const mask = document.querySelector('.v2-ai-mask')?.textContent || '';
+      let raw = '';
+      try { raw = localStorage.getItem('atlas.openai') || ''; } catch { raw = 'no-storage'; }
+      return {step: 'saved', mask, storedKey: raw.includes(key), leaked: document.body.innerHTML.includes(key),
+        url: location.href.includes(key)};
+    }, FAKE);
+    check(vp7p.name, `[${S7P}] the phone's AI tab accepts a key, stores it, and shows only a MASK`,
+      stored.step === 'saved' && stored.storedKey === true && /^sk-/.test(stored.mask || '')
+        && !String(stored.mask).includes(FAKE) && stored.leaked === false && stored.url === false,
+      `step=${stored.step} · mask="${stored.mask}" · in storage=${stored.storedKey} · in DOM=${stored.leaked} · in URL=${stored.url}`,
+      'stored, masked, never in the DOM or the URL');
+    // REMOVE IS REAL (RC11) - from the phone, which is the surface that had no way in at all.
+    const removed = await page.evaluate(async () => {
+      const btn = [...document.querySelectorAll('.v2-ai-keyrow button')].find((b) => b.type !== 'submit');
+      if (!btn) return {step: 'no-remove'};
+      btn.click();
+      await new Promise((r) => setTimeout(r, 250));
+      let raw = '';
+      try { raw = localStorage.getItem('atlas.openai') || ''; } catch { raw = 'no-storage'; }
+      return {step: 'removed', left: raw, mask: document.querySelector('.v2-ai-mask')?.textContent || ''};
+    });
+    check(vp7p.name, `[${S7P}] and Remove really removes it (RC11), from the phone`,
+      removed.step === 'removed' && !String(removed.left).includes(FAKE) && !removed.mask,
+      `step=${removed.step} · storage now="${String(removed.left).slice(0, 40)}" · mask="${removed.mask}"`,
+      'the key is gone from storage and from the panel');
+    check(vp7p.name, `[${S7P}] the whole Settings pass spends nothing - zero requests to api.openai.com`,
+      openai === 0, `api.openai.com requests=${openai}`, '0');
+
+    // 4. RC5(a): the geometry constants, re-measured with the new header markup in place.
+    const geo = await page.evaluate(() => {
+      const px = (el) => (el ? Math.round(el.getBoundingClientRect().height) : -1);
+      return {header: px(document.querySelector('.v2-head')),
+        rail: Math.round(document.querySelector('.v2-rail')?.getBoundingClientRect().width ?? -1),
+        margin: px(document.querySelector('.v2-margin'))};
+    });
+    check(vp7p.name, `[${S7P}] RC5: the gear does not move 56 / 45 / 108`,
+      geo.header === 56 && geo.rail === 45 && geo.margin === 108,
+      `header=${geo.header} · rail=${geo.rail} · margin=${geo.margin}`,
+      '56 / 45 / 108 - the header is a fixed grid row and new markup inside it may not grow it');
+  } catch (e) {
+    check(vp7p.name, `[${S7P}] the phone Settings pass ran`, false, String(e).slice(0, 200), 'no throw');
+  } finally {
+    await page.unrouteAll({behavior: 'ignoreErrors'}).catch(() => {});
+    await ctx.close();
   }
 }
 

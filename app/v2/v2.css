@@ -98,6 +98,13 @@ a{color:inherit}
 .v2-head h1{margin:0;font-size:17px;font-weight:600;line-height:1.25;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 html:lang(zh-Hans) .v2-head h1,html:lang(zh-Hant) .v2-head h1{letter-spacing:0}
 .v2-note{margin:1px 0 0;font-size:12px;line-height:1.35;color:var(--v2-ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ── S7: THE PHONE'S SETTINGS GEAR (spec.md A6/A7) ──────────────────────────────────────────────
+   44x44 like the language chips beside it, inside a header whose 56 px height is a fixed GRID ROW
+   (`--v2-head` above) — so it cannot change the one geometry constant RC5 protects here. It is
+   rendered only where the phone header is (`!shell.chrome`), which is also why it needs no tier
+   query of its own. */
+.v2-head-gear{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;flex-shrink:0;border-radius:10px;color:var(--v2-ink-2)}
+.v2-head-gear:hover{background:var(--v2-surface-2);color:var(--v2-ink)}
 .v2-lang{display:flex;gap:2px;flex-shrink:0}
 .v2-lang button{min-width:44px;min-height:44px;padding:0 6px;font-size:12px;color:var(--v2-ink-2);border-radius:8px}
 .v2-lang .is-on{color:var(--v2-accent);background:var(--v2-accent-soft);font-weight:600}

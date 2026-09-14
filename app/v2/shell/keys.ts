@@ -521,3 +521,54 @@ export const KEY_MAP: KeyRow[] = [
  // Space; the eye is a SEPARATE control with no keyboard path at all without this (codex r3, M3).
  {keys: 'V', cmd: 'keys.treeVis', group: 'tree'},
 ];
+
+/**
+ * ══ MODAL OWNERSHIP — ONE RULE, ONE READER (S7; codex round 26, Medium 1) ══════════════════════
+ *
+ * "Which surfaces own the keyboard?" was answered in THREE places in `use-shell.ts` — the
+ * dispatcher's `modalOpen`, the `find` command's decline branch, and the effect that clears the
+ * held set — each with its own hand-written list. Round 26 executed the hook and found all three
+ * disagreeing: Scenes suppressed commands but did not decline Ctrl+K and did not clear a held `W`;
+ * the phone's Ask sheet did none of the three, so `Digit2` dispatched a named view while a reader
+ * was typing a question into it.
+ *
+ * A rule with three copies has three versions of itself. These are the one copy, and they are
+ * exported so they can be asserted without a browser (`test/v2-modal-ownership.test.mjs`).
+ */
+export interface OverlayState {
+ keysOpen: boolean;
+ settingsOpen: boolean;
+ findOpen: boolean;
+ /** The snapshot list — an overlay at EVERY tier (the studio's modal, the phone's A9 sheet). */
+ scenesOpen: boolean;
+ /** The phone's A8 Ask sheet. The desktop's Ask is a DOCK and is not a modal at all. */
+ askSheetOpen: boolean;
+ /** The tablet's one right sheet, or null. */
+ tSheet: string | null;
+ /** True when that sheet is a 300 px INLINE column rather than a scrim overlay. */
+ tabletInline: boolean;
+}
+
+/**
+ * ⚠️ THE INLINE TABLET COLUMN IS DELIBERATELY NOT A MODAL. In landscape the sheet is a grid column
+ * beside a live field: it does not dim the field, does not trap focus, and a reader with it open is
+ * expected to keep driving the camera. Folding it in would take the keyboard away from the tier
+ * with the most room for it (S6).
+ */
+export const modalOpen = (s: OverlayState): boolean =>
+ s.keysOpen || s.settingsOpen || s.findOpen || s.scenesOpen || s.askSheetOpen || !!(s.tSheet && !s.tabletInline);
+
+/**
+ * Ctrl+K is DECLINED over any other modal — stacking a palette on a dialog is worse than leaving
+ * the chord to the browser. Its OWN palette is not a decline: a second Ctrl+K re-focuses the input,
+ * which is why `findOpen` is subtracted here rather than absent from `modalOpen`.
+ */
+export const findDeclined = (s: OverlayState): boolean => modalOpen({...s, findOpen: false});
+
+/**
+ * A modal that opens inside the same document fires no blur, no `pointercancel` and no
+ * `visibilitychange` — none of the dispatcher's own clearing paths — so a key held when it opens
+ * stays held: the camera pans behind the dialog and the discrete twin of that code is dead
+ * (`Shift+S` is unreachable while `KeyS` is stuck).
+ */
+export const clearsHeldKeys = (s: OverlayState): boolean => modalOpen(s);

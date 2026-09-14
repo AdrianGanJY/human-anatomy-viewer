@@ -564,6 +564,9 @@ export const V2: Record<string, Row> = {
  'settings.light':   {en: 'Light', 'zh-Hans': '浅色', 'zh-Hant': '淺色'},
  'settings.dark':    {en: 'Dark', 'zh-Hans': '深色', 'zh-Hant': '深色'},
  'settings.keypad':  {en: 'On-screen key pad', 'zh-Hans': '屏幕按键板', 'zh-Hant': '螢幕按鍵板'},
+ // S7: the note used to be `nav.touch` — the TOUCH gesture map, on a control about a KEY PAD.
+ // It read as an explanation of the setting and was an explanation of something else.
+ 'settings.keypadNote': {en: 'The camera keys drawn over the field. The keyboard itself is unaffected.', 'zh-Hans': '在模型区域上绘制的视角按键。键盘本身不受影响。', 'zh-Hant': '在模型區域上繪製的視角按鍵。鍵盤本身不受影響。'},
  'settings.off':     {en: 'Off', 'zh-Hans': '关闭', 'zh-Hant': '關閉'},
  'settings.arrows':  {en: 'Arrows', 'zh-Hans': '方向键', 'zh-Hant': '方向鍵'},
  'settings.full':    {en: 'Full', 'zh-Hans': '完整', 'zh-Hant': '完整'},
@@ -676,6 +679,28 @@ export const V2: Record<string, Row> = {
  'keys.treeTick':  {en: 'Add or remove this structure', 'zh-Hans': '加入或移除此结构', 'zh-Hant': '加入或移除此結構'},
  // The inert marker, and the one string that must never read as a promise of a date.
  'inert.pending':  {en: 'Arrives in {s}', 'zh-Hans': '将在 {s} 提供', 'zh-Hant': '將於 {s} 提供'},
+
+ // ══ L31 v2.1b+c, S7 — THE THREE SHARE CONTROLS ════════════════════════════════════════════════
+ // Every one of these is the RESULT of an act the reader just performed, which is the one place a
+ // fleeting message is the right shape (`spec.md` D11 reserves the persistent amber panel for a
+ // REFUSAL — a statement about the scene, which outlives the moment).
+ 'share.saved':    {en: 'Snapshot saved', 'zh-Hans': '截图已保存', 'zh-Hant': '截圖已儲存'},
+ 'share.shared':   {en: 'Snapshot ready to share', 'zh-Hans': '截图已备好，可以分享', 'zh-Hant': '截圖已備好，可以分享'},
+ // NAMES THE CAUSE RATHER THAN THE SYMPTOM: the one way this fails in practice is a lost WebGL
+ // context, which is also what the field's own recovery banner is about.
+ 'share.shotFailed': {en: 'The view could not be captured — reload if the 3D session was paused', 'zh-Hans': '无法截取当前视图 — 若 3D 会话已暂停，请重新载入', 'zh-Hant': '無法擷取目前檢視 — 若 3D 工作階段已暫停，請重新載入'},
+ 'share.copied':   {en: 'Link copied', 'zh-Hans': '链接已复制', 'zh-Hant': '連結已複製'},
+ // TELLS THE READER WHERE THE LINK IS ANYWAY. A clipboard write can be refused by permission
+ // policy, and a bare "failed" leaves a reader who can simply read it off the address bar stuck.
+ 'share.copyFailed': {en: 'Could not copy — the link is in the address bar', 'zh-Hans': '复制失败 — 链接就在地址栏里', 'zh-Hant': '複製失敗 — 連結就在網址列裡'},
+ 'share.plateOpen':  {en: 'Open plate', 'zh-Hans': '打开图版', 'zh-Hant': '開啟圖版'},
+ 'share.plateCopy':  {en: 'Copy plate link', 'zh-Hans': '复制图版链接', 'zh-Hant': '複製圖版連結'},
+ 'share.plateCopied':{en: 'Plate link copied', 'zh-Hans': '图版链接已复制', 'zh-Hant': '圖版連結已複製'},
+ // THE COLD RENDER, SAID OUT LOUD. The first plate after a build is rendered by Browser Rendering
+ // rather than served from the cache, and a reader staring at a blank tab for half a minute with no
+ // explanation concludes the control is broken.
+ 'share.plateCold':  {en: 'Rendering the plate — the first one after an update takes about 30 seconds', 'zh-Hans': '正在渲染图版 — 更新后的第一张约需 30 秒', 'zh-Hant': '正在算繪圖版 — 更新後的第一張約需 30 秒'},
+ 'share.plateNone':  {en: 'Select a structure first — a plate is a picture of a view', 'zh-Hans': '请先选择结构 — 图版是某个视图的图片', 'zh-Hant': '請先選擇結構 — 圖版是某個檢視的圖片'},
 };
 
 /**

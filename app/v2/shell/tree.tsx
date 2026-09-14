@@ -331,6 +331,21 @@ export default function Tree(p: TreeProps) {
   *   · a system click is computed from the EFFECTIVE set, so it does what it looks like it does.
   */
  const toggleEye = useCallback((row: TreeRow) => {
+  /**
+   * ⚠️ THE ACTIONABILITY DECISION LIVES HERE, NOT AT THE BUTTON — codex round 26, Medium 3.
+   *
+   * It used to be an inline `if (!eyeInert)` on the eye's `onClick`, computed in the row's render.
+   * The KEYBOARD path (`V`) called this function directly and met no guard at all, so codex
+   * executed: scene "Sternum + Body of sternum", Body's eye `actionable=false, cause=drawn` (its
+   * write cannot win against the sharer's contribution to the same mesh), pointer declines — and
+   * `V` wrote `opacity: 0` into the persistent scene while the rendered alpha stayed 1. A control
+   * that declines under the finger and commits under the keyboard is two controls.
+   *
+   * One decision point, at the only place both paths pass through. `eyeState` is the same
+   * measurement the row renders its reason from (`readEye`), so the eye and its explanation cannot
+   * disagree either.
+   */
+  if (row.kind === 'concept' && p.eyeState(row.id, eyeKind(row), eyeOn(row))?.actionable === false) return;
   const act = eyeAction({
    kind: eyeKind(row), on: eyeOn(row),
    system: row.kind === 'system' ? row.system : undefined,
@@ -764,7 +779,9 @@ export default function Tree(p: TreeProps) {
         aria-disabled={eyeInert || undefined}
         aria-label={eyeInert ? `${label} — ${inertWhy}` : `${label} — ${tr(on ? 'tree.hide' : 'tree.show')}`}
         title={eyeInert ? inertWhy : eyeTitle(row)}
-        onClick={() => { if (!eyeInert) toggleEye(row); }}>
+        // S7: NO GUARD HERE ANY MORE — `toggleEye` owns the decision, so the pointer and `V`
+        // cannot diverge (round 26, M3). `aria-disabled` above still tells a reader why.
+        onClick={() => toggleEye(row)}>
         <svg width="14" height="14" viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor"
          strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
          <path d={on
