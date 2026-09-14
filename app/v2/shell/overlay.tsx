@@ -75,7 +75,10 @@ export default function Overlay({open, onClose, title, sheet, labelClose, childr
    * nothing to type into it, and the close button is a reasonable place to land.
    */
   const wanted = el?.querySelector<HTMLElement>('[data-autofocus]');
-  const first = wanted ?? el?.querySelector<HTMLElement>(FOCUSABLE);
+  // Same rule on the way IN: with nothing declaring autofocus the initial focus used to land on the
+  // `aria-hidden` handle (round 26, Medium 2).
+  const first = wanted
+   ?? [...(el?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].find((n) => n.tabIndex >= 0);
   (first ?? el)?.focus();
   return () => {
    const back = invoker.current as HTMLElement | null;
@@ -91,7 +94,16 @@ export default function Overlay({open, onClose, title, sheet, labelClose, childr
  const onKeyDown = useCallback((ev: React.KeyboardEvent) => {
   if (ev.key === 'Escape') { ev.stopPropagation(); ev.preventDefault(); onClose(); return; }
   if (ev.key !== 'Tab') return;
-  const items = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter((n) => n.offsetParent !== null || n === document.activeElement);
+  /**
+   * ⚠️ `tabIndex={-1}` IS NOT IN THE TAB ORDER — codex round 26, Medium 2. `button:not([disabled])`
+   * matches the sheet's drag HANDLE, which is `tabIndex={-1}` and `aria-hidden` precisely because
+   * the close button already carries its accessible name. So the trap's "last control" was an
+   * element a reader cannot reach: Tab from the real last control focused the hidden handle, and
+   * Shift+Tab from Close was not intercepted at all.
+   */
+  const items = [...(panel.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])]
+   .filter((n) => n.tabIndex >= 0)
+   .filter((n) => n.offsetParent !== null || n === document.activeElement);
   if (!items.length) return;
   const first = items[0], last = items[items.length - 1];
   if (!ev.shiftKey && document.activeElement === last) { ev.preventDefault(); first.focus(); }
