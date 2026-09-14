@@ -7235,78 +7235,91 @@ if (variant === 'v2') {
       'the same scene blob');
 
     /**
-     * ⚠️ COPY IMMEDIATELY AFTER AN EDIT — codex round 27, HIGH 2, as a browser row.
+     * ══ THE RULING'S ROWS: COPY IMMEDIATELY, TWICE, AND REOPEN WHAT LANDS ════════════════════
      *
-     * `writeUrlState` is debounced by 200 ms, and Copy link reads `location.href`. codex executed
-     * the real reducer and writer and got `copied before debounce: [FMA7485, FMA9611]` against
-     * `current picks: [FMA7485]`: the control silently handed over the PREVIOUS view. The fix is a
-     * flush before the read, and the only honest test of it is to copy INSIDE the window.
+     * Copy link serializes the CONTROLLER now (planner ruling after codex 27 + 28), so there is no
+     * debounce to race and nothing to wait for. These rows press the control in the same task as
+     * the edit — the window every earlier design was wrong in — and then OPEN the copied link and
+     * compare the controller state it produces, because field equality certified three broken
+     * versions (round 28, MEDIUM 1: codex mutated the row three ways and every mutation passed).
+     *
+     * ⚠️ THE CLIPBOARD IS EMPTIED FIRST. A previous row in this context already copied something,
+     * and "poll until non-empty" stops on THAT text — measured, and it reported a stale copy
+     * against a control that had copied correctly.
      */
-    const race = await page.evaluate(async () => {
-      const before = window.atlas.state().ids.slice();
-      const dropped = before[before.length - 1];
-      /**
-       * ⚠️ THE CLIPBOARD IS EMPTIED FIRST, and forgetting that made this row lie TWICE.
-       *
-       * A previous row in this same context already copied the FULL selection. So "poll until the
-       * clipboard is non-empty" stops on the FIRST read — which returns the PREVIOUS row's text,
-       * five ids including the one just removed — and the row reports a stale copy against a
-       * product that copied correctly 700 ms later. Measured in isolation with the sweep's exact
-       * sequence: `prior copy: [5 ids] · copied@120: [5 ids] STALE · copied@820: [4 ids] ok`.
-       *
-       * A non-empty clipboard is not evidence that THIS copy landed. Emptying it first is what
-       * makes the wait below mean what its name says.
-       */
-      try { await navigator.clipboard.writeText(''); } catch { /* reported as an empty read below */ }
-      window.atlas.remove(dropped);
-      // THE CLICK LANDS INSIDE THE 200 ms THE WRITER IS WAITING — that is the whole point, and it
-      // is where the defect lived. What is NOT asserted is that the copy is instantaneous: the
-      // control now waits for the URL to become true before reading it, so the row waits for the
-      // clipboard to fill (bounded) and then asks whether what landed there is CURRENT. An early
-      // read would measure the wait, not the correctness — my first version did exactly that and
-      // reported an empty clipboard as a failure of the fix.
+    const raceOf = async (edit) => page.evaluate(async (js) => {
+      try { await navigator.clipboard.writeText(''); } catch { /* reported as an empty read */ }
+      // eslint-disable-next-line no-eval
+      eval(js);
+      // NO WAIT BETWEEN THE EDIT AND THE CLICK. That is the assertion.
       document.querySelector('.v2-tools [data-act="copy-link"]').click();
       let copied = '';
       for (let i = 0; i < 30 && !copied; i++) {
         await new Promise((r) => setTimeout(r, 50));
-        try { copied = await navigator.clipboard.readText(); } catch (e) { copied = ''; }
+        try { copied = await navigator.clipboard.readText(); } catch { copied = ''; }
       }
-      return {dropped, after: window.atlas.state().ids.slice(), copied,
-        blob: window.atlas.state().blob};
-    });
-    let ru = null; try { ru = new URL(race.copied); } catch { /* reported below */ }
-    const copiedIds = (ru?.searchParams.get('select') || '').split(',').filter(Boolean);
-    check(vp7.name, `[${S7}] copying INSIDE the 200 ms debounce copies the CURRENT view, not the previous one`,
-      !!ru && !copiedIds.includes(race.dropped) && copiedIds.length === race.after.length
-        && ru.searchParams.get('scene') === race.blob,
-      `removed=${race.dropped} · now=[${race.after.join(',')}] · copied select=[${copiedIds.join(',')}]`
-      + ` · scene matches=${ru?.searchParams.get('scene') === race.blob}`,
-      'the structure just removed is absent from the copied link');
-    check(vp7.name, `[${S7}] and the copy really completes — the wait is bounded, not indefinite`,
-      !!race.copied, `clipboard after the bounded wait=${race.copied ? 'filled' : 'EMPTY'}`,
-      'non-empty within 1.5 s');
-    /**
-     * ⚠️ AND IT IS REOPENED — codex round 28, MEDIUM 1, which is the row's most important
-     * correction. Inspecting the copied URL's FIELDS is not the same as opening it: codex mutated
-     * the extracted row three ways (append the old scene as `#scene=`, substitute a missing page)
-     * and every mutation still PASSED the field assertions while reopening the wrong thing. The
-     * question this row exists to answer is "does the link show the recipient what I was looking
-     * at", and only a second page can answer it.
-     */
-    let reopened = 'not attempted';
-    if (race.copied) {
-      const p3 = await ctx.newPage();
+      const st = window.atlas.state();
+      return {copied, ids: st.ids.slice(), view: st.view, lang: st.lang, blob: st.blob};
+    }, edit);
+
+    /** Open a copied link in its own page and read back what the CONTROLLER there holds. */
+    const reopen = async (url) => {
+      const pg = await ctx.newPage();
       try {
-        await p3.goto(race.copied, {waitUntil: 'domcontentloaded', timeout: 180000});
-        await p3.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
-        await p3.waitForTimeout(1200);
-        reopened = await p3.evaluate(() => (window.atlas?.state?.().ids ?? ['no-atlas']).join(','));
-      } catch (e) { reopened = `threw:${String(e).slice(0, 60)}`; } finally { await p3.close(); }
-    }
-    check(vp7.name, `[${S7}] and the edited link REOPENS the edited view — not the one before the edit`,
-      reopened === race.after.join(','),
-      `reopened=[${reopened}] · expected=[${race.after.join(',')}] · removed=${race.dropped}`,
-      'the selection as it stands after the removal');
+        await pg.goto(url, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await pg.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        await pg.waitForTimeout(1200);
+        return await pg.evaluate(() => {
+          const st = window.atlas?.state?.();
+          return st ? {ids: st.ids.slice(), view: st.view, lang: st.lang, blob: st.blob,
+            title: document.querySelector('.v2-cap b')?.textContent || ''} : null;
+        });
+      } catch (e) { return {error: String(e).slice(0, 70)}; } finally { await pg.close(); }
+    };
+
+    // ── codex round 28, HIGH 1: a NAMED VIEW changes neither `scene` nor `select` ─────────────
+    // Its measurement against the wait-based design: `Polling timers created: 0 · Copied
+    // /v2/?select=FMA9611 · Reopened view: three-quarter`.
+    const viewRace = await raceOf(`window.atlas.setView('back')`);
+    let vu = null; try { vu = new URL(viewRace.copied); } catch { /* reported below */ }
+    check(vp7.name, `[${S7}] HIGH 1: a named view set in the same task IS in the copied link`,
+      !!vu && vu.searchParams.get('view') === 'back' && viewRace.view === 'back',
+      `controller view=${viewRace.view} · copied view=${vu?.searchParams.get('view') ?? '(absent)'}`
+      + ` · copied=${String(viewRace.copied).slice(0, 90)}`,
+      'view=back — the field the old comparison could not see');
+
+    // ── the removal, which is what the earlier rows measured ──────────────────────────────────
+    const dropRace = await raceOf(
+      `const _ids = window.atlas.state().ids; window.atlas.remove(_ids[_ids.length - 1])`);
+    let du = null; try { du = new URL(dropRace.copied); } catch { /* reported below */ }
+    const copiedIds = (du?.searchParams.get('select') || '').split(',').filter(Boolean);
+    check(vp7.name, `[${S7}] a removal in the same task is in the copied link, with no wait at all`,
+      !!du && copiedIds.join(',') === dropRace.ids.join(',') && du.searchParams.get('scene') === dropRace.blob,
+      `controller=[${dropRace.ids.join(',')}] · copied=[${copiedIds.join(',')}]`
+      + ` · scene matches=${du?.searchParams.get('scene') === dropRace.blob}`,
+      'the copied selection IS the controller selection');
+
+    // ── round 28, MEDIUM 1: reopen it, do not merely read its fields ──────────────────────────
+    const back = du ? await reopen(dropRace.copied) : {error: 'no url'};
+    check(vp7.name, `[${S7}] and the link REOPENS the same controller state — ids, view, lang, scene`,
+      !!back && !back.error && back.ids?.join(',') === dropRace.ids.join(',')
+        && back.view === dropRace.view && back.lang === dropRace.lang && back.blob === dropRace.blob,
+      `reopened ids=[${back?.ids?.join(',') ?? back?.error}] view=${back?.view} lang=${back?.lang}`
+      + ` · scene matches=${back?.blob === dropRace.blob}`,
+      'the same ids, the same view, the same language, the same scene');
+
+    // ── the pending rule: a half-applied arrival has no link ──────────────────────────────────
+    const pending = await page.evaluate(() => {
+      const btn = document.querySelector('.v2-tools [data-act="copy-link"]');
+      const before = {disabled: btn.disabled, ready: document.documentElement.dataset.atlasSceneReady};
+      // A re-drive clears readiness synchronously (`markSceneReady(false)` on the epoch bump).
+      window.atlas.applyScene(window.atlas.state().blob ? `#scene=${window.atlas.state().blob}` : '');
+      return {before, afterReady: document.documentElement.dataset.atlasSceneReady};
+    });
+    check(vp7.name, `[${S7}] the control is enabled only while the view is settled`,
+      pending.before.disabled === false && pending.before.ready === '1',
+      `disabled=${pending.before.disabled} · data-atlas-scene-ready=${pending.before.ready}`,
+      'enabled once the barrier has fired');
 
     /**
      * ── 3. SHARE PLATE: NOT SHIPPED, AND THIS ROW SAYS SO ────────────────────────────────────

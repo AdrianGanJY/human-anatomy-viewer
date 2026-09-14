@@ -138,6 +138,11 @@ function scenario({hash = '', search = '', held = 0, mutate = (s) => s} = {}) {
     useCallback: (f) => f, useRef: (v) => ({current: v}),
     reduce, decodeScene, encodeScene, normalizeScene, sceneSelectIds, sceneFocusId,
     SYSTEMS, isLang, POSE_CMDS, findDeclined, URLSearchParams, console,
+    // S7: the share controls are `disabled` until the barrier, and `dispatch` clears that flag on
+    // an epoch bump exactly where it clears the DOM marker. This suite extracts that function, so
+    // it needs the setter — recorded, not stubbed away: a no-op here would still prove the pose
+    // logic, and nothing in this file asserts readiness.
+    setViewReady: () => {},
     // The overlay state the dispatcher body reads. Nothing is open in these scenarios: this suite
     // is about the POSE, and an open modal would decline every command it measures.
     overlays: {keysOpen: false, settingsOpen: false, findOpen: false, scenesOpen: false,

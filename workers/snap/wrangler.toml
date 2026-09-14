@@ -210,4 +210,8 @@ bucket_name = "human-anatomy-snaps"
 # not deployed anything. Same rule as bc3: the id moves in its own commit, after the commit it is
 # about, and neither bc2 nor bc3 was ever served. Plate-invisible for the same reason (the Worker
 # renders from the scene and never mounts this callback's consumer); the goldens are the proof.
-SITE_BUILD = "l31v21bc5"
+# L31 v2.1b+c S7 (RC2): `app/url-state.ts` changed — the URL serializer was extracted into
+# `buildQuery` so Copy link and the writer share one implementation. The refactor is
+# behaviour-preserving (a unit test asserts the key order and every omission), so no plate should
+# move; the goldens compare after the deploy is what PROVES that rather than assuming it.
+SITE_BUILD = "l31v21bc6"

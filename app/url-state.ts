@@ -26,9 +26,12 @@
  * define, and a warm tab that could not clear them would render the previous request's
  * framing under this request's structures.
  */
-import {DEFAULT_VISIBLE,SYSTEMS,type SceneState,type SystemId,type View} from './anatomy';
-import {isLang,type Lang} from './i18n/ui';
-import {decodeScene,normalizeScene,type Scene} from './scene-model';
+// S7: EXPLICIT EXTENSIONS. Vite resolves either spelling; node's type-stripping resolves only this
+// one, and until now that made this module — the URL contract itself — the one piece of the app no
+// unit test could import. `test/v2-copy-link.test.mjs` imports it.
+import {DEFAULT_VISIBLE,SYSTEMS,type SceneState,type SystemId,type View} from './anatomy.ts';
+import {isLang,type Lang} from './i18n/ui.ts';
+import {decodeScene,normalizeScene,type Scene} from './scene-model.ts';
 export interface UrlState {select?:string[];visible?:SystemId[];isolate?:boolean;view?:View;explode?:number;snap?:boolean;title?:string;note?:string;lang?:Lang;
  /** The decoded scene, when the URL carried one (or enough aliases to synthesize one). */
  scene?:Scene;sceneBlob?:string;
@@ -164,8 +167,34 @@ export interface DisplayFlags{stage?:boolean;probe?:boolean;
   * this changes what its address bar contains after a renderer re-drive.
   */
  clearHash?:boolean}
-/** Mirror the scene into the query string. Defaults are omitted so a plain visit keeps a clean URL. */
-export function writeUrlState(state:SceneState,selectIds:readonly string[],caption:{title?:string;note?:string},lang:Lang='en',flags:DisplayFlags={}){
+/**
+ * L31 v2.1b+c S7 — THE SERIALIZER, AS A PURE FUNCTION. State in, query out. No DOM, no timers,
+ * no module state: every value it uses is an argument.
+ *
+ * ⚠️ IT EXISTS BECAUSE THE ADDRESS BAR IS NOT A SOURCE OF TRUTH. `writeUrlState` is called from a
+ * DEBOUNCED effect, so `location.search` is up to 200 ms behind the controller and is briefly wrong
+ * after every edit. Copy link read it anyway and handed people the previous view; three attempts to
+ * make the read safe by WAITING (a flush, a field comparison, a completion token) each looked right
+ * and each left a hole codex executed — a named view that changed neither `scene` nor `select`, a
+ * failed wait that still announced success, an unspent fragment discarded. A wait cannot fix a
+ * derivation that starts from the wrong place.
+ *
+ * So the control serializes the CONTROLLER'S state through this function instead, and gets exactly
+ * what the writer WOULD write whenever it next runs. One implementation, two callers, no timing.
+ * (Planner ruling, 2026-09-14, after codex rounds 27 and 28.)
+ */
+export interface UrlInputs{
+ state:SceneState;
+ selectIds:readonly string[];
+ caption:{title?:string;note?:string};
+ lang:Lang;
+ flags?:DisplayFlags;
+ /** The scene blob, VERBATIM — never re-encoded here. See the note at the `scene` key below. */
+ blob:string;
+ /** `snap-mode`. The writer passes its module flag; a copied viewer link passes false. */
+ snap:boolean;
+}
+export function buildQuery({state,selectIds,caption,lang,flags={},blob,snap}:UrlInputs):string{
  const p=new URLSearchParams();
  if(selectIds.length)p.set('select',selectIds.join(','));
  if(lang!=='en')p.set('lang',lang);
@@ -173,18 +202,30 @@ export function writeUrlState(state:SceneState,selectIds:readonly string[],capti
  if(state.isolate)p.set('isolate','1');
  if(state.view!=='three-quarter')p.set('view',state.view);
  if(state.explode>0)p.set('explode',state.explode.toFixed(2));
- if(snapOn)p.set('snap','1');
+ if(snap)p.set('snap','1');
  if(caption.title)p.set('title',caption.title);
  if(caption.note)p.set('note',caption.note);
  // The blob is written back VERBATIM, never re-encoded from live state: a plate URL a
  // human copies out of the address bar must reproduce the same picture, and re-deriving
  // it from React state would quietly lose whatever the scene carries but the page does
  // not hold (styles, annotations, background, size).
- if(lastBlob)p.set('scene',lastBlob);
+ if(blob)p.set('scene',blob);
  // LAST, so they read as the trailing state flags they are rather than as part of the scene.
  if(flags.stage)p.set('stage','1');
  if(flags.probe)p.set('probe','1');
- const query=p.toString();
+ return p.toString();
+}
+/** The whole address for a state — what a reader would paste. `flags` defaults to none, which is
+ *  what a SHARED link wants: `stage`/`probe` describe this screen, not the view. */
+export function canonicalUrl(origin:string,path:string,i:UrlInputs):string{
+ const q=buildQuery(i);
+ return `${origin}${path}${q?`?${q}`:''}`;
+}
+/** Mirror the scene into the query string. Defaults are omitted so a plain visit keeps a clean URL. */
+export function writeUrlState(state:SceneState,selectIds:readonly string[],caption:{title?:string;note?:string},lang:Lang='en',flags:DisplayFlags={}){
+ // THE SAME FUNCTION THE COPY CONTROL USES — that is the whole point of the extraction above.
+ // `lastBlob` and `snapOn` are this module's state and are passed IN, so the pure half has none.
+ const query=buildQuery({state,selectIds,caption,lang,flags,blob:lastBlob,snap:snapOn});
  // A spent hash is dropped only when the caller asks AND the hash actually carries one of our keys
  // -- an unrelated fragment (a future anchor link) is not ours to delete.
  //

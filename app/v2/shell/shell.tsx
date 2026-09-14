@@ -184,6 +184,9 @@ export interface ShellProps {
   *  scene through `atlas.plate()`. */
  onCapture(): void;
  onCopyLink(): void;
+ /** S7: false while an arrival is still landing. The share controls are `disabled` then — a link
+  *  serialized from a half-applied controller describes a view nobody has seen. */
+ shareReady: boolean;
  /** Enter presentation mode. S1 bound `Shift+S` and S6 gave the stage a persistent way out, but
   *  ENTERING it had no pointer at all — which on a coarse 1366x1024 desktop means it did not
   *  exist. It lives in the studio's More menu. */
@@ -635,7 +638,12 @@ export default function Shell(p: ShellProps) {
       not the control — and this app has three of them. */}
   <button type="button" className="v2-tbtn" data-act="snapshot" title={tr('keys.snapStage')}
    onClick={p.onCapture}><Ico d={P.camera}/>{tr('nav.snapshot')}</button>
-  <button type="button" className="v2-tbtn" data-act="copy-link" onClick={p.onCopyLink}><Ico d={P.link}/>{tr('nav.link')}</button>
+  {/* ⚠️ A TRUE `disabled` WITH AN ADJACENT REASON, which is the convention S0 drew and S7 kept when
+      it retired the INERT one: "not now, and here is why". While an arrival is landing there is no
+      settled view to link to. */}
+  <button type="button" className="v2-tbtn" data-act="copy-link" disabled={!p.shareReady}
+   title={p.shareReady ? undefined : tr('share.pending')}
+   onClick={p.onCopyLink}><Ico d={P.link}/>{tr('nav.link')}</button>
   {/* ⚠️ 分享图版 IS NOT HERE, AND ITS ABSENCE IS THE FINDING — codex round 27, HIGH 1 and 3.
       `/api/snap` authenticates the SHARED SECRET or an Access JWT for the `anatomy.adrian.my/mcp`
       application (functions/api/snap.js:53-64); it does not read the browser's own
@@ -735,7 +743,9 @@ export default function Shell(p: ShellProps) {
        two surfaces, one callback. `spec.md`'s tablet priority order puts the share group last. */}
    <span className="v2-popsep"/>
    <button type="button" role="menuitem" className="v2-popitem" data-act="snapshot" onClick={p.onCapture}>{tr('nav.snapshot')}</button>
-   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-link" onClick={p.onCopyLink}>{tr('nav.link')}</button>
+   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-link" disabled={!p.shareReady}
+    title={p.shareReady ? undefined : tr('share.pending')}
+    onClick={p.onCopyLink}>{tr('nav.link')}</button>
   </More>
  </div>;
 

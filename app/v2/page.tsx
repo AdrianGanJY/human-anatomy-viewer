@@ -32,7 +32,7 @@ import {dedupe,resolvePicks,sameIds,unionElements} from '../selection';
 import {LANGS,LANG_LABELS,isLang,type Lang} from '../i18n/ui';
 import {loadZhDicts,makeT,type Dicts} from '../i18n/dict';
 import {decodeScene,encodeScene,normalizeScene,sceneFocusId,sceneFrameIds,sceneOpacities,sceneSelectIds,type Role,type Scene} from '../scene-model';
-import {markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
+import {canonicalUrl,markError,markReady,markScene,markSceneReady,markSelected,markSettled,readUrlState,setModes,writeUrlState} from '../url-state';
 import {v2t} from './copy';
 import {initialState, reduce, type Command, type Reason, type V2State} from './controller';
 import RefusalText from './refusal.tsx';
@@ -45,7 +45,7 @@ import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
 // S7: the three share controls' pure half — the filename, the copied URL and the plate URL.
-import {pngBlobFrom,shareLink,snapshotName} from './shell/share.ts';
+import {pngBlobFrom,snapshotName} from './shell/share.ts';
 
 /** THE STATIC SAFE INSET, in CSS pixels. A CONSTANT, never a DOM measurement — the critic's
  *  ruling (build-plan.md:127) and the whole point of item 2 above. Its table collapses to one
@@ -63,6 +63,16 @@ const NO_IDS: string[] = [];
  *  a caller this page does not control, so it needs a value check the TYPE cannot give it. */
 const VIEW_NAMES: View[] = ['three-quarter', 'front', 'side', 'back'];
 const MB = (n: number) => (n / 1048576).toFixed(1);
+/**
+ * S7 — WHICH CAPTION A PAGE HAS, as a pure function of the scene. In scene mode the caption lives
+ * in the scene (and only when it asks to be drawn `in` the view); otherwise it is the legacy
+ * `?title=`/`?note=` pair. Module scope because the render and the copy control both need it and
+ * neither may own it.
+ */
+const captionOf = (scene: Scene | null, legacy: {title?: string; note?: string}) => {
+ if (!scene) return legacy;
+ return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
+};
 
 const baseState: SceneState = {explode: 0, visible: DEFAULT_VISIBLE, selected: [], isolate: false, view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET};
 
@@ -91,10 +101,28 @@ export default function V2() {
  /** The caption a NON-scene page shows. In scene mode the caption lives in the scene and is derived
   *  below, so there is no second copy to fall out of step with an edit. */
  const [legacyCaption, setLegacyCaption] = useState<{title?: string; note?: string}>(() => ({title: url.title, note: url.note}));
- const caption = useMemo(() => {
-  if (!scene) return legacyCaption;
-  return scene.caption.place === 'in' ? {title: scene.caption.title, note: scene.caption.note} : {};
- }, [scene, legacyCaption]);
+ /**
+  * S7 — ONE RULE, TWO READERS. The render uses it through the memo below; `linkForNow` uses it
+  * directly off `ctlRef.current.scene`, because a copy taken between a dispatch and its re-render
+  * must describe the scene the controller holds. A second spelling of "which caption does this
+  * page have" is how the two would come to disagree about what a shared link says.
+  */
+ const caption = useMemo(() => captionOf(scene, legacyCaption), [scene, legacyCaption]);
+ /** Dispatch-fresh companions for `linkForNow`, which runs inside a click and cannot wait for a
+  *  render. `lang` and the legacy caption are React state the controller does not own, so they are
+  *  mirrored here rather than read from a closure that may be one render old. */
+ const legacyCaptionRef = useRef(legacyCaption);
+ legacyCaptionRef.current = legacyCaption;
+ /**
+  * ⚠️ IS THE VIEW ON SCREEN THE ONE THE CONTROLLER DESCRIBES? `markSceneReady` already writes this
+  * to the DOM for the oracles (`data-atlas-scene-ready`); this is the same fact in React, so the
+  * share controls can be `disabled` rather than merely refusing after the click. It is FALSE from
+  * the first paint until the first barrier, and false again on every epoch bump — i.e. exactly
+  * while an arrival is being applied.
+  */
+ const [viewReady, setViewReady] = useState(false);
+ const readyRef = useRef(false);
+ readyRef.current = viewReady;
  /** An edit the controller REFUSED, in words, for the human. Never a silent truncation. Seeded
   *  from the cold arrival, so a link carrying an unusable scene says so instead of half-applying it.
   *
@@ -110,6 +138,10 @@ export default function V2() {
   try { stored = localStorage.getItem('atlas.lang'); } catch { /* private browsing */ }
   return isLang(stored) ? stored : 'en';
  });
+ /** Dispatch-fresh language for `linkForNow`, which runs inside a click and cannot wait for a
+ *  render. `lang` is React state the controller does not own. */
+ const langRef = useRef(lang);
+ langRef.current = lang;
  const [dicts, setDicts] = useState<Dicts>({});
  // The FULL dictionary map goes in, so `t.alt(id, script)` can read a name in a script the
  // interface is not currently in — the accessor v2.1b's cross-script palette needs (G10).
@@ -280,85 +312,18 @@ export default function V2() {
  // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
  // therefore omits the key instead of preserving whatever the URL happened to say.
  /**
-  * ══ THE WRITER, AND ITS COMPLETION TOKEN — S7, codex round 28 ════════════════════════════════
+  * THE URL, MIRRORED FROM THE RENDER, DEBOUNCED. This is the ONLY writer, and it is deliberately
+  * still debounced: it exists so the address bar eventually describes the view, not so anything can
+  * read it back synchronously.
   *
-  * `wanted` is bumped by every effect run that SCHEDULES a write; `wrote` is set to that value by
-  * the write itself. Equal means "the URL is the current state" for the WRITER'S WHOLE shareable
-  * surface — the blob, the selection, the view, the language, the caption, the flags — rather than
-  * for the two fields a reader of this file happened to list.
-  *
-  * ⚠️ THAT LIST IS WHY ROUND 28 FAILED. My first `urlSettled` compared `scene` and `select` only,
-  * so `set-view: back` on a bare selection changed NEITHER and the wait returned instantly:
-  * `Copy pressed 116 ms later · Polling timers created: 0 · Copied /v2/?select=FMA9611 ·
-  * Reopened view: three-quarter`. Language and caption did the same. A completion token cannot
-  * have that bug, because it is not a list.
+  * ⚠️ NOTHING READS `location.search` TO ANSWER "WHAT IS THE CURRENT VIEW?" ANY MORE — planner
+  * ruling, 2026-09-14, after codex rounds 27 and 28. Copy link serializes the CONTROLLER through
+  * `buildQuery`, the same function this line calls, so the two agree by construction instead of by
+  * timing. Three attempts to make the read safe by waiting (a flush, a field comparison, a
+  * completion token) each looked right and each left a hole codex executed; `url-state.ts` carries
+  * the full account beside the function.
   */
- const urlWanted = useRef(0);
- const urlWrote = useRef(0);
- useEffect(() => {
-  if (!atlas) return;
-  const mine = ++urlWanted.current;
-  const timer = setTimeout(() => {
-   writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true});
-   urlWrote.current = mine;
-  }, 200);
-  return () => clearTimeout(timer);
- }, [atlas, state, picks, caption, lang, stage, probeMode]);
-
- /**
-  * ══ S7 — WAIT FOR THE WRITER, NEVER WRITE A SECOND TIME ══════════════════════════════════════
-  *
-  * codex round 27, HIGH 2: the write is debounced by 200 ms and Copy link read `location.href`
-  * immediately, so copying inside that window handed over the PREVIOUS view.
-  *
-  * ⚠️ TWO WRONG FIXES CAME FIRST, and both are worth keeping in view. (1) A FLUSH: a callback
-  * assigned during RENDER closes over that render's `state`/`picks`/`caption`, and `dispatch`
-  * writes `ctlRef.current` synchronously and re-renders after — so it rewrote the URL with exactly
-  * the stale values it was meant to repair. (2) A FIELD COMPARISON on `scene`+`select`, which
-  * returned instantly for any edit those two do not carry (a named view, the language, a caption).
-  *
-  * This waits on the WRITER'S OWN completion token, against a WALL-CLOCK deadline — round 28's
-  * other half: 24 nominal 25 ms delays is not a bound, and codex delivered those timers at 100 ms
-  * intervals for 2,400 ms. `Date.now()` is what a deadline means.
-  *
-  * It returns whether it settled, and the CALLER MUST NOT CLAIM SUCCESS WHEN IT DID NOT — the
-  * third of round 28's findings, and the one that turned a bounded wait into a silent lie.
-  */
- const urlSettled = useCallback(async () => {
-  /**
-   * ⚠️ TWO CONDITIONS, AND THE FIRST IS WHY THE TOKEN ALONE WAS NOT ENOUGH.
-   *
-   * A completion token can only speak for work that has been SCHEDULED. `atlas.remove(id)` and the
-   * click that follows it are one synchronous task: `dispatch` has written `ctlRef.current`, React
-   * has not re-rendered, so the effect that schedules the next write HAS NOT RUN and the token
-   * reads equal. My third wrong version returned instantly on exactly that, and the sweep row
-   * reopened the link and found the removed structure back: `reopened=[5 ids] expected=[4 ids]`.
-   *
-   * So it first waits for the RENDER to catch up with the controller — by object identity, not by
-   * a field list, because a list is what had the original bug — and only then for the writer.
-   */
-  /**
-   * ⚠️ ⚠️ THIS IS NOT PROVEN CORRECT, AND THE GROUP IS PARKED BECAUSE OF IT. Measured on the built
-   * bundle, 2026-09-14, in the sequence the sweep runs (a copy, then an edit, then a copy):
-   *
-   *   prior copy -> clipboard [5 ids], toast "链接已复制"   (correct)
-   *   remove FMA9611 -> atlas.state().ids = [4 ids]
-   *   copy -> toast "链接已复制", but location.href STILL carries [5 ids] at +1200 ms
-   *
-   * So `settled()` returned TRUE over a URL the writer had not yet updated. Both conditions read
-   * true while the address bar was stale, which means one of them does not mean what it says in
-   * that sequence — a re-render that does not re-run the effect, or an effect whose timer is
-   * cleared by a render the toast itself causes. I have not closed that gap, and three earlier
-   * attempts (a flush, a field comparison, a completion token) each looked right and were not.
-   *
-   * The control is therefore NOT trustworthy after a prior copy, nothing here is deployed, and the
-   * next session starts from this measurement rather than from another hypothesis.
-   */
-  const deadline = Date.now() + 1500;
-  const settled = () => renderedCtl.current === ctlRef.current && urlWrote.current === urlWanted.current;
-  while (!settled() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
-  return settled();
- }, []);
+ useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
@@ -442,6 +407,8 @@ export default function V2() {
   document.documentElement.dataset.atlasSceneBytes = String(b.done);
   document.documentElement.dataset.atlasSceneRequests = String(b.requests);
   markSceneReady(true);
+  // S7: the same fact in React, so the share controls can be `disabled` while an arrival lands.
+  setViewReady(true);
   setPhase((p) => (p === 'atlas' ? p : 'scene'));
   sampleBytes();
   emitAtlas({type: 'scene-ready', ms: Math.round(performance.now())});
@@ -516,7 +483,7 @@ export default function V2() {
   if (arrival) setHidden((cur) => (cur.size ? new Set<string>() : cur));
   ctlRef.current = out.state;
   setCtl(out.state);
-  if (out.epoch) { markSceneReady(false); markSettled(false); bumpEpoch(); }
+  if (out.epoch) { markSceneReady(false); setViewReady(false); markSettled(false); bumpEpoch(); }
   return true;
  }, []);
 
@@ -1312,19 +1279,38 @@ export default function V2() {
   } catch { say('share.copyFailed'); return false; }
  }, [say]);
 
- const copyLink = useCallback(async () => {
-  // WAIT FOR THE WRITER, THEN READ WHAT IT WROTE. The URL is this control's source of truth and it
-  // is 200 ms behind the controller by design (codex round 27, HIGH 2).
-  //
-  // ⚠️ AND A FAILED WAIT IS NOT A SUCCESSFUL COPY — codex round 28, HIGH 2. The first version
-  // ignored this boolean and announced `share.copied` over a URL it knew was stale, which is worse
-  // than not copying: the reader has no way to tell. Nothing is written to the clipboard at all in
-  // that case, so an old link cannot be pasted in place of a new one.
-  if (!await urlSettled()) { say('share.copyBusy'); return false; }
+ /**
+  * ══ THE LINK FOR WHAT IS ON SCREEN — SERIALIZED, NOT READ ════════════════════════════════════
+  *
+  * The controller's canonical state through `buildQuery`, which is the function the URL writer
+  * calls. The copied link therefore equals what the writer WOULD write, whenever it next gets
+  * around to it — no flush, no poll, no token, no clock. There is no await in this function and no
+  * timer behind it.
+  *
+  * `flags: {}` because `stage` and `probe` describe THIS screen and not the view, and `snap: false`
+  * because a shared link opens the viewer rather than the chrome-free renderer.
+  */
+ const linkForNow = useCallback(() => {
   const c = ctlRef.current;
-  // The controller's own words, so `shareLink` can tell an AUTHORITATIVE fragment from a spent one.
-  return copy(shareLink(location.href, {scene: c.blob, select: c.picks.join(',')}), 'share.copied');
- }, [copy, urlSettled, say]);
+  return canonicalUrl(location.origin, location.pathname, {
+   state: c.render,
+   selectIds: c.picks,
+   caption: captionOf(c.scene, legacyCaptionRef.current),
+   lang: langRef.current,
+   flags: {},
+   blob: c.blob || (c.scene ? encodeScene(c.scene) : ''),
+   snap: false,
+  });
+ }, []);
+
+ const copyLink = useCallback(() => {
+  // ⚠️ A HALF-APPLIED ARRIVAL IS NOT A VIEW. While the scene is still landing the controller holds
+  // an intermediate state, and a link serialized from it describes something nobody has seen. The
+  // control is `disabled` for the same reason; this is the second half of the same rule, because a
+  // keyboard activation and `window.atlas` both reach the handler without passing the attribute.
+  if (!readyRef.current) { say('share.pending'); return false; }
+  return copy(linkForNow(), 'share.copied');
+ }, [copy, linkForNow, say]);
 
 
 
@@ -1701,7 +1687,7 @@ export default function V2() {
    tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
    // S7: the three that shipped inert. The page owns them because two need the controller and the
    // third needs the capture hook — the shell owns the buttons, as it does for Find.
-   onCapture={snapshot} onCopyLink={copyLink}
+   onCapture={snapshot} onCopyLink={copyLink} shareReady={viewReady}
    onStage={() => setStage(true)}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────
@@ -1955,7 +1941,9 @@ export default function V2() {
          on this row deliberately: it is a 30-second cold render behind Access, which is a studio
          act, and the copied link already carries the whole view. */}
      <button type="button" data-act="snapshot" onClick={() => snapshot()}>{tr('nav.snapshot')}</button>
-     <button type="button" data-act="copy-link" onClick={() => { void copyLink(); }}>{tr('nav.link')}</button>
+     <button type="button" data-act="copy-link" disabled={!viewReady}
+      title={viewReady ? undefined : tr('share.pending')}
+      onClick={() => { copyLink(); }}>{tr('nav.link')}</button>
     </div>
 
     {/* ⚠️ S3: THE VIEWS ROW AND THE DESCRIPTION STAND DOWN WHILE THE LAYERS PANEL IS OPEN, and that

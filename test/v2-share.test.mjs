@@ -8,8 +8,7 @@
  *  · the SNAPSHOT's filename — a name is the only thing a downloaded PNG carries into the folder it
  *    lands in, and a title with a slash in it writes to a DIRECTORY that does not exist (or, on the
  *    browsers that tolerate it, silently truncates to the segment after the last separator).
- *  · the COPY LINK's URL — it has to be the scene the reader is looking at, and it must not carry
- *    the presentation flags, which are about THIS session's screen and not about the view.
+ *  · the COPY LINK moved to `test/v2-copy-link.test.mjs` when it stopped reading the address bar.
  *  · the PLATE was REMOVED after codex round 27 — see the note where its assertions were.
  *
  * The DOM halves (a real download, a real clipboard, a real new tab) are the sweep's, not this
@@ -19,7 +18,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {pngBlobFrom, shareLink, snapshotName} from '../app/v2/shell/share.ts';
+import {pngBlobFrom, snapshotName} from '../app/v2/shell/share.ts';
 
 const AT = new Date(Date.UTC(2026, 8, 14, 3, 7, 9));
 /** The local stamp is what a reader compares against their own clock, so the expectation has to be
@@ -64,69 +63,13 @@ test('a title longer than the cap is truncated, and still carries its stamp', ()
   assert.ok(name.endsWith(`-${STAMP}.png`), name);
 });
 
-// ── the copy link ────────────────────────────────────────────────────────────────────────────
-
-test('the copied link is the address the page has written for its scene', () => {
-  assert.equal(shareLink('https://anatomy.adrian.my/v2/?select=FMA1,FMA2&lang=zh-Hans&scene=abc'),
-    'https://anatomy.adrian.my/v2/?select=FMA1,FMA2&lang=zh-Hans&scene=abc');
-});
-
-test('the copied link drops the presentation flags, which are about this screen and not the view', () => {
-  assert.equal(shareLink('https://h/v2/?select=FMA1&scene=abc&stage=1&probe=1'),
-    'https://h/v2/?select=FMA1&scene=abc');
-});
-
-test('the copied link drops a spent scene hash that would outrank its own query', () => {
-  // WITH THE CONTROLLER'S WORD FOR IT (codex round 28): the query matches what the page is showing,
-  // so the fragment is the spent one. Without `live` the same string is ambiguous — see the
-  // authoritative-fragment row below — and the conservative reading keeps it.
-  const live = {scene: 'new', select: 'FMA1'};
-  assert.equal(shareLink('https://h/v2/?select=FMA1&scene=new#scene=old', live),
-    'https://h/v2/?select=FMA1&scene=new');
-});
-
-test('a spent hash is recognised through the parser, not through the raw text', () => {
-  assert.equal(shareLink('https://h/v2/?scene=new#%73cene=old', {scene: 'new'}), 'https://h/v2/?scene=new');
-});
-
-test('a fragment that is not ours is left alone', () => {
-  assert.equal(shareLink('https://h/v2/?scene=new#section-2'), 'https://h/v2/?scene=new#section-2');
-});
-
-test('a bare visit copies as a bare visit', () => {
-  assert.equal(shareLink('https://h/v2/'), 'https://h/v2/');
-});
-
-test('an UNSPENT scene hash is kept — stripping it would copy a link to nothing', () => {
-  // codex round 27, HIGH 2, second half: a page can arrive with `#scene=<blob>` BEFORE the
-  // debounced writer has mirrored it into the query. Dropping the fragment there hands the
-  // recipient `https://h/v2/` — a link to an empty app — and the copier cannot tell.
-  // A fragment is only SPENT once the query carries a scene of its own.
-  assert.equal(shareLink('https://h/v2/#scene=live'), 'https://h/v2/#scene=live');
-  assert.equal(shareLink('https://h/v2/#%73cene=live'), 'https://h/v2/#%73cene=live');
-  // …and with the query mirroring it, the fragment is spent and goes.
-  assert.equal(shareLink('https://h/v2/?scene=live#scene=live'), 'https://h/v2/?scene=live');
-});
-
-test('a selection-only visit keeps a hash that carries the only selection', () => {
-  assert.equal(shareLink('https://h/v2/#select=FMA1'), 'https://h/v2/#select=FMA1');
-});
-
-test('a fragment carrying a DIFFERENT scene than the query is the authoritative one, and survives', () => {
-  // codex round 28, HIGH 2: presence is not currency. A cold arrival can carry `?scene=<old>` from
-  // a previous write AND `#scene=<new>` as the authoritative arrival; the fragment wins on reload.
-  // Dropping it because the query merely HAS a `scene` key restored the old scene — codex executed
-  // the whole chain: `Copied fragment: absent · Reopened scene: [FMA7485, FMA9611]` against a
-  // controller holding `[FMA7485]`.
-  assert.equal(shareLink('https://h/v2/?scene=old#scene=new'), 'https://h/v2/?scene=old#scene=new');
-  assert.equal(shareLink('https://h/v2/?scene=old#%73cene=new'), 'https://h/v2/?scene=old#%73cene=new');
-  // Same VALUE — spent, and it goes.
-  assert.equal(shareLink('https://h/v2/?scene=same#scene=same'), 'https://h/v2/?scene=same');
-  // Every owned key must agree, not just one of them.
-  assert.equal(shareLink('https://h/v2/?scene=s&select=A#scene=s&select=B'),
-    'https://h/v2/?scene=s&select=A#scene=s&select=B');
-  assert.equal(shareLink('https://h/v2/?scene=s&select=A#scene=s&select=A'), 'https://h/v2/?scene=s&select=A');
-});
+// ── the copy link: MOVED, and the move is the record ────────────────────────────────────────
+//
+// Nine assertions about `shareLink` lived here — session flags stripped, a spent fragment dropped,
+// an unspent one kept, a percent-encoded key recognised. All of them were about adjudicating the
+// ADDRESS BAR, and the planner ruled that out after codex rounds 27 and 28: Copy link serializes
+// the controller through `buildQuery` now. The sequences those rows were groping at are in
+// `test/v2-copy-link.test.mjs`, stated against the real reducer.
 
 // ── the captured bitmap, as a file ───────────────────────────────────────────────────────────
 

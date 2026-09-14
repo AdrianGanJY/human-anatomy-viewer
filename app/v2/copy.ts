@@ -690,9 +690,11 @@ export const V2: Record<string, Row> = {
  // context, which is also what the field's own recovery banner is about.
  'share.shotFailed': {en: 'The view could not be captured — reload if the 3D session was paused', 'zh-Hans': '无法截取当前视图 — 若 3D 会话已暂停，请重新载入', 'zh-Hant': '無法擷取目前檢視 — 若 3D 工作階段已暫停，請重新載入'},
  'share.copied':   {en: 'Link copied', 'zh-Hans': '链接已复制', 'zh-Hant': '連結已複製'},
- // THE WAIT THAT DID NOT SETTLE (codex round 28). Nothing is copied in that case — announcing a
- // copy over a URL known to be stale is worse than not copying, because the reader cannot tell.
- 'share.copyBusy': {en: 'The view is still saving — press again in a moment', 'zh-Hans': '视图还在保存中 — 请稍候再按一次', 'zh-Hant': '檢視還在儲存中 — 請稍候再按一次'},
+ // ⚠️ THE PENDING STATE IS A REAL `disabled` WITH A REASON, not a message after the fact. While an
+ // arrival is landing the controller holds an intermediate state, and a link serialized from it
+ // describes a view nobody has seen. (The S7 `share.copyBusy` string this replaced belonged to a
+ // wait-based design the planner ruled out — `git show 3a923c8` has it.)
+ 'share.pending':  {en: 'Wait for the view to load', 'zh-Hans': '请等待视图载入', 'zh-Hant': '請等待檢視載入'},
  // TELLS THE READER WHERE THE LINK IS ANYWAY. A clipboard write can be refused by permission
  // policy, and a bare "failed" leaves a reader who can simply read it off the address bar stuck.
  'share.copyFailed': {en: 'Could not copy — the link is in the address bar', 'zh-Hans': '复制失败 — 链接就在地址栏里', 'zh-Hant': '複製失敗 — 連結就在網址列裡'},
