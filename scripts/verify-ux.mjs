@@ -7221,36 +7221,54 @@ if (variant === 'v2') {
       `reopened blob=${String(round).slice(0, 40)}… · original=${here.blob.slice(0, 40)}…`,
       'the same scene blob');
 
-    // ── 3. SHARE PLATE ────────────────────────────────────────────────────────────────────────
-    const plateBtn = await named('plate');
-    const opened = ctx.waitForEvent('page', {timeout: 10000}).catch(() => null);
-    if (plateBtn) await page.mouse.click(plateBtn.x, plateBtn.y);
     /**
-     * ⚠️ A NEW TAB'S `url()` IS `about:blank` UNTIL IT NAVIGATES. The `page` event fires when the
-     * target is CREATED, not when it has been given its address — so the first version of this row
-     * read an empty string and called a working control broken (`url=`, twice, on a sweep whose
-     * other five S7 rows all passed). The wait is bounded and soft: a genuinely dead control still
-     * reports `about:blank`, which fails the assertion below with its real measurement.
+     * ⚠️ COPY IMMEDIATELY AFTER AN EDIT — codex round 27, HIGH 2, as a browser row.
+     *
+     * `writeUrlState` is debounced by 200 ms, and Copy link reads `location.href`. codex executed
+     * the real reducer and writer and got `copied before debounce: [FMA7485, FMA9611]` against
+     * `current picks: [FMA7485]`: the control silently handed over the PREVIOUS view. The fix is a
+     * flush before the read, and the only honest test of it is to copy INSIDE the window.
      */
-    const tab = await opened;
-    if (tab) {
-      await tab.waitForURL((u) => String(u) !== 'about:blank', {timeout: 8000}).catch(() => {});
-      await tab.waitForLoadState('domcontentloaded').catch(() => {});
-    }
-    const plateUrl = tab ? tab.url() : '';
-    let pu = null; try { pu = new URL(plateUrl); } catch { /* reported below */ }
-    check(vp7.name, `[${S7}] 分享图版 opens the plate for the CONTROLLER's scene`,
-      !!pu && pu.pathname === '/api/snap' && pu.searchParams.get('scene') === here.blob
-        && pu.searchParams.get('snap') === '1' && (pu.searchParams.get('select') || '').length > 0,
-      `url=${plateUrl.slice(0, 140)}`,
-      '/api/snap with this scene, select and snap=1');
-    // The language is the one the reader is in — /api/snap defaults to English, so a Chinese reader
-    // who shared a plate shipped an English picture of their Chinese view.
-    check(vp7.name, `[${S7}] the plate URL carries the reader's language`,
-      !!pu && (here.lang === 'en' ? !pu.searchParams.has('lang') : pu.searchParams.get('lang') === here.lang),
-      `ui lang=${here.lang} · plate lang=${pu?.searchParams.get('lang') ?? '(absent)'}`,
-      'absent in English, explicit otherwise');
-    if (tab) await tab.close();
+    const race = await page.evaluate(async () => {
+      const before = window.atlas.state().ids.slice();
+      const dropped = before[before.length - 1];
+      window.atlas.remove(dropped);
+      // NO WAIT. The whole point is to read the clipboard inside the 200 ms the writer is waiting.
+      document.querySelector('.v2-tools [data-act="copy-link"]').click();
+      await new Promise((r) => setTimeout(r, 120));
+      let copied = '';
+      try { copied = await navigator.clipboard.readText(); } catch (e) { copied = `ERR:${e}`; }
+      return {dropped, after: window.atlas.state().ids.slice(), copied,
+        blob: window.atlas.state().blob};
+    });
+    let ru = null; try { ru = new URL(race.copied); } catch { /* reported below */ }
+    const copiedIds = (ru?.searchParams.get('select') || '').split(',').filter(Boolean);
+    check(vp7.name, `[${S7}] copying INSIDE the 200 ms debounce copies the CURRENT view, not the previous one`,
+      !!ru && !copiedIds.includes(race.dropped) && copiedIds.length === race.after.length
+        && ru.searchParams.get('scene') === race.blob,
+      `removed=${race.dropped} · now=[${race.after.join(',')}] · copied select=[${copiedIds.join(',')}]`
+      + ` · scene matches=${ru?.searchParams.get('scene') === race.blob}`,
+      'the structure just removed is absent from the copied link');
+
+    /**
+     * ── 3. SHARE PLATE: NOT SHIPPED, AND THIS ROW SAYS SO ────────────────────────────────────
+     *
+     * codex round 27, HIGH 1: `/api/snap` authenticates the shared secret or an Access JWT for the
+     * `anatomy.adrian.my/mcp` application (functions/api/snap.js:53-64). It does NOT read the
+     * browser's own `CF_Authorization` cookie — a different audience — so the control opened a tab
+     * on a 401 for the one person who pressed it.
+     *
+     * ⚠️ AND THIS SUITE COULD NOT HAVE CAUGHT IT, which is the part worth keeping: the block above
+     * INTERCEPTS `/api/snap` and unconditionally answers a PNG, so every plate row it ran was a
+     * test of my own stub. A mocked endpoint cannot report an auth boundary. The assertion left
+     * behind is therefore about ABSENCE — if a plate control reappears without a browser route,
+     * this goes red.
+     */
+    const plateGone = await page.evaluate(() =>
+      document.querySelectorAll('[data-act="plate"], [data-act="copy-plate"]').length);
+    check(vp7.name, `[${S7}] no Share-plate control ships: /api/snap has no browser route (round 27, HIGH 1)`,
+      plateGone === 0, `plate controls in the DOM=${plateGone}`,
+      '0 until a browser-authenticated route exists — the mocked /api/snap here cannot prove one');
   } catch (e) {
     check(vp7.name, `[${S7}] the share pass ran`, false, String(e).slice(0, 200), 'no throw');
   } finally {

@@ -693,14 +693,10 @@ export const V2: Record<string, Row> = {
  // TELLS THE READER WHERE THE LINK IS ANYWAY. A clipboard write can be refused by permission
  // policy, and a bare "failed" leaves a reader who can simply read it off the address bar stuck.
  'share.copyFailed': {en: 'Could not copy — the link is in the address bar', 'zh-Hans': '复制失败 — 链接就在地址栏里', 'zh-Hant': '複製失敗 — 連結就在網址列裡'},
- 'share.plateOpen':  {en: 'Open plate', 'zh-Hans': '打开图版', 'zh-Hant': '開啟圖版'},
- 'share.plateCopy':  {en: 'Copy plate link', 'zh-Hans': '复制图版链接', 'zh-Hant': '複製圖版連結'},
- 'share.plateCopied':{en: 'Plate link copied', 'zh-Hans': '图版链接已复制', 'zh-Hant': '圖版連結已複製'},
- // THE COLD RENDER, SAID OUT LOUD. The first plate after a build is rendered by Browser Rendering
- // rather than served from the cache, and a reader staring at a blank tab for half a minute with no
- // explanation concludes the control is broken.
- 'share.plateCold':  {en: 'Rendering the plate — the first one after an update takes about 30 seconds', 'zh-Hans': '正在渲染图版 — 更新后的第一张约需 30 秒', 'zh-Hant': '正在算繪圖版 — 更新後的第一張約需 30 秒'},
- 'share.plateNone':  {en: 'Select a structure first — a plate is a picture of a view', 'zh-Hans': '请先选择结构 — 图版是某个视图的图片', 'zh-Hant': '請先選擇結構 — 圖版是某個檢視的圖片'},
+ // ⚠️ THE FIVE `share.plate*` STRINGS WERE REMOVED WITH THEIR CONTROLS (codex round 27, HIGH 1):
+ // `/api/snap` cannot be opened by a browser, so there was nothing for them to label. They are not
+ // archived here as dead rows — `git show 7446f6f -- app/v2/copy.ts` has them if the plate ever
+ // gets a browser route.
 };
 
 /**

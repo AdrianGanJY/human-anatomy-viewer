@@ -184,8 +184,6 @@ export interface ShellProps {
   *  scene through `atlas.plate()`. */
  onCapture(): void;
  onCopyLink(): void;
- onOpenPlate(): void;
- onCopyPlate(): void;
  /** Enter presentation mode. S1 bound `Shift+S` and S6 gave the stage a persistent way out, but
   *  ENTERING it had no pointer at all — which on a coarse 1366x1024 desktop means it did not
   *  exist. It lives in the studio's More menu. */
@@ -638,8 +636,18 @@ export default function Shell(p: ShellProps) {
   <button type="button" className="v2-tbtn" data-act="snapshot" title={tr('keys.snapStage')}
    onClick={p.onCapture}><Ico d={P.camera}/>{tr('nav.snapshot')}</button>
   <button type="button" className="v2-tbtn" data-act="copy-link" onClick={p.onCopyLink}><Ico d={P.link}/>{tr('nav.link')}</button>
-  <button type="button" className="v2-tbtn" data-act="plate" title={tr('share.plateCold')}
-   onClick={p.onOpenPlate}><Ico d={P.plate}/>{tr('nav.plate')}</button>
+  {/* ⚠️ 分享图版 IS NOT HERE, AND ITS ABSENCE IS THE FINDING — codex round 27, HIGH 1 and 3.
+      `/api/snap` authenticates the SHARED SECRET or an Access JWT for the `anatomy.adrian.my/mcp`
+      application (functions/api/snap.js:53-64); it does not read the browser's own
+      `CF_Authorization` cookie, which is a different audience. codex executed the production
+      endpoint with locally signed tokens: a valid browser cookie returns 401 and renders nothing.
+      So the control would have opened a tab on an error page for the one person who pressed it —
+      and my sweep could not see it, because it INTERCEPTS `/api/snap` and always answers a PNG.
+      The plate is an AGENT surface (the MCP holds the right credential). Giving a browser reader
+      one needs a decision Adrian owns (may a site-authenticated browser spend Browser Rendering
+      minutes?) plus a `canonical()` change in `workers/snap/src/helpers.mjs`, which is in
+      `renderPaths` and would move every cache key. That is not an S7 line item; it is escalated,
+      named, with an owner. `atlas.plate()` is untouched and the MCP path is unaffected. */}
   {/* THE COARSE DESKTOP'S SCENES TRIGGER (codex round 24, Medium 3). At >=1180 with a fine pointer
       the snapshots are the status strip's tabs; on a coarse pointer those tabs are refused as
       28 px targets and this 44 px button is what replaces them. */}
@@ -651,7 +659,6 @@ export default function Shell(p: ShellProps) {
       Scenes is here for the same reason it is in the tablet's More. */}
   <More label={tr('nav.more')}>
    <button type="button" role="menuitem" className="v2-popitem" data-act="stage" onClick={p.onStage}>{tr('nav.stage')}</button>
-   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-plate" onClick={p.onCopyPlate}>{tr('share.plateCopy')}</button>
    <span className="v2-popsep"/>
    <button type="button" role="menuitem" className="v2-popitem" onClick={() => p.onScenes(true)}>{tr('tabs.short')}</button>
   </More>
@@ -729,8 +736,6 @@ export default function Shell(p: ShellProps) {
    <span className="v2-popsep"/>
    <button type="button" role="menuitem" className="v2-popitem" data-act="snapshot" onClick={p.onCapture}>{tr('nav.snapshot')}</button>
    <button type="button" role="menuitem" className="v2-popitem" data-act="copy-link" onClick={p.onCopyLink}>{tr('nav.link')}</button>
-   <button type="button" role="menuitem" className="v2-popitem" data-act="plate" onClick={p.onOpenPlate}>{tr('nav.plate')}</button>
-   <button type="button" role="menuitem" className="v2-popitem" data-act="copy-plate" onClick={p.onCopyPlate}>{tr('share.plateCopy')}</button>
   </More>
  </div>;
 

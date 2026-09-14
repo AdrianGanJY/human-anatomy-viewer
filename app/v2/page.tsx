@@ -45,7 +45,7 @@ import Tree from './shell/tree.tsx';
 import FindPalette from './shell/find.tsx';
 import {useShell} from './shell/use-shell.ts';
 // S7: the three share controls' pure half — the filename, the copied URL and the plate URL.
-import {plateLink,pngBlobFrom,shareLink,snapshotName} from './shell/share.ts';
+import {pngBlobFrom,shareLink,snapshotName} from './shell/share.ts';
 
 /** THE STATIC SAFE INSET, in CSS pixels. A CONSTANT, never a DOM measurement — the critic's
  *  ruling (build-plan.md:127) and the whole point of item 2 above. Its table collapses to one
@@ -63,19 +63,6 @@ const NO_IDS: string[] = [];
  *  a caller this page does not control, so it needs a value check the TYPE cannot give it. */
 const VIEW_NAMES: View[] = ['three-quarter', 'front', 'side', 'back'];
 const MB = (n: number) => (n / 1048576).toFixed(1);
-/**
- * S7 — THE PLATE FOR WHAT IS ON SCREEN, from the CONTROLLER's own scene. Module scope on purpose:
- * both callers (the `atlas.plate()` tool surface and the toolbar's Share-plate control) read the
- * same refs, and a second spelling of this string is exactly how a tool and a button come to
- * disagree about what "this view" means.
- */
-const plateUrlOf = (c: {blob: string; scene: Scene | null; picks: string[]}, lang: Lang) =>
- plateLink({
-  origin: location.origin,
-  blob: c.blob || (c.scene ? encodeScene(c.scene) : ''),
-  ids: c.picks,
-  lang,
- });
 
 const baseState: SceneState = {explode: 0, visible: DEFAULT_VISIBLE, selected: [], isolate: false, view: 'three-quarter', rotate: false, reset: 0, insets: FIELD_INSET};
 
@@ -292,7 +279,22 @@ export default function V2() {
  // `stage` and `probeMode` are passed EXPLICITLY, which is what makes them survive the debounced
  // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
  // therefore omits the key instead of preserving whatever the URL happened to say.
- useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
+ /**
+  * ⚠️ S7 — THE WRITE IS NAMED NOW, BECAUSE SOMETHING HAS TO BE ABLE TO FLUSH IT (codex round 27,
+  * HIGH 2). It is debounced by 200 ms, and Copy link read `location.href` immediately: codex
+  * executed the real reducer and writer and got `copied before debounce: [FMA7485, FMA9611]`
+  * against `current picks: [FMA7485]` — the control silently handed over the PREVIOUS view.
+  *
+  * A ref rather than a dependency, because the flush is called from a callback that must not be
+  * rebuilt on every transaction, and the debounce is deliberately left in place: the flush is for
+  * the one caller that needs the URL to be true RIGHT NOW.
+  */
+ const writeUrlNow = useRef(() => {});
+ writeUrlNow.current = () => {
+  if (!atlas) return;
+  writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true});
+ };
+ useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlNow.current(), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
  const plate = useMemo(() => {
@@ -546,13 +548,19 @@ export default function V2() {
    const c = ctlRef.current;
    const blob = c.blob || (c.scene ? encodeScene(c.scene) : '');
    const ids = c.picks;
-   // S7: THROUGH `plateUrlOf`, which adds the reader's LANGUAGE. `/api/snap` defaults `lang` to
-   // `en` (workers/snap/src/helpers.mjs:145), so every plate a 简体 reader shared was an English
-   // picture of their Chinese view. English is byte-identical to the spelling this line used to
-   // build, so no existing caller of `atlas.plate()` sees a different string. ONE builder, shared
-   // with the toolbar's Share-plate control: a tool surface and a button that can disagree about
-   // what "this view's plate" means is the drift this project keeps paying for.
-   return {blob, ids, url: plateUrlOf(ctlRef.current, live.current.lang)};
+   /**
+    * ⚠️ UNCHANGED, AND S7 PUT IT BACK — codex round 27, HIGH 3. S7 briefly routed this through a
+    * builder that appended the UI language, on the reading that `/api/snap` defaults `lang` to
+    * `en`. codex executed the Worker's own `canonical()`: with `scene=` present it keeps only
+    * `['scene','select','size']` (helpers.mjs:26,36), so the key is DROPPED before rendering — the
+    * language of a scene plate lives INSIDE the blob, which is correct, and the query key was an
+    * addition that could not do what its comment claimed. Byte-identical is the honest state.
+    *
+    * Two real gaps stay NAMED rather than silently carried: this URL omits the current named VIEW
+    * for a bare selection (the renderer then uses `three-quarter`), and `/api/snap` cannot be
+    * opened by a browser at all (HIGH 1). Both are the plate's, not this increment's.
+    */
+   return {blob, ids, url: `${location.origin}/api/snap?select=${ids.join(',')}${blob ? `&scene=${blob}` : ''}&snap=1`};
   },
   state: (): AtlasState => {
    const l = live.current, c = ctlRef.current;
@@ -1111,6 +1119,12 @@ export default function V2() {
   *
   * `scale: 2` is the real supersample. The first version passed `1`, which clamps to `MIN_SCALE`
   * and supersamples nothing, under a comment that claimed it did.
+  *
+  * ⚠️ AND IT IS 2, NOT 3 — codex round 27, LOW 1. S7's kickoff and its first commit message both
+  * called this "the same 3x supersampled path the renderer uses". The RENDERER asks for 3; this
+  * call asks for 2, and always has. The hook is genuinely the same hook — that half of the claim
+  * holds, and no plate is affected — but the number was wrong, and correcting it here is cheaper
+  * than leaving the next reader to re-derive it.
   */
  /**
   * ── S7: THE ONE FLEETING MESSAGE ──────────────────────────────────────────────────────────────
@@ -1226,34 +1240,14 @@ export default function V2() {
   } catch { say('share.copyFailed'); return false; }
  }, [say]);
 
- const copyLink = useCallback(() => copy(shareLink(location.href), 'share.copied'), [copy]);
+ const copyLink = useCallback(() => {
+  // FLUSH BEFORE READING. The URL is the source of truth for this control and it is 200 ms behind
+  // the controller by design; without this, copying inside that window shares the previous scene
+  // (codex round 27, HIGH 2, with an executed counterexample).
+  writeUrlNow.current();
+  return copy(shareLink(location.href), 'share.copied');
+ }, [copy]);
 
- /** The plate for what is on screen. `atlas.plate()` is the one builder — the control and the tool
-  *  surface must not be able to disagree about what "this view's plate" means. */
- const plateOf = useCallback(() => {
-  const c = ctlRef.current;
-  // A PLATE OF NOTHING IS A PICTURE OF NOTHING. `/api/snap` requires `select` and answers 400
-  // without it (workers/snap/src/index.mjs:133), so an empty selection would open a tab on an
-  // error page — the control saying nothing while appearing to work.
-  if (!c.picks.length) { say('share.plateNone'); return null; }
-  return plateUrlOf(c, live.current.lang);
- }, [say]);
-
- const openPlate = useCallback(() => {
-  const url = plateOf();
-  if (!url) return;
-  // COLD-RENDER HONESTY: the first request after a `SITE_BUILD` bump is a real Browser Rendering
-  // run, not a cache hit, and it takes about half a minute. A reader watching a blank tab with no
-  // explanation concludes the control is broken.
-  say('share.plateCold');
-  // `noopener` on a gated origin: the plate is a picture, it has no business reaching back.
-  window.open(url, '_blank', 'noopener,noreferrer');
- }, [plateOf, say]);
-
- const copyPlate = useCallback(() => {
-  const url = plateOf();
-  if (url) void copy(url, 'share.plateCopied');
- }, [plateOf, copy]);
 
 
  /**
@@ -1629,7 +1623,7 @@ export default function V2() {
    tabs={shell.tabs} tabsFull={shell.tabsFull} onSnapshot={snapshotScene} onApplyTab={applyTab}
    // S7: the three that shipped inert. The page owns them because two need the controller and the
    // third needs the capture hook — the shell owns the buttons, as it does for Find.
-   onCapture={snapshot} onCopyLink={copyLink} onOpenPlate={openPlate} onCopyPlate={copyPlate}
+   onCapture={snapshot} onCopyLink={copyLink}
    onStage={() => setStage(true)}
   />}
   {/* ── THE FIND PALETTE (S2) — HOSTED AT EVERY WIDTH, for the same reason the key map is ────────

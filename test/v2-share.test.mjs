@@ -10,8 +10,7 @@
  *    browsers that tolerate it, silently truncates to the segment after the last separator).
  *  · the COPY LINK's URL — it has to be the scene the reader is looking at, and it must not carry
  *    the presentation flags, which are about THIS session's screen and not about the view.
- *  · the PLATE's URL — `/api/snap` defaults `lang` to `en` (workers/snap/src/helpers.mjs:145), so a
- *    简体 reader who shares a plate today ships an ENGLISH picture of their Chinese view.
+ *  · the PLATE was REMOVED after codex round 27 — see the note where its assertions were.
  *
  * The DOM halves (a real download, a real clipboard, a real new tab) are the sweep's, not this
  * file's: they need a browser, and `scripts/verify-ux.mjs` has one.
@@ -20,7 +19,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync, readdirSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
-import {pngBlobFrom, plateLink, shareLink, snapshotName} from '../app/v2/shell/share.ts';
+import {pngBlobFrom, shareLink, snapshotName} from '../app/v2/shell/share.ts';
 
 const AT = new Date(Date.UTC(2026, 8, 14, 3, 7, 9));
 /** The local stamp is what a reader compares against their own clock, so the expectation has to be
@@ -94,6 +93,21 @@ test('a bare visit copies as a bare visit', () => {
   assert.equal(shareLink('https://h/v2/'), 'https://h/v2/');
 });
 
+test('an UNSPENT scene hash is kept — stripping it would copy a link to nothing', () => {
+  // codex round 27, HIGH 2, second half: a page can arrive with `#scene=<blob>` BEFORE the
+  // debounced writer has mirrored it into the query. Dropping the fragment there hands the
+  // recipient `https://h/v2/` — a link to an empty app — and the copier cannot tell.
+  // A fragment is only SPENT once the query carries a scene of its own.
+  assert.equal(shareLink('https://h/v2/#scene=live'), 'https://h/v2/#scene=live');
+  assert.equal(shareLink('https://h/v2/#%73cene=live'), 'https://h/v2/#%73cene=live');
+  // …and with the query mirroring it, the fragment is spent and goes.
+  assert.equal(shareLink('https://h/v2/?scene=live#scene=live'), 'https://h/v2/?scene=live');
+});
+
+test('a selection-only visit keeps a hash that carries the only selection', () => {
+  assert.equal(shareLink('https://h/v2/#select=FMA1'), 'https://h/v2/#select=FMA1');
+});
+
 // ── the captured bitmap, as a file ───────────────────────────────────────────────────────────
 
 test('a captured data URL becomes a PNG blob, decoded here rather than fetched', () => {
@@ -112,27 +126,13 @@ test('a data URL that is not a PNG is refused rather than mislabelled', () => {
   assert.equal(pngBlobFrom('https://h/x.png'), null);
 });
 
-// ── the plate ────────────────────────────────────────────────────────────────────────────────
-
-test('the plate link is the one the renderer answers, and it is unchanged in English', () => {
-  assert.equal(plateLink({origin: 'https://h', ids: ['FMA1', 'FMA2'], blob: 'abc', lang: 'en'}),
-    'https://h/api/snap?select=FMA1,FMA2&scene=abc&snap=1');
-});
-
-test('the plate link carries the reader language, because /api/snap defaults to English', () => {
-  assert.equal(plateLink({origin: 'https://h', ids: ['FMA1'], blob: 'abc', lang: 'zh-Hant'}),
-    'https://h/api/snap?select=FMA1&scene=abc&snap=1&lang=zh-Hant');
-});
-
-test('a plate of a bare selection carries no scene', () => {
-  assert.equal(plateLink({origin: 'https://h', ids: ['FMA1'], blob: '', lang: 'en'}),
-    'https://h/api/snap?select=FMA1&snap=1');
-});
-
-test('the plate link carries a size when one is asked for', () => {
-  assert.equal(plateLink({origin: 'https://h', ids: ['FMA1'], blob: '', lang: 'en', size: '1200x900'}),
-    'https://h/api/snap?select=FMA1&snap=1&size=1200x900');
-});
+// ── the plate: REMOVED, and the removal is the record ────────────────────────────────────────
+//
+// S7's plate builder and its four assertions are gone. codex round 27 executed the production
+// endpoint and the Worker's canonicaliser and showed the control could not work for the person
+// pressing it (401 for a browser cookie) and that its `lang` key never reached rendering. The
+// remaining plate URL is `atlas.plate()`'s, unchanged since before this increment, and
+// `verify-regress` case 7 is still its test.
 
 // ── the inert convention, at its expiry date ─────────────────────────────────────────────────
 
@@ -149,14 +149,22 @@ const SRC = fileURLToPath(new URL('../app/v2/', import.meta.url));
 const sources = (dir) => readdirSync(dir, {withFileTypes: true}).flatMap((e) =>
   e.isDirectory() ? sources(`${dir}${e.name}/`) : /\.tsx?$/.test(e.name) ? [`${dir}${e.name}`] : []);
 
+/** Blank out comment CONTENTS, keeping every newline so line numbers survive. `[^:]` before `//`
+ *  is what stops `https://…` inside a string from eating the rest of its line. */
+const stripComments = (text) => text
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  .replace(/(^|[^:])\/\/[^\n]*/g, (m, lead) => lead + ' '.repeat(m.length - lead.length));
+
 test('no control in v2 is still a placeholder — the inert convention is spent', () => {
   const found = [];
   for (const file of sources(SRC)) {
-    const text = readFileSync(file, 'utf8');
+    // ⚠️ COMMENT CONTENTS ARE BLANKED, LINES ARE NOT SKIPPED — codex round 27, MEDIUM 1, with an
+    // executed counterexample: `/* pending */ const X = () => <button className="v2-inert"…` on ONE
+    // line defeated a line-skipping scan entirely, and with that component unmounted the DOM scan
+    // saw nothing either. A placeholder could have survived BOTH guards. Blanking preserves line
+    // numbers (a hit still points at its line) while leaving the code beside a comment visible.
+    const text = stripComments(readFileSync(file, 'utf8'));
     text.split('\n').forEach((line, i) => {
-      // COMMENTS ARE SKIPPED, and that is not a loophole: the retirement has to be EXPLAINED
-      // somewhere, and the explanation names the class it retired. Code is what this scans.
-      if (/^\s*(\/\/|\/?\*)/.test(line)) return;
       // The convention is the CLASS plus a group-name tooltip. A true disabled state (the tree's
       // undecidable eye, Ask's empty query) uses `aria-disabled` with a reason and must survive.
       if (/\bv2-inert\b/.test(line) || /title=["']S\d[a-z]?["']/.test(line)) {
@@ -219,4 +227,19 @@ test('the key-pad rows a mode shows: off draws nothing, arrows drops the letters
     ['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
   assert.deepEqual(padRows('full').flat().filter(Boolean).map((k) => k.code),
     ['KeyW', 'ArrowUp', 'KeyA', 'KeyS', 'KeyD', 'ArrowLeft', 'ArrowDown', 'ArrowRight']);
+});
+
+test('the source scan cannot be defeated by a comment on the same line (round 27, M1)', () => {
+  // codex's own counterexample, run against the production predicate rather than described.
+  const hit = (text) => stripComments(text).split('\n')
+    .some((l) => /\bv2-inert\b/.test(l) || /title=["']S\d[a-z]?["']/.test(l));
+  assert.equal(hit('/* pending control */ const P = () => <button className="v2-inert" title="S1"/>;'),
+    true, 'a leading block comment must not hide the code beside it');
+  assert.equal(hit('// a note about v2-inert and title="S1"'), false, 'a real comment is still not code');
+  // A jsdoc CONTINUATION line, given with its opener — which is how it always occurs in a real
+  // file. (Handed the bare `* …` line alone it would read as code, correctly: a stripper that
+  // blanked every line starting with `*` would blank a multiplication.)
+  assert.equal(hit('/**\n * `.v2-inert` is retired\n */\nconst x = 1;'), false, 'a jsdoc block is not code');
+  // A URL inside a string must not be eaten as a line comment — that is what the `[^:]` guard is for.
+  assert.equal(hit('const u = "https://h/x"; const b = <button className="v2-inert"/>;'), true);
 });
