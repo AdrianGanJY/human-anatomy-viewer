@@ -2237,6 +2237,11 @@ if (variant === 'v2') {
       await page.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'domcontentloaded', timeout: 180000});
       await page.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
       await page.waitForTimeout(1200);
+      // The three titles as this page spells them — the rows below assert WHICH panel is showing,
+      // not merely that one is (codex round 25, Medium 3).
+      const [tLayers, tSel, tInfo] = await page.evaluate(`((names) => names)([
+        ...document.querySelectorAll('.v2-tools button[aria-controls="v2-tsheet"]')
+      ].map((b) => (b.getAttribute('aria-label') || '').trim()))`);
       const rest = await page.evaluate(`${SHEET_GEOM}()`);
       // ── 1. CLOSED ON ENTRY, and the desktop's persisted dock set did not reach here ───────────
       check(vp.name, `[${S6_V}] ${vp.board}: the shared sheet is CLOSED on entry`,
@@ -2272,19 +2277,42 @@ if (variant === 'v2') {
         treeRows >= 10, `${treeRows} tree rows in the sheet`, '>= 10');
 
       // ── 3. SWITCHING TABS KEEPS ONE SHEET AND DOES NOT TOUCH THE SCENE ───────────────────────
-      await page.evaluate(`${CLICK_TOOL}('Selection|所选结构|所選結構')`);
-      await page.waitForTimeout(500);
+      /**
+       * ⚠️ A REAL POINTER, ON A CONTROL THE READER CAN ACTUALLY REACH — codex round 25, Low 3 and
+       * Medium 3. In portrait the toolbar is BEHIND the sheet's scrim, so the old driver clicked
+       * buried buttons programmatically and certified a switch no finger could perform; and when
+       * the opener found nothing the row passed anyway, because it only counted panels. The tabs
+       * are inside the sheet now (`.v2-stab`), the press is a real one, and the opener's success is
+       * part of the assertion.
+       */
+      const pressTab = async (re) => {
+        const at = await page.evaluate((rx) => {
+          const inSheet = [...document.querySelectorAll('.v2-stab')];
+          const pool = inSheet.length ? inSheet : [...document.querySelectorAll('.v2-tools button')];
+          const b = pool.find((x) => new RegExp(rx).test((x.getAttribute('aria-label') || '').trim()));
+          if (!b) return null;
+          const r = b.getBoundingClientRect();
+          return {x: r.x + r.width / 2, y: r.y + r.height / 2, where: inSheet.length ? 'in the sheet' : 'in the toolbar'};
+        }, re);
+        if (!at) return null;
+        await page.mouse.move(at.x, at.y);
+        await page.mouse.down(); await page.mouse.up();
+        await page.waitForTimeout(500);
+        return at;
+      };
+      const toSel = await pressTab('^(Selection|所选结构|所選結構)$');
       const sel = await page.evaluate(`${SHEET_GEOM}()`);
       check(vp.name, `[${S6_V}] ${vp.board}: switching to Selection REPLACES the panel — never two`,
-        sel.panes === 1 && sel.pressed.length === 1 && sel.blob === open.blob,
-        `${sel.panes} panel(s) [${sel.heads.join(', ')}], blob ${sel.blob === open.blob ? 'unchanged' : 'CHANGED'}`,
-        '1 panel, the scene untouched');
-      await page.evaluate(`${CLICK_TOOL}('Info|信息|資訊')`);
-      await page.waitForTimeout(500);
+        !!toSel && sel.panes === 1 && sel.heads[0] === tSel && sel.blob === open.blob,
+        `${toSel ? `pressed ${toSel.where}` : 'NO REACHABLE TAB'} · ${sel.panes} panel(s) [${sel.heads.join(', ')}]`
+        + `, blob ${sel.blob === open.blob ? 'unchanged' : 'CHANGED'}`,
+        `a reachable tab, then 1 panel titled "${tSel}", the scene untouched`);
+      const toInfo = await pressTab('^(Info|信息|資訊)$');
       const info = await page.evaluate(`${SHEET_GEOM}()`);
       check(vp.name, `[${S6_V}] ${vp.board}: and to Info, still exactly one, still the same scene`,
-        info.panes === 1 && info.blob === open.blob,
-        `${info.panes} panel(s) [${info.heads.join(', ')}]`, '1 panel, the scene untouched');
+        !!toInfo && info.panes === 1 && info.heads[0] === tInfo && info.blob === open.blob,
+        `${toInfo ? `pressed ${toInfo.where}` : 'NO REACHABLE TAB'} · ${info.panes} panel(s) [${info.heads.join(', ')}]`,
+        `a reachable tab, then 1 panel titled "${tInfo}", the scene untouched`);
 
       // ── 4. THE ACTIVE TAB CLOSES IT, and the field comes back ────────────────────────────────
       await page.evaluate(`${CLICK_TOOL}('Info|信息|資訊')`);
@@ -2347,23 +2375,40 @@ if (variant === 'v2') {
          * creates a containing block for fixed descendants (`transform` / `filter` / `perspective` /
          * `will-change` / `contain`), in which case that ancestor genuinely can clip it.
          */
+        /**
+         * ⚠️ THREE MECHANISMS BESIDES `overflow` CLIP — codex round 25, Medium 2, which executed the
+         * predicate against controlled adapters and named every one it missed:
+         *
+         *   · `contain:paint` (and `strict` / `content`) clips its box INDEPENDENTLY of `overflow`,
+         *     so `contain:paint` + `overflow:visible` was read as "no clipping" while a 44 px item
+         *     had 33 px visible. Centre hit-testing cannot catch that: the centre survives.
+         *   · the individual `translate` / `rotate` / `scale` properties create a containing block
+         *     exactly as `transform` does, and were not in the `makesCB` test.
+         *   · `content-visibility:auto` clips like paint containment.
+         *
+         * Kept as ONE function because a second copy is how the first three came to differ.
+         */
         const clipped = (el) => {
           const r = el.getBoundingClientRect();
           // `escaped` = "this element's containing block is above the ancestor we are looking at",
           // which is true from the moment we pass a fixed-positioned element and stays true until an
           // ancestor creates a containing block for fixed descendants.
           let escaped = getComputedStyle(el).position === 'fixed';
+          const none = (v) => !v || v === 'none' || v === 'normal';
           for (let a = el.parentElement; a && a !== document.documentElement; a = a.parentElement) {
             const cs = getComputedStyle(a);
-            const makesCB = cs.transform !== 'none' || cs.filter !== 'none' || cs.perspective !== 'none'
-              || /transform|filter|perspective/.test(cs.willChange || '')
+            const contains = /paint|strict|content/.test(cs.contain || '')
+              || /auto|hidden/.test(cs.contentVisibility || '');
+            const makesCB = !none(cs.transform) || !none(cs.filter) || !none(cs.perspective)
+              || !none(cs.translate) || !none(cs.rotate) || !none(cs.scale)
+              || /transform|filter|perspective|translate|rotate|scale/.test(cs.willChange || '')
               || /paint|layout|strict|content/.test(cs.contain || '');
             if (makesCB) escaped = false;
-            const clips = ![cs.overflowY, cs.overflowX].every((v) => !v || v === 'visible');
+            const clips = contains || ![cs.overflowY, cs.overflowX].every((v) => !v || v === 'visible');
             if (clips && !escaped) {
               const ar = a.getBoundingClientRect();
               if (r.top < ar.top - 1 || r.bottom > ar.bottom + 1 || r.left < ar.left - 1 || r.right > ar.right + 1) {
-                return a.className || a.tagName;
+                return `${a.className || a.tagName}${contains ? ' (containment)' : ''}`;
               }
             }
             if (cs.position === 'fixed') escaped = true;

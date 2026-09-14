@@ -1126,6 +1126,22 @@ export default function Shell(p: ShellProps) {
   </aside>
   : <Overlay open onClose={() => p.onTSheet(null)} sheet={false} kind="is-right" id="v2-tsheet"
    title={tSheetTitle} labelClose={tr('panel.close', {name: tSheetTitle})}>
+   {/**
+     * ⚠️ THE TABS LIVE INSIDE THE PORTRAIT SHEET — codex round 25, Low 3, and it is a product gap
+     * rather than a test one. In portrait the sheet is an OVERLAY WITH A SCRIM: the toolbar tabs
+     * that switch it are behind that scrim, so "switching tabs" was only reachable by closing the
+     * sheet and pressing another button. The oracle hid the gap by clicking the buried controls
+     * programmatically, which is exactly the shape of a test proving something a reader cannot do.
+     * `spec.md` draws this anyway ("one sheet with tabs"); the toolbar buttons remain the invokers.
+     */}
+   <div className="v2-stabs" role="tablist" aria-label={tr('panel.panels')}>
+    {TABLET_TABS.map((k) => {
+     const on = p.tSheet === k;
+     const label = k === 'layers' ? tr('panel.layers') : k === 'selection' ? tr('panel.selection') : tr('panel.info');
+     return <button type="button" key={k} role="tab" aria-selected={on} aria-label={label}
+      className={`v2-stab ${on ? 'is-on' : ''}`} onClick={() => p.onTSheet(k)}>{label}</button>;
+    })}
+   </div>
    {tSheetBody}
   </Overlay>);
 

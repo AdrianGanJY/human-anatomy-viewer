@@ -191,6 +191,14 @@ export function useShell(
   * bumps `render.reset`, which is what the signature is watching. See `POSE_CMDS` in `keys.ts`.
   */
  onCameraIntent?: (why: KeyCommand | 'held') => void,
+ /**
+  * ⚠️ SCENES IS AN OVERLAY AND MUST BE COUNTED — codex round 25, Medium 1. It executed the dispatcher
+  * with the Scenes sheet open at 768, 1024 and 1366: `W` entered the held camera set, `2` dispatched
+  * a named view, and Ctrl+K opened Find on top of it. The state lives in `page.tsx` because the
+  * PHONE opens the same surface from its margin, so it is threaded in rather than moved — two owners
+  * for one sheet is the defect S5b already paid for with the Ask draft.
+  */
+ scenesOpen = false,
 ): ShellState {
  const vp = useViewport();
  const tier = tierOf(vp.w, vp.h, vp.coarse);
@@ -221,6 +229,10 @@ export function useShell(
  const chrome = studio || tablet;
  const [tSheet, setTSheet] = useState<TabletTab | null>(null);
  const tabletInline = tablet && vp.w >= 1024 && vp.h > 520;
+ // Read by `setFindOpen`, which is memoised with no dependencies so that the palette's opener does
+ // not change identity on every resize.
+ const tabletInlineRef = useRef(false);
+ tabletInlineRef.current = tabletInline;
  // A resize that leaves the tablet takes its sheet with it: the desktop has docks for these three
  // panels, and a sheet left open across the boundary would be a fourth, trapped, invisible one.
  useEffect(() => { if (!tablet) setTSheet(null); }, [tablet]);
@@ -324,7 +336,23 @@ export function useShell(
 
  const [keysOpen, setKeysOpen] = useState(false);
  const [settingsOpen, setSettingsOpen] = useState(false);
- const [findOpen, setFindOpen] = useState(false);
+ const [findOpen, setFindOpenState] = useState(false);
+ /**
+  * ⚠️ FIND REPLACES THE PORTRAIT SHEET RATHER THAN STACKING ON IT — codex round 25, Medium 1.
+  *
+  * `Ctrl+K` deliberately bypasses the dispatcher's modal guard (keys.ts: the palette is reachable
+  * from anywhere, which is the whole point of a command palette). codex executed it with the
+  * portrait Selection sheet open and got `tSheet='selection'` AND `findOpen=true` at once — two
+  * focus traps over one field, and Escape closing whichever of them React happened to mount last.
+  *
+  * The INLINE sheet stays, because it is a column beside the field and Find is a modal over it —
+  * the same rule as everywhere else in this file: the overlay presentation is a dialog, the inline
+  * one is a panel.
+  */
+ const setFindOpen = useCallback((v: boolean) => {
+  setFindOpenState(v);
+  if (v) setTSheet((cur) => (cur && !tabletInlineRef.current ? null : cur));
+ }, []);
  const [navMode, setNavModeState] = useState<NavMode>('orbit');
  const [holdN, setHoldN] = useState(0);
 
@@ -359,7 +387,7 @@ export function useShell(
   * presentations in would have taken the keyboard away from the tier that has the most room for it.
   */
  const modalRef = useRef(false);
- modalRef.current = keysOpen || settingsOpen || findOpen || !!(tSheet && !tabletInline);
+ modalRef.current = keysOpen || settingsOpen || findOpen || scenesOpen || !!(tSheet && !tabletInline);
  /**
   * ⚠️ GUARD 7 READS `chrome`, NOT `studio`, SINCE S6 — and that is the guard's own rule applied, not
   * a widening of it. `keys.ts`: "withhold a command iff its SURFACE is studio-only". The camera

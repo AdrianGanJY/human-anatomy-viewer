@@ -1124,6 +1124,17 @@ export default function V2() {
   * the SCENE go through the controller here, so a named view pressed on the keyboard and one
   * clicked on the pill are literally the same dispatch and cannot drift apart.
   */
+ /**
+  * The two sheets' open state. Here rather than in `useShell` because the PHONE renders them from
+  * its margin and no keyboard command opens them — unlike the palette, which the dispatcher owns.
+  *
+  * ⚠️ DECLARED ABOVE `useShell` SINCE codex round 25: `scenesOpen` is threaded INTO the hook so the
+  * dispatcher can suppress the camera while that sheet is open (Medium 1). It is still owned here,
+  * because S5a's lesson is that one surface with two owners is a surface that drifts.
+  */
+ const [askOpen, setAskOpen] = useState(false);
+ const [scenesOpen, setScenesOpen] = useState(false);
+
  const shell = useShell(useCallback((cmd: string) => {
   const view = ({'view-three-quarter': 'three-quarter', 'view-front': 'front', 'view-side': 'side', 'view-back': 'back'} as Record<string, View>)[cmd];
   if (view) return dispatch({type: 'set-view', view});
@@ -1143,7 +1154,10 @@ export default function V2() {
   * which is round 15's second Low. The classification lives in `keys.ts`'s `POSE_CMDS` with a test
   * that fails when a new `Command` is added without a verdict.
   */
- abortPoseRestore);
+ abortPoseRestore,
+ // codex round 25, Medium 1: the Scenes sheet is an overlay at every tier and must suppress the
+ // camera keys like any other. It is owned here because the PHONE opens the same surface.
+ scenesOpen);
  /** `snapshotScene` is defined above `shell` (it is needed by the same render that builds it) and
   *  needs `shell.addTab`. A ref rather than a reorder, because moving `useShell` below the
   *  callbacks would put a hook after a conditional return path in a file this size. */
@@ -1169,11 +1183,6 @@ export default function V2() {
   setPose(p: {x: number; y: number; z: number; tx: number; ty: number; tz: number}): boolean;
  }}).__atlasNav ?? null;
 
- /** The two phone sheets' open state. Here rather than in `useShell` because nothing above 768
-  *  renders them and no keyboard command opens them -- unlike the palette, which the dispatcher
-  *  owns because `modalOpen()` has to count it. */
- const [askOpen, setAskOpen] = useState(false);
- const [scenesOpen, setScenesOpen] = useState(false);
 
  const snapshotScene = useCallback(() => {
   const c = ctlRef.current;
