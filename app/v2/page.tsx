@@ -325,11 +325,39 @@ export default function V2() {
   * third of round 28's findings, and the one that turned a bounded wait into a silent lie.
   */
  const urlSettled = useCallback(async () => {
+  /**
+   * ⚠️ TWO CONDITIONS, AND THE FIRST IS WHY THE TOKEN ALONE WAS NOT ENOUGH.
+   *
+   * A completion token can only speak for work that has been SCHEDULED. `atlas.remove(id)` and the
+   * click that follows it are one synchronous task: `dispatch` has written `ctlRef.current`, React
+   * has not re-rendered, so the effect that schedules the next write HAS NOT RUN and the token
+   * reads equal. My third wrong version returned instantly on exactly that, and the sweep row
+   * reopened the link and found the removed structure back: `reopened=[5 ids] expected=[4 ids]`.
+   *
+   * So it first waits for the RENDER to catch up with the controller — by object identity, not by
+   * a field list, because a list is what had the original bug — and only then for the writer.
+   */
+  /**
+   * ⚠️ ⚠️ THIS IS NOT PROVEN CORRECT, AND THE GROUP IS PARKED BECAUSE OF IT. Measured on the built
+   * bundle, 2026-09-14, in the sequence the sweep runs (a copy, then an edit, then a copy):
+   *
+   *   prior copy -> clipboard [5 ids], toast "链接已复制"   (correct)
+   *   remove FMA9611 -> atlas.state().ids = [4 ids]
+   *   copy -> toast "链接已复制", but location.href STILL carries [5 ids] at +1200 ms
+   *
+   * So `settled()` returned TRUE over a URL the writer had not yet updated. Both conditions read
+   * true while the address bar was stale, which means one of them does not mean what it says in
+   * that sequence — a re-render that does not re-run the effect, or an effect whose timer is
+   * cleared by a render the toast itself causes. I have not closed that gap, and three earlier
+   * attempts (a flush, a field comparison, a completion token) each looked right and were not.
+   *
+   * The control is therefore NOT trustworthy after a prior copy, nothing here is deployed, and the
+   * next session starts from this measurement rather than from another hypothesis.
+   */
   const deadline = Date.now() + 1500;
-  while (urlWrote.current !== urlWanted.current && Date.now() < deadline) {
-   await new Promise((r) => setTimeout(r, 25));
-  }
-  return urlWrote.current === urlWanted.current;
+  const settled = () => renderedCtl.current === ctlRef.current && urlWrote.current === urlWanted.current;
+  while (!settled() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  return settled();
  }, []);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
@@ -437,6 +465,14 @@ export default function V2() {
   */
  const ctlRef = useRef(ctl);
  ctlRef.current = ctl;
+ /**
+  * S7 — THE STATE THE LAST RENDER USED, which `dispatch` does NOT overwrite. `ctlRef` is
+  * dispatch-fresh by design (it is reassigned synchronously inside `dispatch`); this one is
+  * render-fresh, and comparing the two by IDENTITY answers "has React caught up with the
+  * controller?" without naming a single field. `urlSettled` needs exactly that — see its note.
+  */
+ const renderedCtl = useRef(ctl);
+ renderedCtl.current = ctl;
  /** Whether the mount arrival has run. See `seedArrival` in `dispatch`. */
  const mounted = useRef(false);
  const dispatch = useCallback((cmd: Command): boolean => {
