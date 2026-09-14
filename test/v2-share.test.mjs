@@ -77,12 +77,16 @@ test('the copied link drops the presentation flags, which are about this screen 
 });
 
 test('the copied link drops a spent scene hash that would outrank its own query', () => {
-  assert.equal(shareLink('https://h/v2/?select=FMA1&scene=new#scene=old'),
+  // WITH THE CONTROLLER'S WORD FOR IT (codex round 28): the query matches what the page is showing,
+  // so the fragment is the spent one. Without `live` the same string is ambiguous — see the
+  // authoritative-fragment row below — and the conservative reading keeps it.
+  const live = {scene: 'new', select: 'FMA1'};
+  assert.equal(shareLink('https://h/v2/?select=FMA1&scene=new#scene=old', live),
     'https://h/v2/?select=FMA1&scene=new');
 });
 
 test('a spent hash is recognised through the parser, not through the raw text', () => {
-  assert.equal(shareLink('https://h/v2/?scene=new#%73cene=old'), 'https://h/v2/?scene=new');
+  assert.equal(shareLink('https://h/v2/?scene=new#%73cene=old', {scene: 'new'}), 'https://h/v2/?scene=new');
 });
 
 test('a fragment that is not ours is left alone', () => {
@@ -106,6 +110,22 @@ test('an UNSPENT scene hash is kept — stripping it would copy a link to nothin
 
 test('a selection-only visit keeps a hash that carries the only selection', () => {
   assert.equal(shareLink('https://h/v2/#select=FMA1'), 'https://h/v2/#select=FMA1');
+});
+
+test('a fragment carrying a DIFFERENT scene than the query is the authoritative one, and survives', () => {
+  // codex round 28, HIGH 2: presence is not currency. A cold arrival can carry `?scene=<old>` from
+  // a previous write AND `#scene=<new>` as the authoritative arrival; the fragment wins on reload.
+  // Dropping it because the query merely HAS a `scene` key restored the old scene — codex executed
+  // the whole chain: `Copied fragment: absent · Reopened scene: [FMA7485, FMA9611]` against a
+  // controller holding `[FMA7485]`.
+  assert.equal(shareLink('https://h/v2/?scene=old#scene=new'), 'https://h/v2/?scene=old#scene=new');
+  assert.equal(shareLink('https://h/v2/?scene=old#%73cene=new'), 'https://h/v2/?scene=old#%73cene=new');
+  // Same VALUE — spent, and it goes.
+  assert.equal(shareLink('https://h/v2/?scene=same#scene=same'), 'https://h/v2/?scene=same');
+  // Every owned key must agree, not just one of them.
+  assert.equal(shareLink('https://h/v2/?scene=s&select=A#scene=s&select=B'),
+    'https://h/v2/?scene=s&select=A#scene=s&select=B');
+  assert.equal(shareLink('https://h/v2/?scene=s&select=A#scene=s&select=A'), 'https://h/v2/?scene=s&select=A');
 });
 
 // ── the captured bitmap, as a file ───────────────────────────────────────────────────────────
@@ -149,11 +169,42 @@ const SRC = fileURLToPath(new URL('../app/v2/', import.meta.url));
 const sources = (dir) => readdirSync(dir, {withFileTypes: true}).flatMap((e) =>
   e.isDirectory() ? sources(`${dir}${e.name}/`) : /\.tsx?$/.test(e.name) ? [`${dir}${e.name}`] : []);
 
-/** Blank out comment CONTENTS, keeping every newline so line numbers survive. `[^:]` before `//`
- *  is what stops `https://…` inside a string from eating the rest of its line. */
-const stripComments = (text) => text
-  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (m, lead) => lead + ' '.repeat(m.length - lead.length));
+/**
+ * Blank out comment CONTENTS, keeping every newline so line numbers survive.
+ *
+ * ⚠️ A SCANNER, NOT A REGEX — codex round 28, MEDIUM 2, with an executed counterexample. The regex
+ * version guarded `//` with `[^:]` so `https://…` inside a string would not eat its line; codex
+ * handed it a PROTOCOL-RELATIVE url instead —
+ *   `const u = "//h/x"; const P = () => <button className="v2-inert" title="S1"/>;`
+ * — and the whole line vanished, hiding a placeholder from the only guard that can see an unmounted
+ * one. A `"/*"` inside a string did the same in the other direction. Knowing where a STRING is is
+ * the only way to know where a COMMENT is not, so this walks the text once and tracks both.
+ */
+const stripComments = (text) => {
+  const out = [...text];
+  const blank = (from, to) => { for (let k = from; k < to; k++) if (out[k] !== '\n') out[k] = ' '; };
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i], d = text[i + 1];
+    if (c === '/' && d === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      blank(i, stop); i = stop; continue;
+    }
+    if (c === '/' && d === '/') {
+      let end = text.indexOf('\n', i);
+      if (end === -1) end = text.length;
+      blank(i, end); i = end; continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {
+      i++;
+      while (i < text.length && text[i] !== c) i += text[i] === '\\' ? 2 : 1;
+      i++; continue;
+    }
+    i++;
+  }
+  return out.join('');
+};
 
 test('no control in v2 is still a placeholder — the inert convention is spent', () => {
   const found = [];
@@ -240,6 +291,27 @@ test('the source scan cannot be defeated by a comment on the same line (round 27
   // file. (Handed the bare `* …` line alone it would read as code, correctly: a stripper that
   // blanked every line starting with `*` would blank a multiplication.)
   assert.equal(hit('/**\n * `.v2-inert` is retired\n */\nconst x = 1;'), false, 'a jsdoc block is not code');
-  // A URL inside a string must not be eaten as a line comment — that is what the `[^:]` guard is for.
+  // A URL inside a string must not be eaten as a line comment.
   assert.equal(hit('const u = "https://h/x"; const b = <button className="v2-inert"/>;'), true);
+  // codex round 28's counterexample: a PROTOCOL-RELATIVE url, which the old `[^:]` guard missed.
+  assert.equal(hit('const u = "//h/x"; const P = () => <button className="v2-inert" title="S1"/>;'), true);
+  // …and a comment opener inside a string, which must not start a comment either.
+  assert.equal(hit('const a = "/*"; const P = () => <button className="v2-inert"/>; const b = "*/";'), true);
+  // A real trailing comment after real code still hides only itself.
+  assert.equal(hit('const x = 1; // v2-inert'), false);
+});
+
+test('no plate control survives anywhere in the source (round 28, MEDIUM 1)', () => {
+  // The DOM count can only see what is MOUNTED, and the tablet's plate items lived in an unopened
+  // More menu. The same two-instrument shape the inert convention needed: this reads the source.
+  const found = [];
+  for (const file of sources(SRC)) {
+    const text = stripComments(readFileSync(file, 'utf8'));
+    text.split('\n').forEach((line, i) => {
+      if (/data-act="(plate|copy-plate)"/.test(line) || /onOpenPlate|onCopyPlate|plateLink\(/.test(line)) {
+        found.push(`${file.slice(SRC.length)}:${i + 1}  ${line.trim().slice(0, 90)}`);
+      }
+    });
+  }
+  assert.deepEqual(found, [], `a plate control survives:\n${found.join('\n')}`);
 });

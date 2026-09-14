@@ -279,39 +279,57 @@ export default function V2() {
  // `stage` and `probeMode` are passed EXPLICITLY, which is what makes them survive the debounced
  // rewrite (R:31) while still being droppable: leaving stage sets it false, and the next write
  // therefore omits the key instead of preserving whatever the URL happened to say.
- useEffect(() => { if (!atlas) return; const timer = setTimeout(() => writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true}), 200); return () => clearTimeout(timer); }, [atlas, state, picks, caption, lang, stage, probeMode]);
+ /**
+  * ══ THE WRITER, AND ITS COMPLETION TOKEN — S7, codex round 28 ════════════════════════════════
+  *
+  * `wanted` is bumped by every effect run that SCHEDULES a write; `wrote` is set to that value by
+  * the write itself. Equal means "the URL is the current state" for the WRITER'S WHOLE shareable
+  * surface — the blob, the selection, the view, the language, the caption, the flags — rather than
+  * for the two fields a reader of this file happened to list.
+  *
+  * ⚠️ THAT LIST IS WHY ROUND 28 FAILED. My first `urlSettled` compared `scene` and `select` only,
+  * so `set-view: back` on a bare selection changed NEITHER and the wait returned instantly:
+  * `Copy pressed 116 ms later · Polling timers created: 0 · Copied /v2/?select=FMA9611 ·
+  * Reopened view: three-quarter`. Language and caption did the same. A completion token cannot
+  * have that bug, because it is not a list.
+  */
+ const urlWanted = useRef(0);
+ const urlWrote = useRef(0);
+ useEffect(() => {
+  if (!atlas) return;
+  const mine = ++urlWanted.current;
+  const timer = setTimeout(() => {
+   writeUrlState(state, picks, caption, lang, {stage, probe: probeMode, clearHash: true});
+   urlWrote.current = mine;
+  }, 200);
+  return () => clearTimeout(timer);
+ }, [atlas, state, picks, caption, lang, stage, probeMode]);
 
  /**
-  * ══ S7 — WAIT FOR THE URL TO BECOME TRUE, NEVER WRITE IT A SECOND TIME ═══════════════════════
+  * ══ S7 — WAIT FOR THE WRITER, NEVER WRITE A SECOND TIME ══════════════════════════════════════
   *
-  * codex round 27, HIGH 2: the write above is debounced by 200 ms and Copy link read
-  * `location.href` immediately, so copying inside that window handed over the PREVIOUS view
-  * (`copied before debounce: [FMA7485, FMA9611]` against `current picks: [FMA7485]`).
+  * codex round 27, HIGH 2: the write is debounced by 200 ms and Copy link read `location.href`
+  * immediately, so copying inside that window handed over the PREVIOUS view.
   *
-  * ⚠️ MY FIRST FIX WAS A FLUSH, AND MY OWN NEW SWEEP ROW FAILED IT — which is the whole reason
-  * that row exists. A flush callback assigned during RENDER closes over the RENDER's `state`,
-  * `picks` and `caption`; `dispatch` writes `ctlRef.current` synchronously and re-renders after, so
-  * calling it in the same task rewrote the URL with exactly the stale values it was meant to
-  * repair. (`writeUrlState` also reads `lastBlob`, which `markScene` sets in an EFFECT — stale for
-  * the same reason.) This is page.tsx's own render-fresh-vs-dispatch-fresh lesson, and I walked
-  * straight into it.
+  * ⚠️ TWO WRONG FIXES CAME FIRST, and both are worth keeping in view. (1) A FLUSH: a callback
+  * assigned during RENDER closes over that render's `state`/`picks`/`caption`, and `dispatch`
+  * writes `ctlRef.current` synchronously and re-renders after — so it rewrote the URL with exactly
+  * the stale values it was meant to repair. (2) A FIELD COMPARISON on `scene`+`select`, which
+  * returned instantly for any edit those two do not carry (a named view, the language, a caption).
   *
-  * So this does not write. It WAITS for the one writer to catch up, on the CONDITION rather than
-  * on a duration — the suite's own rule after the `stage-probe` flake ("wait on the URL write, not
-  * on a longer sleep"). Bounded at 600 ms; on a timeout the caller copies what is there, and the
-  * oracle that asserts currency goes red honestly instead of hanging.
+  * This waits on the WRITER'S OWN completion token, against a WALL-CLOCK deadline — round 28's
+  * other half: 24 nominal 25 ms delays is not a bound, and codex delivered those timers at 100 ms
+  * intervals for 2,400 ms. `Date.now()` is what a deadline means.
+  *
+  * It returns whether it settled, and the CALLER MUST NOT CLAIM SUCCESS WHEN IT DID NOT — the
+  * third of round 28's findings, and the one that turned a bounded wait into a silent lie.
   */
  const urlSettled = useCallback(async () => {
-  const matches = () => {
-   const q = new URLSearchParams(location.search);
-   const c = ctlRef.current;
-   const want = c.blob || (c.scene ? encodeScene(c.scene) : '');
-   if (want && q.get('scene') !== want) return false;
-   if (!want && q.get('scene')) return false;
-   return (q.get('select') ?? '') === c.picks.join(',');
-  };
-  for (let i = 0; i < 24 && !matches(); i++) await new Promise((r) => setTimeout(r, 25));
-  return matches();
+  const deadline = Date.now() + 1500;
+  while (urlWrote.current !== urlWanted.current && Date.now() < deadline) {
+   await new Promise((r) => setTimeout(r, 25));
+  }
+  return urlWrote.current === urlWanted.current;
  }, []);
 
  // ─── the roles → what the renderer draws ──────────────────────────────────────────────────
@@ -1259,13 +1277,18 @@ export default function V2() {
  }, [say]);
 
  const copyLink = useCallback(async () => {
-  // WAIT FOR THE URL, THEN READ IT. The URL is this control's source of truth and it is 200 ms
-  // behind the controller by design; copying inside that window shares the previous scene
-  // (codex round 27, HIGH 2, with an executed counterexample). See `urlSettled` for why this waits
-  // rather than writing — the flush I tried first wrote the stale render's values.
-  await urlSettled();
-  return copy(shareLink(location.href), 'share.copied');
- }, [copy, urlSettled]);
+  // WAIT FOR THE WRITER, THEN READ WHAT IT WROTE. The URL is this control's source of truth and it
+  // is 200 ms behind the controller by design (codex round 27, HIGH 2).
+  //
+  // ⚠️ AND A FAILED WAIT IS NOT A SUCCESSFUL COPY — codex round 28, HIGH 2. The first version
+  // ignored this boolean and announced `share.copied` over a URL it knew was stale, which is worse
+  // than not copying: the reader has no way to tell. Nothing is written to the clipboard at all in
+  // that case, so an old link cannot be pasted in place of a new one.
+  if (!await urlSettled()) { say('share.copyBusy'); return false; }
+  const c = ctlRef.current;
+  // The controller's own words, so `shareLink` can tell an AUTHORITATIVE fragment from a spent one.
+  return copy(shareLink(location.href, {scene: c.blob, select: c.picks.join(',')}), 'share.copied');
+ }, [copy, urlSettled, say]);
 
 
 

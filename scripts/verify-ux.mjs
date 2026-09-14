@@ -7272,6 +7272,28 @@ if (variant === 'v2') {
     check(vp7.name, `[${S7}] and the copy really completes — the wait is bounded, not indefinite`,
       !!race.copied, `clipboard after the bounded wait=${race.copied ? 'filled' : 'EMPTY'}`,
       'non-empty within 1.5 s');
+    /**
+     * ⚠️ AND IT IS REOPENED — codex round 28, MEDIUM 1, which is the row's most important
+     * correction. Inspecting the copied URL's FIELDS is not the same as opening it: codex mutated
+     * the extracted row three ways (append the old scene as `#scene=`, substitute a missing page)
+     * and every mutation still PASSED the field assertions while reopening the wrong thing. The
+     * question this row exists to answer is "does the link show the recipient what I was looking
+     * at", and only a second page can answer it.
+     */
+    let reopened = 'not attempted';
+    if (race.copied) {
+      const p3 = await ctx.newPage();
+      try {
+        await p3.goto(race.copied, {waitUntil: 'domcontentloaded', timeout: 180000});
+        await p3.waitForSelector(READY_SEL.v2, {timeout: 240000}).catch(() => {});
+        await p3.waitForTimeout(1200);
+        reopened = await p3.evaluate(() => (window.atlas?.state?.().ids ?? ['no-atlas']).join(','));
+      } catch (e) { reopened = `threw:${String(e).slice(0, 60)}`; } finally { await p3.close(); }
+    }
+    check(vp7.name, `[${S7}] and the edited link REOPENS the edited view — not the one before the edit`,
+      reopened === race.after.join(','),
+      `reopened=[${reopened}] · expected=[${race.after.join(',')}] · removed=${race.dropped}`,
+      'the selection as it stands after the removal');
 
     /**
      * ── 3. SHARE PLATE: NOT SHIPPED, AND THIS ROW SAYS SO ────────────────────────────────────
@@ -7287,11 +7309,22 @@ if (variant === 'v2') {
      * behind is therefore about ABSENCE — if a plate control reappears without a browser route,
      * this goes red.
      */
-    const plateGone = await page.evaluate(() =>
-      document.querySelectorAll('[data-act="plate"], [data-act="copy-plate"]').length);
+    // ⚠️ THE MOUNTED DOM IS NOT THE WHOLE APP — codex round 28, MEDIUM 1: a control inside an
+    // UNOPENED More menu is invisible to a DOM count, and the tablet's plate items lived in exactly
+    // such a menu. So the More menu is OPENED first, and the SOURCE is scanned besides — the same
+    // two-instrument shape the inert convention needed, for the same reason.
+    const plateGone = await page.evaluate(async () => {
+      const more = document.querySelector('.v2-more > button');
+      if (more) { more.click(); await new Promise((r) => setTimeout(r, 250)); }
+      const n = document.querySelectorAll('[data-act="plate"], [data-act="copy-plate"]').length;
+      const items = [...document.querySelectorAll('.v2-pop [role="menuitem"]')].length;
+      if (more) more.click();
+      return {n, items};
+    });
     check(vp7.name, `[${S7}] no Share-plate control ships: /api/snap has no browser route (round 27, HIGH 1)`,
-      plateGone === 0, `plate controls in the DOM=${plateGone}`,
-      '0 until a browser-authenticated route exists — the mocked /api/snap here cannot prove one');
+      plateGone.n === 0 && plateGone.items > 0,
+      `plate controls=${plateGone.n} · More menu items inspected=${plateGone.items}`,
+      '0 plate controls, with the More menu OPEN (an unopened menu proves nothing)');
   } catch (e) {
     check(vp7.name, `[${S7}] the share pass ran`, false, String(e).slice(0, 200), 'no throw');
   } finally {
