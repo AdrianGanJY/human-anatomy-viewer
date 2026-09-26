@@ -47,7 +47,7 @@
 #
 # ⚠️ NEVER `wrangler pages deploy` in this task. The Pages project `human-anatomy-viewer` is the
 # ROLLBACK and must stay exactly as it was last deployed; `../wrangler.toml` is left working for it.
-param([switch]$AllowDirty)
+param([switch]$AllowDirty, [switch]$RemoveRoute)
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
@@ -55,6 +55,49 @@ $envFile = 'E:\Agentic\ws\infra\.env.adrey'
 if (-not (Test-Path $envFile)) { throw "missing $envFile (Adrey CF credentials)" }
 foreach ($line in Get-Content $envFile) {
   if ($line -match '^(\w+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
+}
+
+# ══ -RemoveRoute — THE ROLLBACK, AND IT IS A REAL COMMAND BECAUSE THE DOCUMENTED ONE WAS FALSE ═══
+#
+# ⚠️ MEASURED 2026-09-26, and it is the most important thing in this file. The rollback used to be
+# written as "comment out the [[routes]] block and deploy again". codex round 2 refused to accept that
+# from the files alone, and it was RIGHT: `wrangler deploy` (and `wrangler triggers deploy`) with the
+# routes block absent prints `No deploy targets for human-anatomy` and LEAVES THE EXISTING ROUTE IN
+# PLACE. Executed against the live host: `/api/timing` still answered `worker: human-anatomy` for 25 s
+# of polling after that "rollback". A rollback that silently does nothing is worse than no rollback.
+#
+# The route has to be DELETED, so this does that, against the API that owns it — and then the same
+# session proved the other half: within ~4 s of the delete, `/api/timing` answered WITHOUT the `worker`
+# field, i.e. the Pages project `human-anatomy-viewer` was serving the hostname again, with no redeploy
+# of anything. Restoring the route is the ordinary `pwsh -File ./deploy.ps1`.
+#
+# It deletes only the route THIS task created, by pattern, and it never touches a Pages project, a
+# Worker, a bucket or an Access application.
+if ($RemoveRoute) {
+  try {
+    $hdr = @{ Authorization = "Bearer $env:CLOUDFLARE_API_TOKEN"; 'Content-Type' = 'application/json' }
+    $zone = Invoke-RestMethod -Uri 'https://api.cloudflare.com/client/v4/zones?name=adrian.my' -Headers $hdr -DisableKeepAlive
+    $zid = $zone.result[0].id
+    if (-not $zid) { throw 'could not resolve the adrian.my zone' }
+    $routes = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/zones/$zid/workers/routes" -Headers $hdr -DisableKeepAlive
+    $mine = $routes.result | Where-Object { $_.pattern -eq 'anatomy.adrian.my/*' -and $_.script -eq 'human-anatomy' }
+    if (-not $mine) {
+      Write-Host 'No anatomy.adrian.my/* route points at human-anatomy. Nothing to roll back.' -ForegroundColor Yellow
+      return
+    }
+    foreach ($r in $mine) {
+      $null = Invoke-RestMethod -Method Delete -Uri "https://api.cloudflare.com/client/v4/zones/$zid/workers/routes/$($r.id)" -Headers $hdr -DisableKeepAlive
+      Write-Host "deleted route $($r.pattern) -> $($r.script)" -ForegroundColor Green
+    }
+    Write-Host ''
+    Write-Host 'ROLLED BACK. The Pages project human-anatomy-viewer serves anatomy.adrian.my again' -ForegroundColor Green
+    Write-Host '(within a few seconds - confirm with: GET /api/timing, which then carries NO `worker` field).' -ForegroundColor Green
+    Write-Host 'To cut over again: pwsh -File ./deploy.ps1' -ForegroundColor Green
+    return
+  } finally {
+    $env:CLOUDFLARE_API_TOKEN = $null
+    $env:CLOUDFLARE_ACCOUNT_ID = $null
+  }
 }
 
 try {
@@ -138,10 +181,13 @@ try {
   # ⚠️ THE ROLLBACK INSTRUCTION NAMES THE COMMIT STEP — codex round 1, MEDIUM 5. The first version
   # said "comment out the route and run this script again", which THROWS: editing the tracked TOML
   # dirties the tree and the guard above refuses it. Both honest routes are printed.
-  Write-Host 'ROLLBACK (the route is the only thing that moves; Pages is still deployed underneath):' -ForegroundColor Yellow
-  Write-Host '  1. comment out the [[routes]] block in worker/wrangler.toml' -ForegroundColor Yellow
-  Write-Host '  2. git commit -F <msg> -- worker/wrangler.toml     (the clean-tree guard requires it)' -ForegroundColor Yellow
-  Write-Host '  3. pwsh -File ./deploy.ps1                        (or, to skip step 2: -AllowDirty)' -ForegroundColor Yellow
+  Write-Host 'ROLLBACK, in ONE command (the route is the only thing that moves; Pages is still' -ForegroundColor Yellow
+  Write-Host 'deployed underneath, untouched, and answers again within seconds):' -ForegroundColor Yellow
+  Write-Host '' -ForegroundColor Yellow
+  Write-Host '  pwsh -File ./deploy.ps1 -RemoveRoute' -ForegroundColor Yellow
+  Write-Host '' -ForegroundColor Yellow
+  Write-Host 'Do NOT just comment out the [[routes]] block and redeploy: MEASURED, that prints' -ForegroundColor Yellow
+  Write-Host '"No deploy targets" and LEAVES THE ROUTE IN PLACE. The route has to be deleted.' -ForegroundColor Yellow
 } finally {
   $env:CLOUDFLARE_API_TOKEN = $null
   $env:CLOUDFLARE_ACCOUNT_ID = $null

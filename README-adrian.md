@@ -202,9 +202,22 @@ site, asserts the artefact carries `dist/_headers` (which is what puts the CSP o
 names the build id, runs `npx wrangler deploy -c worker/wrangler.toml`, and nulls the credentials in a
 `finally`.
 
-**Rollback** is the route, and nothing else: comment out the `[[routes]]` block in
-`worker/wrangler.toml`, commit it, run `deploy.ps1` again. The Pages project is still deployed
-underneath, untouched, and answers again immediately. (Measured — see the L34 worklog.)
+**Rollback** is the route, and nothing else — one command:
+
+```powershell
+pwsh -File ./deploy.ps1 -RemoveRoute     # anatomy.adrian.my goes back to the Pages project
+```
+
+The Pages project `human-anatomy-viewer` and the Worker `human-anatomy-snap` are still deployed,
+untouched, so the hostname returns to them with no redeploy of either. **Measured 2026-09-26**: the
+route delete, then `/api/timing` answering without its `worker` field ~4 s later; `deploy.ps1` alone
+then cut back over.
+
+⚠️ **Do not just comment out the `[[routes]]` block and redeploy.** Measured: `wrangler deploy` (and
+`wrangler triggers deploy`) with no routes declared prints *"No deploy targets"* and **leaves the
+existing route in place** — the Worker kept serving the hostname through 25 s of polling. A rollback
+that silently does nothing is worse than no rollback, which is why `-RemoveRoute` exists and deletes
+the route through the API that owns it.
 
 ## Verify
 

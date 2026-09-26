@@ -49,9 +49,16 @@ browser = { binding = "BROWSER" }
 
 # ── THE ROUTE IS THE CUTOVER ────────────────────────────────────────────────────────────────────
 # Deploy once with this COMMENTED OUT to prove the Worker exists, then uncomment and deploy again:
-# that second deploy is the moment `anatomy.adrian.my` stops being served by Pages. ROLLBACK is the
-# inverse — comment it out, commit, deploy, and Pages answers again (measured, not assumed: the L34
-# worklog carries the transcript of a rollback and a re-cutover executed against the live host).
+# that second deploy is the moment `anatomy.adrian.my` stops being served by Pages.
+#
+# ⚠️ ROLLBACK IS **NOT** "COMMENT THIS OUT AND REDEPLOY", AND THAT IS MEASURED. codex round 2 refused to
+# accept the claim from the files, and it was right: with this block commented out, `wrangler deploy` and
+# `wrangler triggers deploy` both print `No deploy targets for human-anatomy` and LEAVE THE EXISTING
+# ROUTE IN PLACE — `/api/timing` kept answering `worker: human-anatomy` through 25 s of polling. The
+# route must be DELETED. `pwsh -File ./deploy.ps1 -RemoveRoute` does exactly that, and the same session
+# proved the other half: ~4 s after the delete the hostname was served by the Pages project again, with
+# no redeploy of anything. Commenting this out is still the right accompanying source edit, so a later
+# `deploy.ps1` does not silently re-create the route — but it is not what performs the rollback.
 [[routes]]
 pattern = "anatomy.adrian.my/*"
 zone_name = "adrian.my"
