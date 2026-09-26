@@ -22,7 +22,7 @@ const path=(relative:string)=>fileURLToPath(new URL(relative,import.meta.url));
 /**
  * ⚠️ L34 — THE SOURCE MOVED, AND IT IS NOW GENERATED RATHER THAN WRITTEN. `SITE_BUILD` used to be a
  * hand-edited literal in the renderer Worker's `wrangler.toml`; since the two Cloudflare projects
- * merged into one Worker it is DERIVED by `scripts/build-id.mjs` (git short hash + a `-dirty` flag)
+ * merged into one Worker it is DERIVED by `scripts/build-id.mjs` (git short hash, plus a digest of the uncommitted change when dirty)
  * into `worker/build-id.mjs`, which the renderer's cache key and this panel both read. One source, and
  * nobody has to remember to bump it. `deploy.ps1` runs the generator before `vite build`; a tree where
  * it has never run reads `dev`, which is true.

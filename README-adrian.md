@@ -184,14 +184,27 @@ and `OWNER_TOKEN_IDS` are public identifiers and are committed on purpose.
 ## Deploy
 
 ```powershell
-pwsh -File ./deploy.ps1                       # site + Functions  (Pages: human-anatomy-viewer)
-cd workers/snap; npx wrangler deploy          # the renderer      (Worker: human-anatomy-snap)
+pwsh -File ./deploy.ps1        # EVERYTHING: the site, /mcp, /api/*, and the renderer, in ONE Worker
 ```
 
-`deploy.ps1` loads `E:\Agentic\ws\infra\.env.adrey` itself (the wrangler OAuth session on this box
-is gone and dies with a native crash and no error text), builds the index, builds the site, asserts
-that `dist/api/index.json` and `dist/_routes.json` exist, deploys, and nulls the credentials in a
+**L34 (2026-09-26) made this one command.** `anatomy.adrian.my` used to be two Cloudflare projects —
+the Pages project `human-anatomy-viewer` and the Worker `human-anatomy-snap` — joined by a service
+binding, because the Browser Rendering binding is a Workers binding and Pages Functions cannot hold
+one. It is now the single Worker **`human-anatomy`** (`worker/wrangler.toml`, with `dist` as its static
+assets), so there is one deploy, one dashboard entry, and a build id that travels with the artefact it
+describes. **There is no second command any more**, and `cd workers/snap; npx wrangler deploy` no
+longer works at all: that Worker's sources moved to `worker/snap/`.
+
+`deploy.ps1` loads `E:\Agentic\ws\infra\.env.adrey` itself (the wrangler OAuth session on this box is
+gone and dies with a native crash and no error text), refuses a dirty tree unless `-AllowDirty`,
+derives the build id from git, regenerates the dictionaries / pinyin map / atlas index, builds the
+site, asserts the artefact carries `dist/_headers` (which is what puts the CSP on the document) and
+names the build id, runs `npx wrangler deploy -c worker/wrangler.toml`, and nulls the credentials in a
 `finally`.
+
+**Rollback** is the route, and nothing else: comment out the `[[routes]]` block in
+`worker/wrangler.toml`, commit it, run `deploy.ps1` again. The Pages project is still deployed
+underneath, untouched, and answers again immediately. (Measured — see the L34 worklog.)
 
 ## Verify
 

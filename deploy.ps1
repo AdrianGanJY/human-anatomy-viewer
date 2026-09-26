@@ -1,7 +1,7 @@
 # Build + deploy anatomy.adrian.my — ONE Worker, ONE command (L34, 2026-09-26).
 #
 # Usage: pwsh -File ./deploy.ps1            deploy the merged Worker `human-anatomy`
-#        pwsh -File ./deploy.ps1 -AllowDirty   ...from a dirty tree (the build id gets `-dirty`)
+#        pwsh -File ./deploy.ps1 -AllowDirty   ...from a dirty tree (the build id gets a change-digest segment)
 #
 # ══ WHAT THIS REPLACES ══════════════════════════════════════════════════════════════════════════
 #
@@ -14,7 +14,7 @@
 # have moved.
 #
 # THE TRIPWIRE IS DELETED, AND THE THING IT GUARDED CANNOT HAPPEN ANY MORE. `scripts/build-id.mjs`
-# derives the id from git (short hash + a `-dirty` flag) into `worker/build-id.mjs`, which is bundled
+# derives the id from git (short hash, plus a digest of the uncommitted change when the tree is dirty) into `worker/build-id.mjs`, which is bundled
 # into the SAME artefact as the site and read by the renderer's cache key. A different commit is a
 # different id, always, with nobody remembering anything. The two properties that makes load-bearing
 # — different id => different key, same id => same key — are executed by
@@ -59,13 +59,13 @@ foreach ($line in Get-Content $envFile) {
 
 try {
   # THE TREE-CLEAN GUARD, which is what the deleted tripwire's honesty budget is spent on instead.
-  # A dirty tree produces a `-dirty` build id, so it can never collide with a committed build's cached
+  # A dirty tree produces a change-digest build id, so it can never collide with a committed build's cached
   # pictures -- but a deployment nobody can point at a commit is not a deployment anyone can audit, so
   # it takes an explicit -AllowDirty.
   $dirty = (git status --porcelain) | Where-Object { $_ }
   if ($dirty -and -not $AllowDirty) {
     throw ("the tree is dirty (" + $dirty.Count + " path(s)). Commit first, or pass -AllowDirty to " +
-           "ship a `-dirty` build id that no commit names.")
+           "ship a change-digest build id that no commit names.")
   }
 
   node scripts/build-id.mjs
@@ -83,12 +83,15 @@ try {
     throw "the build id is '$buildId' - a clean deploy must be named by a commit"
   }
   if ($AllowDirty -and $dirty) {
-    # codex round 1, HIGH 2: a dirty id now carries a DIGEST of the uncommitted change, so two
-    # different dirty states are two different ids. It is still not fully identified (an untracked
-    # file's CONTENTS are invisible to a diff), so say so at the moment it is being used.
+    # codex round 1 + 2, HIGH 2: a dirty id carries a DIGEST of the uncommitted change (tracked diff
+    # AND untracked file contents), so two different dirty states are two different ids.
+    # ⚠️ THE WARNING NAMES THE RESIDUAL THAT IS STILL OPEN - stand-in round 3, MEDIUM. It used to warn
+    # about untracked-file contents, which codex round 2's fix CLOSED (git hash-object is in the digest),
+    # so the operator was being warned about a shut hole and not about the live one.
     Write-Host "-AllowDirty: shipping build id $buildId, derived from $($dirty.Count) uncommitted path(s)." -ForegroundColor Yellow
-    Write-Host 'No commit names this artefact. Two dirty trees differing only INSIDE the same' -ForegroundColor Yellow
-    Write-Host 'untracked file would share this id.' -ForegroundColor Yellow
+    Write-Host 'No commit names this artefact. The digest covers tracked changes AND untracked file' -ForegroundColor Yellow
+    Write-Host 'contents, but NOT gitignored build inputs (public/i18n/, public/api/) - which the three' -ForegroundColor Yellow
+    Write-Host 'generators above regenerate deterministically from committed sources on every run.' -ForegroundColor Yellow
   }
 
   node scripts/build-zh.mjs

@@ -104,7 +104,11 @@ export function readGitFacts() {
   // `-uall` lists untracked FILES individually rather than collapsing them into a directory entry —
   // which matters twice: a directory is more informative when expanded, and `git hash-object` below
   // cannot digest a directory path.
-  const status = git(['status', '--porcelain', '-uall']);
+  // ⚠️ `core.quotepath=false` — stand-in round 3, MEDIUM. Porcelain OCTAL-ESCAPES a non-ASCII path
+  // (`?? "\344\270\255\346\226\207.md"`), and `git hash-object` below is then handed a path that does
+  // not exist: executed, it aborts `npm run build` outright. On a project whose whole point is 中文
+  // vocabulary, an untracked `笔记.md` is not exotic. This prints real UTF-8 paths instead.
+  const status = git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall']);
   if (!status) return { hash, status: '', diff: '', untracked: '' };
   const diff = git(['diff', 'HEAD']);
   // The untracked paths, and then their CONTENT hashes. `hash-object` is git's own content digest, so
