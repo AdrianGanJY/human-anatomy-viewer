@@ -677,7 +677,7 @@ if (want('warm-legacy-redrive')) {
   openCase('warm-legacy-redrive', 'C1', 'a warm legacy re-drive resets language and system in both directions', 'R:34');
   const {context, page, errors} = await fresh();
   try {
-    const {reDriveHash} = await import('../workers/snap/src/helpers.mjs');
+    const {reDriveHash} = await import('../worker/snap/helpers.mjs');   // L34: moved with the merge
     // Direction 1: zh-Hans + skeletal, then a plain request with neither.
     await page.goto(`${base}/?select=FMA22359&lang=zh-Hans&system=skeletal&snap=1`, {waitUntil: 'domcontentloaded', timeout: 180000});
     await waitAll(page);

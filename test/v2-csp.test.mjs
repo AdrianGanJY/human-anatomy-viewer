@@ -19,6 +19,16 @@ import {fileURLToPath} from 'node:url';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const HEADERS = readFileSync(ROOT + 'public/_headers', 'utf8').replace(/\r\n/g, '\n');
 const MIDDLEWARE = readFileSync(ROOT + 'functions/_middleware.js', 'utf8').replace(/\r\n/g, '\n');
+/**
+ * ⚠️ L34 ADDS A THIRD COPY, AND THEREFORE A THIRD WAY TO DRIFT. The merged Worker
+ * (`worker/index.mjs`) applies the same policy to any `text/html` IT returns, for the same
+ * belt-and-braces reason the middleware did. Today that is nothing — `/mcp` and `/api/*` answer JSON
+ * — but a future `run_worker_first` entry would make it live, and a copy that is only checked once it
+ * matters is a copy nobody checks. The document's policy on the merged Worker comes from
+ * `dist/_headers` via Workers static assets, which is asserted against the SERVER rather than here:
+ * locally in `verify-ux.mjs`'s CSP prelude, and on the live host in `verify-live.mjs`.
+ */
+const WORKER = readFileSync(ROOT + 'worker/index.mjs', 'utf8').replace(/\r\n/g, '\n');
 
 /** The policy as `_headers` states it: the value after `Content-Security-Policy:` on an indented
  *  line inside the `/*` block. Parsed rather than re-typed, so this test reads the shipped file. */
@@ -37,10 +47,23 @@ const fromMiddleware = () => {
   return m[1];
 };
 
+/** The policy as the merged Worker's router states it (L34). */
+const fromWorker = () => {
+  const m = /const CSP = "([^"]+)"/.exec(WORKER);
+  assert.ok(m, 'worker/index.mjs declares no CSP constant');
+  return m[1];
+};
+
 test('the two copies of the policy are byte-identical', () => {
   assert.equal(fromMiddleware(), fromHeaders(),
     'public/_headers and functions/_middleware.js declare DIFFERENT policies — the origin would then'
     + ' enforce whichever layer happened to answer, which is worse than having one of them');
+});
+
+test('and the merged Worker carries the SAME policy — three copies, one string (L34)', () => {
+  assert.equal(fromWorker(), fromHeaders(),
+    'worker/index.mjs declares a DIFFERENT policy from public/_headers — the merged Worker would then'
+    + ' enforce one thing on an HTML response it returns and the asset layer another');
 });
 
 test('the policy is exactly RC11\'s contract, directive by directive', () => {

@@ -55,3 +55,17 @@ workers/*/node_modules/
 # S7: the local preview server used by the verification gate writes here.
 .preview-*.log
 .preview-*.err
+
+# ══ L34 ═════════════════════════════════════════════════════════════════════════════════════════
+# The merged Worker's `wrangler dev` state, and this session's detached dev-server log/pid.
+/worker/.wrangler/
+.l34-dev.*
+
+# ⚠️ `worker/build-id.mjs` IS GENERATED AND MUST NOT BE TRACKED, and the reason is a paradox rather
+# than a preference: the id is the git short hash of the tree, so the file's correct contents for
+# commit C cannot be known before C exists. Tracking it would therefore make every build dirty the
+# tree — which `deploy.ps1`'s clean-tree guard refuses, so the deploy would never run.
+# `scripts/build-id.mjs` writes it before `vite build` (and `test/snap-cache-key.test.mjs` runs the
+# generator itself), so nothing depends on it being in the repo. A checkout that has never built it
+# reads `dev`, which is true.
+/worker/build-id.mjs

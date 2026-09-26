@@ -38,10 +38,25 @@ const num = (v, max) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 &
 /** A short, single-line string. Truncated, never rejected — a long UA is not an attack. */
 const str = (v, max) => (typeof v === 'string' ? v.replace(/[\r\n\t]+/g, ' ').trim().slice(0, max) : null);
 
-export async function onRequest({ request }) {
+/**
+ * WHO ANSWERED, AND FROM WHICH BUILD — L34, and this is the instrument the cutover is observed with.
+ *
+ * `anatomy.adrian.my` is served by the merged Worker `human-anatomy` from L34 onward, with the old
+ * Pages project left deployed underneath as the rollback. Both can answer this path, and a response
+ * that does not SAY which one did would make "the cutover happened" an inference from a dashboard
+ * rather than a fact from the server's own mouth. So the Worker passes its name and its derived build
+ * id in `env` (see `worker/index.mjs`), and Pages — which passes neither — reports itself honestly as
+ * `pages-functions` with no build id.
+ */
+const stamp = (env) => ({
+  worker: (env && env.WORKER_NAME) || 'pages-functions',
+  build: (env && env.BUILD_ID) || null,
+});
+
+export async function onRequest({ request, env }) {
   if (request.method === 'GET') {
     // A GET is how you check the lane is alive without recording anything.
-    return json(200, { ok: true, lane: 'timing', accepts: 'POST', note: 'open /v2/?probe=1 on the device' });
+    return json(200, { ok: true, lane: 'timing', accepts: 'POST', note: 'open /v2/?probe=1 on the device', ...stamp(env) });
   }
   if (request.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'GET, POST' } });
 
@@ -63,6 +78,11 @@ export async function onRequest({ request }) {
   const record = {
     // Server-stamped: the client clock is the one thing a client cannot be trusted about.
     at: new Date().toISOString(),
+    // ⚠️ `worker` / `served_build`, NOT `build`: the record's `build` below is what the CLIENT said it
+    // was running, which is a different fact from which deployment answered, and a POST body must
+    // never be able to shadow the server's own answer to "who am I".
+    worker: stamp(env).worker,
+    served_build: stamp(env).build,
     build: str(body.build, 32),
     scene: str(body.scene, 24),
     // THE NUMBERS THIS LANE EXISTS FOR. Ceiling 600 s — anything above it is a stuck tab, not

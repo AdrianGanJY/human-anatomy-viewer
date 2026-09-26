@@ -22,7 +22,8 @@ const {
   encodeScene, decodeScene, structureOpacity, sceneOpacities, sceneSelectIds,
   sceneFocusId, sceneFrameIds,
 } = codec;
-const helpers = await import(url('workers', 'snap', 'src', 'helpers.mjs'));
+// L34: the renderer's sources moved to `worker/snap/` when the two Cloudflare projects merged.
+const helpers = await import(url('worker', 'snap', 'helpers.mjs'));
 const { canonical, reDriveHash, parseSize, LEGACY_KEYS, SCENE_KEYS } = helpers;
 
 const HAMSTRINGS = ['FMA22357', 'FMA22438', 'FMA45887'];
@@ -456,7 +457,7 @@ test('every URL key the page reads is in the renderer cache key, or excluded on 
   const legacy = new Set(LEGACY_KEYS);
   for (const k of keys) {
     if (EXCLUDED[k]) continue;
-    assert.ok(legacy.has(k), `URL key "${k}" is parsed by the page but missing from the renderer's cache key (workers/snap/src/helpers.mjs LEGACY_KEYS) — two different pictures would share one R2 entry`);
+    assert.ok(legacy.has(k), `URL key "${k}" is parsed by the page but missing from the renderer's cache key (worker/snap/helpers.mjs LEGACY_KEYS) — two different pictures would share one R2 entry`);
   }
   // ...and the re-drive must be able to say something about each of them, or a warm tab
   // keeps the previous request's value.

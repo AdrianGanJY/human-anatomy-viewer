@@ -19,10 +19,18 @@ const path=(relative:string)=>fileURLToPath(new URL(relative,import.meta.url));
  * the commit out of git. Both are wrapped: a tree without git, or a checkout without the worker
  * config, still builds — it just says `dev`, which is true.
  */
+/**
+ * ⚠️ L34 — THE SOURCE MOVED, AND IT IS NOW GENERATED RATHER THAN WRITTEN. `SITE_BUILD` used to be a
+ * hand-edited literal in the renderer Worker's `wrangler.toml`; since the two Cloudflare projects
+ * merged into one Worker it is DERIVED by `scripts/build-id.mjs` (git short hash + a `-dirty` flag)
+ * into `worker/build-id.mjs`, which the renderer's cache key and this panel both read. One source, and
+ * nobody has to remember to bump it. `deploy.ps1` runs the generator before `vite build`; a tree where
+ * it has never run reads `dev`, which is true.
+ */
 const readBuildId=()=>{
  try{
-  const toml=readFileSync(path('./workers/snap/wrangler.toml'),'utf8');
-  return /^SITE_BUILD\s*=\s*"([^"]+)"/m.exec(toml)?.[1]??'dev';
+  const src=readFileSync(path('./worker/build-id.mjs'),'utf8');
+  return /SITE_BUILD\s*=\s*["']([^"']+)["']/.exec(src)?.[1]??'dev';
  }catch{return 'dev';}
 };
 /**

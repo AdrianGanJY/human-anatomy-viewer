@@ -137,6 +137,37 @@ const EXPECTED_EN = 'left semitendinosus';
  * caught a real defect in S0.
  */
 const SHOT_MS = 120000;
+
+/**
+ * ══ ONE NAMED EXPECTED VIOLATION, AND IT IS THE CSP WORKING — L34 ══════════════════════════════
+ *
+ * Cloudflare injects its own Web Analytics beacon (`static.cloudflareinsights.com/beacon.min.js`)
+ * into HTML responses AT THE EDGE, and `script-src 'self'` refuses it. Nothing in the app loads it,
+ * nothing in the app needs it, and a LOCAL sweep cannot see it: the injection does not exist in
+ * `dist`, so it appears for the first time in production.
+ *
+ * `scripts/verify-live.mjs` has exempted it by name since S5b and passed 64/64 with it blocked. This
+ * suite did not, so the first live run of the full sweep (L31 S7, 2026-09-16) produced **12 reds that
+ * were all this one beacon** — 6 viewports x 2 "no console errors" rows — and none of them was an app
+ * defect. An instrument that cannot be run against production is not an instrument for production.
+ *
+ * ⚠️ NARROW ON PURPOSE — THE HOST *AND* THE DIRECTIVE, byte for byte the same regex verify-live uses.
+ * Any other CSP violation, and every non-CSP console error, still fails this suite. A blanket "ignore
+ * CSP errors" here would hide the next real one, which is the whole reason the S5b rows below exist.
+ *
+ * ⚠️ AND IT IS NOT WIDENED INTO THE POLICY. Adding a CDN to `script-src` on the one origin whose
+ * localStorage holds an OpenAI key is a real widening and it is Adrian's call (turning Web Analytics
+ * OFF for the project keeps `'self'` and removes the noise). Until he rules, the beacon stays blocked
+ * and these rows NAME it.
+ */
+const EXPECTED_CSP_VIOLATION = /static\.cloudflareinsights\.com.*violates the following Content Security Policy directive: "script-src 'self'"/;
+/** The console errors that are NOT the named, expected, edge-injected beacon refusal. */
+const unexpectedErrors = (list) => list.filter((e) => !EXPECTED_CSP_VIOLATION.test(e));
+/** How a row SAYS it saw the beacon, so a green row still reports what it tolerated. */
+const beaconNote = (list) => {
+  const n = list.length - unexpectedErrors(list).length;
+  return n ? ` (${n} expected script-src refusal${n === 1 ? '' : 's'} of the edge-injected Cloudflare beacon)` : '';
+};
 const VIEWPORTS = [
   {name: '390x844', width: 390, height: 844, dpr: 3, coarse: true},
   {name: '768x1024', width: 768, height: 1024, dpr: 2, coarse: true},
@@ -1104,7 +1135,12 @@ for (const vp of SWEEP) {
     const popAtEnd = await populationCheck(page, ledger);
     check(vp.name, 'the population still holds at the END of the pass (no child target attached later)',
       popAtEnd.ok, popAtEnd.measured, POPULATION);
-    check(vp.name, 'no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | ') || 'none', 'none');
+    // L34: the beacon is exempted BY NAME (see EXPECTED_CSP_VIOLATION) exactly as verify-live.mjs
+    // does, and only that. Everything else still fails.
+    const unexpected = unexpectedErrors(consoleErrors);
+    check(vp.name, "no console errors (beyond the CSP refusing Cloudflare's injected beacon)",
+      unexpected.length === 0,
+      unexpected.slice(0, 3).join(' | ') || `none${beaconNote(consoleErrors)}`, 'none');
   } catch (e) {
     check(vp.name, 'run completed', false, String(e).slice(0, 220), 'no throw');
   } finally {
@@ -1502,9 +1538,11 @@ for (const vp of SWEEP) {
     const barePopEnd = await populationCheck(barePage, bareLedger);
     check(vp.name, 'bare entry: the population still holds at the END of the pass', barePopEnd.ok, barePopEnd.measured, POPULATION);
     await barePage.screenshot({path: join(outDir, `${label}-bare-${vp.name}.png`), timeout: SHOT_MS});
+    // L34: same named beacon exemption as the pass-A row above, and only that.
+    const bareUnexpected = unexpectedErrors(bareErrors);
     check(vp.name, `bare entry reached readiness and logged no console error (${BARE_EN})`,
-      bareReady && bareErrors.length === 0,
-      `${bareReady ? 'ready' : 'READINESS MARKER NEVER APPEARED'}; ${bareErrors.slice(0, 2).join(' | ') || 'no console errors'}`, 'ready, none');
+      bareReady && bareUnexpected.length === 0,
+      `${bareReady ? 'ready' : 'READINESS MARKER NEVER APPEARED'}; ${bareUnexpected.slice(0, 2).join(' | ') || `no console errors${beaconNote(bareErrors)}`}`, 'ready, none');
     /**
      * ══ S2 — THE MIRROR OF THE CROSS-SCRIPT ROW ═══════════════════════════════════════════════
      *
@@ -5584,10 +5622,17 @@ if (variant === 'v2') {
        * two cannot disagree, and the row's real claim — the page names the build it was BUILT from,
        * and THIS commit — is the one being asserted.
        */
+      /**
+       * ⚠️ L34: THE SOURCE MOVED, AND THE SHAPE OF THE CLAIM IMPROVED WITH IT. `SITE_BUILD` is no
+       * longer a hand-edited literal in a second project's `wrangler.toml`; it is DERIVED (git short
+       * hash + a dirty flag) into `worker/build-id.mjs` by `scripts/build-id.mjs` before every build.
+       * This row still reads the SAME file `vite.config.ts` reads, so the page and the oracle cannot
+       * disagree — and the build id it asserts is now, by construction, about the tree under test.
+       */
       let expectBuild = '';
       try {
-        expectBuild = /^SITE_BUILD\s*=\s*"([^"]+)"/m.exec(
-          readFileSync(`${REPO_DIR}/workers/snap/wrangler.toml`, 'utf8'))?.[1] ?? '';
+        expectBuild = /SITE_BUILD\s*=\s*'([^']+)'|SITE_BUILD\s*=\s*"([^"]+)"/.exec(
+          readFileSync(`${REPO_DIR}/worker/build-id.mjs`, 'utf8'))?.slice(1).find(Boolean) ?? '';
       } catch { expectBuild = ''; }
       check(py.name, `[${S4_V}] About names the deployed build and THIS commit (not the upstream sha)`,
         !about.error && !!expectCommit && !!expectBuild && about.found
@@ -6923,12 +6968,32 @@ if (variant === 'v2') {
    * oracle is a second source of truth that passes while the shipped one is wrong — the exact
    * family this suite exists to catch.
    *
-   * ⚠️ AND IT IS *INJECTED*, because `vite preview` does not read `_headers` and `wrangler pages
-   * dev` cannot serve this project locally (`functions/_middleware.js` 301s every non-canonical
-   * host, including localhost). So this proves the POLICY — that the app works under it and that a
-   * foreign script is blocked by it. That the LIVE HOST actually sends it is a different claim,
-   * asserted after the deploy against `anatomy.adrian.my` with the adr token. Both are needed;
-   * neither substitutes for the other.
+   * ══ L34: TWO MODES, AND THE LIVE ONE READS THE REAL HEADER ═════════════════════════════════
+   *
+   * These rows used to INJECT the policy: `vite preview` does not read `_headers`, and `wrangler pages
+   * dev` could not serve this project locally (`functions/_middleware.js` 301s every non-canonical
+   * host, loopback included). The oracle therefore re-served every document through `route.fetch()`
+   * with the header pasted on.
+   *
+   * Against production that harness was the SECOND of L31 S7's three live-only failure classes: 12
+   * reds — 6 viewports x 2 rows — with `readiness=false` and 118 characters of text, because
+   * re-serving an Access-gated document through the route handler does not reproduce the real
+   * response. The policy was fine; the instrument could not run where it mattered.
+   *
+   * So the mode is now chosen by ASKING THE SERVER, once, before the loop: fetch the document and look
+   * for a `Content-Security-Policy` response header.
+   *   · HEADER PRESENT  (`wrangler dev` of the merged Worker, and the live host) => LIVE MODE. No
+   *     route, no re-serve, no injection. The rows assert the REAL header equals the shipped policy
+   *     and that both style paths still apply under it.
+   *   · HEADER ABSENT   (a bare `vite preview`) => the legacy injected mode, kept so the suite still
+   *     works on a preview server, and reported as such in every row's detail.
+   *
+   * The local gate now runs against `wrangler dev -c worker/wrangler.toml`, which serves `dist/_headers`
+   * — so the CSP is exercised BEFORE the edge, and the prelude row below fails if it is not, because a
+   * gate that never saw the header proves nothing about the header.
+   *
+   * The "it BITES" probe is unchanged and needs no inline script: it appends a `<script src>` from
+   * another origin and asserts the browser refuses it.
    */
   {
     const policy = (() => {
@@ -6938,6 +7003,31 @@ if (variant === 'v2') {
       const row = lines.slice(at + 1).find((l) => /^\s+Content-Security-Policy:/.test(l));
       return row ? row.replace(/^\s*Content-Security-Policy:\s*/, '').trim() : '';
     })();
+
+    /**
+     * THE PRELUDE. One request to the server under test, reading the DOCUMENT's own response header.
+     * This is the row that makes every row after it mean something.
+     */
+    let served = {status: 0, header: null, error: null};
+    {
+      const probeCtx = await newContext(SWEEP[0]);
+      const probe = await probeCtx.newPage();
+      try {
+        const res = await probe.goto(`${base}${path}?scene=${BLOB}`, {waitUntil: 'commit', timeout: 180000});
+        const h = res ? await res.headerValue('content-security-policy') : null;
+        served = {status: res ? res.status() : 0, header: h, error: null};
+      } catch (e) { served = {status: 0, header: null, error: String(e).slice(0, 120)}; } finally {
+        await probeCtx.close();
+      }
+    }
+    const liveMode = !!served.header;
+    check(SWEEP[0].name, `[${S5B}] the SERVER sends the CSP on the document — the header, not an injection`,
+      served.header === policy,
+      `status=${served.status} · served header=${served.header ? `${served.header.slice(0, 70)}…` : 'ABSENT'}`
+      + ` · matches public/_headers=${served.header === policy}${served.error ? ` · ${served.error}` : ''}`,
+      'the document response carries the shipped policy verbatim (wrangler dev serves dist/_headers;'
+      + ' so does the edge). A gate that does not see the header proves nothing about the header');
+
     // SWEEP, not VIEWPORTS: a `UX_VIEWPORTS=` run must be able to narrow this the way it narrows
     // everything else. The full sweep sets SWEEP to all six, which is what the kickoff asks for.
     for (const vp of SWEEP) {
@@ -6947,26 +7037,29 @@ if (variant === 'v2') {
       const console_ = [];
       page.on('console', (m) => { if (m.type() === 'error') console_.push(m.text().slice(0, 160)); });
       try {
-        // The document response, with the shipped policy on it.
-        await page.route((u) => u.href.startsWith(base) && !/\.(js|css|json|png|svg|woff2?|bin)(\?|$)/.test(u.pathname),
-          async (route) => {
-            /**
-             * ⚠️ A TRANSPORT ERROR HERE KILLS THE WHOLE PROCESS, and it did — sweep s7g, after 700
-             * green rows: `route.fetch: read ECONNRESET` on `/models/body-6.bin.gz` arrived as an
-             * UNHANDLED REJECTION and node exited, taking the summary and `oracles-s7g.json` with
-             * it. The `finally` below already unroutes for the TargetClosedError version of this;
-             * it cannot catch a handler that throws while the page is still live.
-             *
-             * A failed fetch is not a finding — the local preview server dropped a connection under
-             * a long multi-context run. So it is ABORTED, which the page sees as a failed
-             * subresource (and every row here asserts on the CSP, not on chunk delivery), instead
-             * of ending the sweep.
-             */
-            let res;
-            try { res = await route.fetch(); } catch { await route.abort().catch(() => {}); return; }
-            const headers = {...res.headers(), 'content-security-policy': policy};
-            await route.fulfill({response: res, headers}).catch(() => {});
-          });
+        // ⚠️ IN LIVE MODE NOTHING IS ROUTED. The server's own header is the policy under test.
+        if (!liveMode) {
+          // The document response, with the shipped policy on it.
+          await page.route((u) => u.href.startsWith(base) && !/\.(js|css|json|png|svg|woff2?|bin)(\?|$)/.test(u.pathname),
+            async (route) => {
+              /**
+               * ⚠️ A TRANSPORT ERROR HERE KILLS THE WHOLE PROCESS, and it did — sweep s7g, after 700
+               * green rows: `route.fetch: read ECONNRESET` on `/models/body-6.bin.gz` arrived as an
+               * UNHANDLED REJECTION and node exited, taking the summary and `oracles-s7g.json` with
+               * it. The `finally` below already unroutes for the TargetClosedError version of this;
+               * it cannot catch a handler that throws while the page is still live.
+               *
+               * A failed fetch is not a finding — the local preview server dropped a connection under
+               * a long multi-context run. So it is ABORTED, which the page sees as a failed
+               * subresource (and every row here asserts on the CSP, not on chunk delivery), instead
+               * of ending the sweep.
+               */
+              let res;
+              try { res = await route.fetch(); } catch { await route.abort().catch(() => {}); return; }
+              const headers = {...res.headers(), 'content-security-policy': policy};
+              await route.fulfill({response: res, headers}).catch(() => {});
+            });
+        }
         await page.addInitScript(() => {
           window.__csp = [];
           document.addEventListener('securitypolicyviolation', (e) => {
@@ -7009,12 +7102,23 @@ if (variant === 'v2') {
             text: (document.body.innerText || '').length,
           };
         });
-        violations.push(...live.csp);
+        /**
+         * ⚠️ THE BEACON, EXEMPTED BY NAME HERE TOO — and it needs its own pattern. `EXPECTED_CSP_VIOLATION`
+         * matches Chromium's CONSOLE MESSAGE; the in-page `securitypolicyviolation` record is
+         * `"<directive> <- <blockedURI>"`, a different string for the same event. Narrow on the host AND
+         * the directive, like its sibling: any other violation is still a red.
+         */
+        const beaconEvent = /^script-src(-elem)? <- https:\/\/static\.cloudflareinsights\.com/;
+        const cspReal = live.csp.filter((v) => !beaconEvent.test(v));
+        const cspBeacon = live.csp.length - cspReal.length;
+        violations.push(...cspReal);
         const styled = live.inlineCount > 0 && live.inlineApplied !== ''
           && live.sheetBg !== '' && live.sheetBg !== 'rgba(0, 0, 0, 0)';
         check(vp.name, `[${S5B}] the app runs clean under its own CSP — zero violations, and BOTH style paths still apply`,
-          ready && live.csp.length === 0 && styled,
-          `readiness=${ready} · violations=[${live.csp.join(' ; ') || 'none'}]`
+          ready && cspReal.length === 0 && styled,
+          `mode=${liveMode ? 'LIVE (the server\'s own header)' : 'injected (no header on this server)'}`
+          + ` · readiness=${ready} · violations=[${cspReal.join(' ; ') || 'none'}]`
+          + (cspBeacon ? ` (+${cspBeacon} expected refusal(s) of the edge-injected Cloudflare beacon)` : '')
           + ` · elements carrying a React inline style=${live.inlineCount}`
           + ` · its computed value under the policy: ${live.inlineProp}=${live.inlineApplied || 'EMPTY (blocked)'}`
           + ` · a stylesheet-sourced background=${live.sheetBg} · rendered text=${live.text} chars`,
@@ -7031,7 +7135,10 @@ if (variant === 'v2') {
           setTimeout(() => done('timeout'), 2500);
         }));
         const after = await page.evaluate(() => window.__csp || []);
-        const scriptViolation = after.filter((v) => v.startsWith('script-src'));
+        // The beacon's own refusal is a script-src violation too, and in LIVE mode it is already in
+        // this list before the probe fires. Exempted by name so the row still counts EXACTLY ONE.
+        const scriptViolation = after.filter((v) => v.startsWith('script-src')
+          && !/static\.cloudflareinsights\.com/.test(v));
         check(vp.name, `[${S5B}] and it BITES — a script from another origin is refused by script-src`,
           blocked !== 'LOADED' && scriptViolation.length === 1,
           `the foreign script ${blocked === 'LOADED' ? 'LOADED' : `did not load (${blocked})`}`
@@ -7247,7 +7354,28 @@ if (variant === 'v2') {
      * and "poll until non-empty" stops on THAT text — measured, and it reported a stale copy
      * against a control that had copied correctly.
      */
-    const raceOf = async (edit) => {
+    /**
+     * ⚠️ NO STRING EVALUATION IN THE PAGE — L34, and this is the third of L31 S7's live-only failure
+     * classes, fixed rather than carried.
+     *
+     * This helper used to take the edit as SOURCE TEXT and run it with `eval(js)` inside the page.
+     * Against the local sweep, where the CSP was injected by the oracle onto the document but the app
+     * was reached over a plain preview server, that worked. Against the LIVE origin it cannot: the
+     * shipped policy is `script-src 'self'` with no `unsafe-eval`, so `eval` throws `EvalError` and
+     * the whole S7 share pass went red on the instrument — the one row that could neither confirm nor
+     * deny the feature it exists to prove (L31 worklog, 2026-09-16: "1 = the S7 share pass, which
+     * evaluates code STRINGS in the page").
+     *
+     * The edit is now NAMED and the code lives inside the evaluated FUNCTION, which Playwright
+     * delivers over CDP as a function with a JSON argument — no in-page `eval`, no `new Function`, and
+     * therefore nothing for `script-src` to refuse. The property the rows actually depend on is
+     * preserved exactly: the edit and the click happen in the SAME TASK, with no await between them.
+     *
+     * A key this switch does not know THROWS, rather than silently doing nothing and copying an
+     * unchanged link — a race that performs no edit would pass every assertion below for the wrong
+     * reason.
+     */
+    const raceOf = async (editKey) => {
       /**
        * ⚠️ `bringToFront` FIRST — the clipboard needs a FOCUSED document, and this block opens and
        * closes other pages between races. Sweep s7j lost exactly one of three races to it: the
@@ -7256,10 +7384,14 @@ if (variant === 'v2') {
        * reason (Chromium throttles and de-focuses a page that is not frontmost).
        */
       await page.bringToFront().catch(() => {});
-      return page.evaluate(async (js) => {
+      return page.evaluate(async (key) => {
       try { await navigator.clipboard.writeText(''); } catch { /* reported as an empty read */ }
-      // eslint-disable-next-line no-eval
-      eval(js);
+      // THE EDIT, as code rather than as text. Same task as the click below.
+      if (key === 'view-back') window.atlas.setView('back');
+      else if (key === 'drop-last') {
+        const ids = window.atlas.state().ids;
+        window.atlas.remove(ids[ids.length - 1]);
+      } else throw new Error(`raceOf: unknown edit "${key}"`);
       // NO WAIT BETWEEN THE EDIT AND THE CLICK. That is the assertion.
       document.querySelector('.v2-tools [data-act="copy-link"]').click();
       let copied = '';
@@ -7269,7 +7401,7 @@ if (variant === 'v2') {
       }
       const st = window.atlas.state();
       return {copied, ids: st.ids.slice(), view: st.view, lang: st.lang, blob: st.blob};
-      }, edit);
+      }, editKey);
     };
 
     /**
@@ -7314,7 +7446,7 @@ if (variant === 'v2') {
     // ── codex round 28, HIGH 1: a NAMED VIEW changes neither `scene` nor `select` ─────────────
     // Its measurement against the wait-based design: `Polling timers created: 0 · Copied
     // /v2/?select=FMA9611 · Reopened view: three-quarter`.
-    const viewRace = await raceOf(`window.atlas.setView('back')`);
+    const viewRace = await raceOf('view-back');
     let vu = null; try { vu = new URL(viewRace.copied); } catch { /* reported below */ }
     check(vp7.name, `[${S7}] HIGH 1: a named view set in the same task IS in the copied link`,
       !!vu && vu.searchParams.get('view') === 'back' && viewRace.view === 'back',
@@ -7323,8 +7455,7 @@ if (variant === 'v2') {
       'view=back — the field the old comparison could not see');
 
     // ── the removal, which is what the earlier rows measured ──────────────────────────────────
-    const dropRace = await raceOf(
-      `const _ids = window.atlas.state().ids; window.atlas.remove(_ids[_ids.length - 1])`);
+    const dropRace = await raceOf('drop-last');
     let du = null; try { du = new URL(dropRace.copied); } catch { /* reported below */ }
     const copiedIds = (du?.searchParams.get('select') || '').split(',').filter(Boolean);
     check(vp7.name, `[${S7}] a removal in the same task is in the copied link, with no wait at all`,
@@ -7358,7 +7489,7 @@ if (variant === 'v2') {
      * mode, so no browser sequence can produce `snap=1` on this tier. `test/v2-copy-link.test.mjs`
      * carries the `view=back AND snap` case codex named, against the production mapping.
      */
-    const flagged = await raceOf(`window.atlas.setView('back')`);
+    const flagged = await raceOf('view-back');
     let fu = null; try { fu = new URL(flagged.copied); } catch { /* reported below */ }
     const flagBack = fu ? await reopen(flagged.copied) : {error: 'no url'};
     check(vp7.name, `[${S7}] HIGH (r29): a non-default render flag survives copy AND reopen`,

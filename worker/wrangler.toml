@@ -1,0 +1,100 @@
+# ══ THE MERGED WORKER — `human-anatomy` (L34, 2026-09-26) ═══════════════════════════════════════
+#
+# ⚠️ WHICH FILE IS WHICH, because there are now two and only one of them is used at a time:
+#
+#   ../wrangler.toml      the OLD Pages project `human-anatomy-viewer`. UNTOUCHED. It is what
+#                         `wrangler pages deploy` reads, and it stays working so the cutover can be
+#                         rolled back by removing the route below. Do not delete it in this task.
+#   worker/wrangler.toml  THIS file, the new Worker. It is deliberately NOT at the repo root: a root
+#                         `wrangler.toml` naming `main` would be picked up by `wrangler pages deploy`
+#                         and break the rollback path. Every command that uses it passes it
+#                         explicitly: `npx wrangler deploy -c worker/wrangler.toml`.
+#   workers/snap/         the OLD renderer Worker's config. UNTOUCHED, still deployed, still the
+#                         thing the Pages project calls over its `SNAP` service binding — which is
+#                         exactly why the rollback works. Its SOURCE now lives under `worker/snap/`
+#                         (one implementation, no drift); rolling back does not require redeploying
+#                         it, because its deployment is already live.
+#
+# Adrian deletes the Pages project and `human-anatomy-snap` BY HAND once the route is verified.
+name = "human-anatomy"
+main = "./index.mjs"
+compatibility_date = "2024-12-01"
+# `@cloudflare/puppeteer` needs it. Same flag the renderer Worker has always carried.
+compatibility_flags = ["nodejs_compat"]
+account_id = "a135de78aaa95d36ee634b81267625c6"   # Adrey — pinned so a multi-account box cannot deploy this elsewhere
+
+# ⚠️ FALSE, AND IT IS LOAD-BEARING, NOT TIDINESS. L30 P1 measured the hole this closes: every Pages
+# project also answers on `*.pages.dev`, which the `*.adrian.my` Cloudflare Access wildcard does not
+# cover, so `adrian-anatomy.pages.dev` served the whole app to anyone at HTTP 200. Under Pages the
+# answer was a 301 in `functions/_middleware.js`. Here it cannot be: `run_worker_first` below means a
+# DOCUMENT request never reaches Worker code, so no redirect in `index.mjs` can see it. What closes
+# the hole is this line — there is no second hostname. `test/worker-config.test.mjs` asserts it.
+workers_dev = false
+
+# ── THE ROUTE IS THE CUTOVER ────────────────────────────────────────────────────────────────────
+# Deploy once with this COMMENTED OUT to prove the Worker exists, then uncomment and deploy again:
+# that second deploy is the moment `anatomy.adrian.my` stops being served by Pages. ROLLBACK is the
+# inverse — comment it out, deploy, and Pages answers again.
+# [[routes]]
+# pattern = "anatomy.adrian.my/*"
+# zone_name = "adrian.my"
+
+# ── CLOUDFLARE BROWSER RENDERING ────────────────────────────────────────────────────────────────
+# THE binding that forced the two-project split in the first place: Pages Functions do not take it.
+# Held directly now, so `/api/snap` and the `/mcp` render tools call the renderer in-process.
+#
+# ⚠️ IT MUST SIT ABOVE `[assets]`, and this is not cosmetic. TOML assigns every key after a `[table]`
+# header TO THAT TABLE, so with this line below `[assets]` wrangler read it as `assets.browser`,
+# printed `Unexpected fields found in assets field: "browser"` as a WARNING (not an error), started
+# anyway — and the binding was simply ABSENT from the Worker. `/api/snap` would then have answered
+# `503 no browser binding` on a deployment that looked green. Caught by reading wrangler's own
+# binding table in `wrangler dev`, which is the authority here rather than the file.
+browser = { binding = "BROWSER" }
+
+# ── THE SITE ITSELF ─────────────────────────────────────────────────────────────────────────────
+# `directory` is resolved relative to THIS file, so `../dist` is the vite output.
+#
+# `run_worker_first` is the whole reason this shape is affordable: only `/mcp` and `/api/*` invoke the
+# Worker. The document, the JS bundle, the dictionaries and 33 MB of model geometry are answered by
+# the Asset Worker directly — and `dist/_headers` decorates them, which is where the CSP, nosniff and
+# Referrer-Policy on the document come from. (Verified against `wrangler dev` before the edge and
+# against the live host after the deploy; a gate that never saw the header would prove nothing.)
+#
+# `not_found_handling` is deliberately ABSENT (i.e. "none"). Under Pages, an unknown path was answered
+# with `index.html` at HTTP 200 — a trap this codebase documents in three places, because `res.ok` is
+# then worthless and a missing `/api/index.json` reads as the app's own home page. A 404 for a path
+# that does not exist is the honest answer, and the app routes on the QUERY STRING, never on the path,
+# so nothing needs a single-page-application fallback. `html_handling` stays at its default
+# (`auto-trailing-slash`), which is what resolves `/v2/` to `dist/v2/index.html`.
+[assets]
+directory = "../dist"
+binding = "ASSETS"
+run_worker_first = ["/mcp", "/api/*"]
+
+# Rendered PNGs, keyed by sha256(build id | size | canonical params). A repeated view costs one R2
+# GET instead of a browser session. SAME bucket as the old renderer used — the cache is not thrown
+# away by the merge, only re-keyed by the new build id (which every deploy does now, by design).
+[[r2_buckets]]
+binding = "SNAPS"
+bucket_name = "human-anatomy-snaps"
+
+# ── VARS ────────────────────────────────────────────────────────────────────────────────────────
+# Byte-identical to the Pages project's `[vars]`. NONE of these are secrets: a CF Access `aud` tag
+# and a service-token Client ID are public identifiers. The reasoning for each value is written out
+# at length in ../wrangler.toml and is unchanged — in particular ACCESS_AUD is the aud of the
+# DEDICATED, PATH-SCOPED Access app `anatomy.adrian.my/mcp`, never the `*.adrian.my` wildcard's,
+# and emptying it is the kill switch that 401s every /mcp request.
+#
+# SITE_BUILD is NOT here, and that is the increment: the renderer's cache-key salt is a build-time
+# constant in `worker/build-id.mjs` (git short hash + dirty flag), generated by
+# `scripts/build-id.mjs` before every build, so it travels with the artefact it describes and cannot
+# be forgotten. That is what allowed `deploy.ps1`'s render-path tripwire to be deleted.
+#
+# SECRETS (`npx wrangler secret put -c worker/wrangler.toml <NAME>`) — never in this file, never
+# committed: SNAP_CF_ID / SNAP_CF_SECRET (the adr CF Access service token the renderer opens the
+# gated site with) and SNAP_SHARED_SECRET.
+[vars]
+ACCESS_TEAM_DOMAIN = "adrey.cloudflareaccess.com"
+ACCESS_AUD         = "b603427ba3f271ab9a5f6255ade26e29efe6c5213cd9de0b8c93d51036bc0da5"
+OWNER_EMAILS       = "adrianganjy@gmail.com,adrey.journey@gmail.com,mipos.agent@gmail.com,lohjiafui93@gmail.com"
+OWNER_TOKEN_IDS    = "cf98efdf672cbd866da74d5b1d2078fd.access"

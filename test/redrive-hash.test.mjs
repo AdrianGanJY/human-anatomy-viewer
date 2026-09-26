@@ -14,7 +14,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {canonical, reDriveHash, DEFAULT_SYSTEMS} from '../workers/snap/src/helpers.mjs';
+// L34: the renderer's sources moved from `workers/snap/src/` to `worker/snap/` when the two
+// Cloudflare projects merged into one Worker. Same module, one implementation, no drift.
+import {canonical, reDriveHash, DEFAULT_SYSTEMS} from '../worker/snap/helpers.mjs';
 
 const params = (s) => new URLSearchParams(s);
 const hash = (s) => new URLSearchParams(reDriveHash(params(s)).replace(/^#/, ''));
