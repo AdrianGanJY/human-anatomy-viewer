@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 3016",
     "build": "node scripts/build-id.mjs && vite build",
-    "build:vercel": "vite build",
+    "build:vercel": "node scripts/build-id.mjs && vite build",
     "check": "tsc --noEmit"
   },
   "dependencies": {

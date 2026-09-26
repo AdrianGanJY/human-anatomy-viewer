@@ -33,11 +33,13 @@ const SRC = readFileSync(join(ROOT, 'scripts', 'verify-ux.mjs'), 'utf8').replace
 const lift = () => {
   const from = SRC.indexOf("const BEACON_ORIGIN = ");
   assert.ok(from >= 0, 'verify-ux.mjs no longer declares BEACON_ORIGIN — this test cannot see the shipped rule');
-  const end = SRC.indexOf('};', SRC.indexOf('const isBeaconEvent'));
-  assert.ok(end > from, 'verify-ux.mjs no longer declares isBeaconEvent as a block arrow');
+  const marker = 'const isBeaconEvent';
+  const at = SRC.indexOf(marker);
+  assert.ok(at > from, 'verify-ux.mjs no longer declares isBeaconEvent');
+  const end = SRC.indexOf('};', at);
   const block = SRC.slice(from, end + 2);
   // eslint-disable-next-line no-new-func
-  return new Function(`${block}\nreturn {BEACON_ORIGIN, EXPECTED_CSP_VIOLATION, unexpectedErrors, isBeaconEvent};`)();
+  return new Function(`${block}\nreturn {BEACON_ORIGIN, beaconUri, EXPECTED_CSP_VIOLATION, unexpectedErrors, isBeaconEvent};`)();
 };
 
 const { EXPECTED_CSP_VIOLATION, BEACON_ORIGIN, isBeaconEvent } = lift();
@@ -63,8 +65,8 @@ test('a genuinely different blocked script is never exempt', () => {
   assert.ok(!EXPECTED_CSP_VIOLATION.test('Uncaught TypeError: x is not a function'));
 });
 
-test('the in-page violation classifier pins the full origin too', () => {
-  assert.equal(BEACON_ORIGIN, 'https://static.cloudflareinsights.com/');
+test('the in-page violation classifier pins the parsed origin and the beacon path', () => {
+  assert.equal(BEACON_ORIGIN, 'https://static.cloudflareinsights.com');
   assert.ok(isBeaconEvent('script-src-elem <- https://static.cloudflareinsights.com/beacon.min.js'));
   assert.ok(isBeaconEvent('script-src <- https://static.cloudflareinsights.com/beacon.min.js/abc'));
   assert.ok(!isBeaconEvent('script-src-elem <- https://static.cloudflareinsights.com.evil.invalid/x.js'),
@@ -73,6 +75,35 @@ test('the in-page violation classifier pins the full origin too', () => {
   // Any other DIRECTIVE is a red regardless of host — the exemption is about one script, not one origin.
   assert.ok(!isBeaconEvent('style-src-attr <- https://static.cloudflareinsights.com/beacon.min.js'));
   assert.ok(!isBeaconEvent('connect-src <- https://static.cloudflareinsights.com/cdn-cgi/rum'));
+  /**
+   * ⚠️ codex ROUND 2, MEDIUM 4 — BOTH DIRECTIONS.
+   * (a) another script ON the beacon host is NOT the beacon and must stay red;
+   * (b) an ORIGIN-ONLY report (CSP strips the path in some reports) IS the beacon — requiring a
+   *     trailing slash made a real edge beacon go red, i.e. the gate failing for the wrong reason.
+   */
+  assert.ok(!isBeaconEvent('script-src-elem <- https://static.cloudflareinsights.com/other.js'),
+    'a different script on the beacon host is not the beacon');
+  assert.ok(isBeaconEvent('script-src-elem <- https://static.cloudflareinsights.com'),
+    'an origin-only violation report for the beacon host must not make the gate red');
+  assert.ok(isBeaconEvent('script-src-elem <- https://static.cloudflareinsights.com/'));
+});
+
+/**
+ * ⚠️ codex ROUND 2, MEDIUM 4 — THE NESTED URL. Round 1's fix required the beacon URL to appear
+ * SOMEWHERE in the console message, and codex executed the hole: a foreign script whose QUERY STRING
+ * contains the beacon URL was exempted. The classifier now parses the URL Chromium quotes.
+ */
+test('a foreign script that merely MENTIONS the beacon URL in its query is not exempt', () => {
+  const nested = "Refused to load the script 'https://evil.invalid/x.js?next=https://static.cloudflareinsights.com/beacon.min.js'"
+    + ' because it violates the following Content Security Policy directive: "script-src \'self\'".';
+  assert.ok(!EXPECTED_CSP_VIOLATION.test(nested),
+    'the blocked resource is evil.invalid/x.js; the beacon URL is only its query parameter');
+});
+
+test('another script on the beacon HOST is not exempt in the console form either', () => {
+  const other = "Refused to load the script 'https://static.cloudflareinsights.com/other.js' because it violates"
+    + ' the following Content Security Policy directive: "script-src \'self\'".';
+  assert.ok(!EXPECTED_CSP_VIOLATION.test(other));
 });
 
 /**
@@ -85,7 +116,7 @@ test('the sweep classifies the beacon in exactly one place per shape', () => {
   const sites = code.filter((l) => /cloudflareinsights/.test(l));
   assert.deepEqual(sites.map((l) => l.trim().slice(0, 24)), [
     "const BEACON_ORIGIN = 'h",
-    'const EXPECTED_CSP_VIOLA',
-  ], 'the beacon host appears in CODE somewhere other than the two declarations — every other site must '
-    + 'call isBeaconEvent() or unexpectedErrors(), or the three copies drift apart again (round 1, MEDIUM 4)');
+  ], 'the beacon host appears in CODE somewhere other than the single BEACON_ORIGIN declaration — every '
+    + 'other site must go through beaconUri() / isBeaconEvent() / unexpectedErrors(), or the copies drift '
+    + 'apart again (codex round 1 MEDIUM 4, round 2 MEDIUM 4)');
 });

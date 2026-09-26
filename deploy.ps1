@@ -72,6 +72,13 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'build-id failed' }
   if (-not (Test-Path 'worker/build-id.mjs')) { throw 'worker/build-id.mjs missing - the renderer cache key and About would both read `dev`' }
   $buildId = (Select-String -Path 'worker/build-id.mjs' -Pattern 'SITE_BUILD\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+  # codex round 2, HIGH 2: `dev` is what the generator answers when there is no git at all, and what a
+  # swallowed git failure used to answer. Two different trees can share it, so it is never deployable -
+  # with or without -AllowDirty.
+  if ($buildId -eq 'dev') {
+    throw ("the build id is 'dev' - no commit and no change-digest name this artefact, so two different " +
+           "trees would share one render cache identity. Deploy from a git checkout.")
+  }
   if (-not $AllowDirty -and $buildId -notmatch '^[0-9a-f]{7,40}$') {
     throw "the build id is '$buildId' - a clean deploy must be named by a commit"
   }
@@ -106,6 +113,16 @@ try {
   # in the artefact is the only thing that puts the CSP on the page. A build that dropped it would
   # deploy green and serve an unprotected origin.
   if (-not (Test-Path 'dist/_headers'))           { throw 'dist/_headers missing - the CSP, nosniff and Referrer-Policy would all be absent from the document' }
+  # ⚠️ THE ARTEFACT MUST CARRY THE ID THE WORKER WILL CLAIM - codex round 2, MEDIUM 3. `npm run build`
+  # and `build:vercel` both generate the id now, but wrangler has no build hook, so a hand-run
+  # `npx wrangler deploy` can bundle a Worker whose SITE_BUILD is newer than the `dist/` beside it. The
+  # renderer's page-build guard would then refuse every render (loudly, which is the right failure) -
+  # but catching it HERE costs one grep and turns a broken deployment into a refused one.
+  $inBundle = Select-String -Path 'dist/assets/*.js' -SimpleMatch $buildId -List -ErrorAction SilentlyContinue
+  if (-not $inBundle) {
+    throw ("no file in dist/assets names the build id $buildId - the built site and this Worker would " +
+           "disagree about which build they are, and every render would be refused. Re-run the build.")
+  }
 
   npx wrangler deploy -c worker/wrangler.toml
   if ($LASTEXITCODE -ne 0) { throw 'wrangler deploy failed' }

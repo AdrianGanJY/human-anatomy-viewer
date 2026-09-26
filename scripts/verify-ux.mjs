@@ -173,18 +173,50 @@ const SHOT_MS = 120000;
  * changing them in the same breath as the cutover would mean the before and after were measured by
  * two different instruments.)
  */
-const BEACON_ORIGIN = 'https://static.cloudflareinsights.com/';
-const EXPECTED_CSP_VIOLATION = /https:\/\/static\.cloudflareinsights\.com\/beacon(\.min)?\.js.*violates the following Content Security Policy directive: "script-src 'self'"/;
+const BEACON_ORIGIN = 'https://static.cloudflareinsights.com';
+/**
+ * ⚠️ THE BLOCKED URL IS *PARSED*, NOT SUBSTRING-MATCHED — codex round 2, MEDIUM 4 (the round-1 fix was
+ * still holed). Round 1's pattern required the beacon URL to appear *somewhere* in the message, and
+ * codex executed the hole: a script blocked from
+ *
+ *     https://evil.invalid/x.js?next=https://static.cloudflareinsights.com/beacon.min.js
+ *
+ * carries the beacon URL inside its QUERY STRING and was exempted. A substring test cannot express
+ * "the blocked resource IS the beacon", so it is replaced by one that reads the URL Chromium quotes and
+ * compares its parsed `origin` and `pathname`.
+ *
+ * ⚠️ AND THE OTHER DIRECTION, also codex round 2: a `securitypolicyviolation` event's `blockedURI` may
+ * be stripped to a bare ORIGIN (no path) by the CSP reporting rules, so requiring a trailing slash made
+ * a real beacon event go RED — the gate failing for the wrong reason. `beaconUri` therefore accepts the
+ * origin with no path, and requires the `/beacon…` prefix only when a path is present.
+ */
+const beaconUri = (raw) => {
+  let u;
+  try { u = new URL(String(raw)); } catch { return false; }
+  if (u.origin !== BEACON_ORIGIN) return false;
+  // An origin-only report (path stripped by CSP) is the beacon; a path must be the beacon's own.
+  return u.pathname === '/' || u.pathname === '' || u.pathname.startsWith('/beacon');
+};
+/**
+ * Chromium's refusal names the resource in single quotes:
+ *   Refused to load the script 'https://…/beacon.min.js/…' because it violates the following …
+ * The FIRST quoted token is the blocked URL; the policy text that follows is not a URL and cannot be
+ * confused with one.
+ */
+const EXPECTED_CSP_VIOLATION = {
+  test: (e) => {
+    const s = String(e);
+    if (!/violates the following Content Security Policy directive: "script-src(-elem)? 'self'"/.test(s)) return false;
+    const quoted = /'(https?:\/\/[^']+)'/.exec(s);
+    return !!quoted && beaconUri(quoted[1]);
+  },
+};
 /** The console errors that are NOT the named, expected, edge-injected beacon refusal. */
 const unexpectedErrors = (list) => list.filter((e) => !EXPECTED_CSP_VIOLATION.test(e));
-/**
- * The in-page `securitypolicyviolation` record — `"<directive> <- <blockedURI>"` — for the beacon and
- * nothing else. `startsWith` on the full origin INCLUDING the trailing slash is the pin here, for the
- * same reason as above: a look-alike host cannot produce it.
- */
+/** The in-page record `"<directive> <- <blockedURI>"`, for the beacon and nothing else. */
 const isBeaconEvent = (v) => {
   const m = /^script-src(-elem)? <- (\S+)/.exec(String(v));
-  return !!m && m[2].startsWith(BEACON_ORIGIN);
+  return !!m && beaconUri(m[2]);
 };
 /** How a row SAYS it saw the beacon, so a green row still reports what it tolerated. */
 const beaconNote = (list) => {

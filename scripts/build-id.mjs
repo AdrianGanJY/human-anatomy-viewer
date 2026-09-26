@@ -33,56 +33,111 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const OUT = join(ROOT, 'worker', 'build-id.mjs');
 
-const git = (args) => execFileSync('git', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+/**
+ * ⚠️ `maxBuffer` IS LOAD-BEARING, AND ITS ABSENCE WAS A REAL DEFECT — codex round 2, HIGH 2 (open).
+ *
+ * `execFileSync` defaults to a 1 MiB output buffer and THROWS `ENOBUFS` above it. With the previous
+ * blanket `catch` that returned `dev`, codex executed the consequence: two *different* multi-megabyte
+ * dirty trees both produced `SITE_BUILD = "dev"`, so the second deploy was served the first one's
+ * pictures, and the page-build guard could not tell them apart either because both reported `dev`.
+ * A failure that answers with a WEAKER identity is worse than no answer at all.
+ */
+const git = (args) => execFileSync('git', args, {
+  cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 512 * 1024 * 1024,
+}).toString().trim();
 
 /**
- * `dev` is a truthful answer, not a fallback that hides a problem: a checkout with no git (a tarball,
- * a review snapshot) has no commit to name, and saying `dev` is better than inventing one. It is also
- * why `deploy.ps1` asserts a tree is clean AND that the id is not `dev` before it ships anything.
+ * ══ THE ID, AS A PURE FUNCTION OF FACTS ABOUT THE TREE ═════════════════════════════════════════
+ *
+ * Separated from the git calls so `test/build-id.test.mjs` can execute it: codex round 2's test gap
+ * was that the previous rows compared two already-different ID STRINGS, which proves the hash function
+ * works and says nothing about whether two different TREES produce different ids.
+ *
+ *   clean tree  -> `<short hash>`
+ *   dirty tree  -> `<short hash>-<10 hex>` where the digest covers
+ *                    · the porcelain status (which paths are added / modified / deleted / untracked)
+ *                    · the tracked diff against HEAD (their CONTENTS)
+ *                    · `git hash-object` of every UNTRACKED file (their contents too — codex round 2
+ *                      correctly refused to accept "untracked contents" as an acceptable residual)
+ *   no git      -> `dev`, and `deploy.ps1` REFUSES to deploy it, with or without -AllowDirty.
+ *
+ * ⚠️ THE ONE REMAINING RESIDUAL, NAMED PRECISELY: gitignored files. `public/i18n/` and `public/api/`
+ * are ignored yet copied into `dist`, so they are build inputs this digest does not read. They are
+ * however DERIVED — `build-zh`, `build-pinyin` and `build-index` regenerate them deterministically
+ * from committed inputs on every run of `deploy.ps1`, before the build — so the commit does determine
+ * them. That is an argument, not a measurement, and it is the reason a dirty deploy needs an explicit
+ * flag while a clean one does not.
  */
+export function deriveId({ hash, status, diff, untracked }) {
+  if (!hash) return 'dev';
+  if (!status) return hash;
+  const digest = createHash('sha256')
+    .update(`${status}\n--diff--\n${diff || ''}\n--untracked--\n${untracked || ''}`)
+    .digest('hex').slice(0, 10);
+  return `${hash}-${digest}`;
+}
+
 /**
- * ⚠️ A DIRTY TREE'S ID IS DERIVED FROM ITS CONTENTS, NOT FROM A BOOLEAN — codex round 1, HIGH 2.
+ * The tree's facts, or `null` when this is not a git checkout at all.
  *
- * The first version appended a constant "dirty" word. codex executed the consequence: edit a render file at
- * commit C and deploy with `-AllowDirty`, cache a plate; edit it AGAIN and deploy again — both
- * deployments are `C-dirty`, so the second is served the first one's picture. That is the exact
- * failure the derived id exists to make impossible, reintroduced by a flag that says only THAT the
- * tree differs and not HOW.
- *
- * So the suffix is a short digest of the uncommitted change itself: the porcelain status (which names
- * added, deleted and untracked paths) plus the tracked diff (which carries their contents). Two
- * different dirty states therefore differ. `test/snap-cache-key.test.mjs` asserts dirty-vs-DIFFERENT-
- * dirty, not merely clean-vs-dirty.
- *
- * ⚠️ WHAT IT STILL DOES NOT COVER, stated rather than implied: the CONTENTS of untracked files. A
- * diff cannot show them, so two dirty trees differing only inside the same untracked file share an id.
- * A clean deploy is the only fully-identified one, which is why `deploy.ps1` refuses a dirty tree
- * unless `-AllowDirty` is passed explicitly and says so on the way out.
+ * ⚠️ FAIL CLOSED INSIDE A REPOSITORY — codex round 2. Only `rev-parse` is allowed to decide "there is
+ * no git here"; once it has succeeded, a LATER git failure throws, because at that point the tree
+ * demonstrably has a history and an error means we cannot identify it. Answering `dev` there is the
+ * behaviour that collapsed two different trees onto one cache identity.
  */
-let id = 'dev';
-try {
-  const hash = git(['rev-parse', '--short', 'HEAD']);
+export function readGitFacts() {
+  let hash;
+  try {
+    hash = git(['rev-parse', '--short', 'HEAD']);
+  } catch {
+    return null; // a tarball, or a review snapshot: nothing to name
+  }
   // `--porcelain` over the whole tree: an uncommitted edit ANYWHERE can change the bundle, so the
   // dirty flag is not scoped to a path list. Scoping it would re-create the renderPaths guess this
   // increment deletes.
-  const status = git(['status', '--porcelain']);
-  if (hash) {
-    if (!status) id = hash;
-    else {
-      const diff = git(['diff', 'HEAD']);
-      const digest = createHash('sha256').update(`${status}\n--\n${diff}`).digest('hex').slice(0, 10);
-      id = `${hash}-${digest}`;
-    }
+  // `-uall` lists untracked FILES individually rather than collapsing them into a directory entry —
+  // which matters twice: a directory is more informative when expanded, and `git hash-object` below
+  // cannot digest a directory path.
+  const status = git(['status', '--porcelain', '-uall']);
+  if (!status) return { hash, status: '', diff: '', untracked: '' };
+  const diff = git(['diff', 'HEAD']);
+  // The untracked paths, and then their CONTENT hashes. `hash-object` is git's own content digest, so
+  // this is exact and costs one process for the whole set.
+  const paths = status.split('\n')
+    .filter((l) => l.startsWith('?? '))
+    .map((l) => l.slice(3).replace(/^"|"$/g, ''));
+  let untracked = '';
+  if (paths.length) {
+    const hashes = git(['hash-object', '--', ...paths]).split('\n');
+    untracked = paths.map((p, i) => `${hashes[i] || 'unreadable'} ${p}`).join('\n');
   }
-} catch { /* no git here — `dev` it is */ }
+  return { hash, status, diff, untracked };
+}
 
-const body = `/**
+/**
+ * `main` is behind an entry-point check so `test/build-id.test.mjs` can import `deriveId` and
+ * `readGitFacts` WITHOUT the import writing a file as a side effect. (`deploy.ps1`, `npm run build`
+ * and the cache-key test all invoke it as a script, which is the path that writes.)
+ */
+export function main() {
+  const facts = readGitFacts();
+  const id = facts ? deriveId(facts) : 'dev';
+  const body = bodyFor(id);
+  mkdirSync(dirname(OUT), { recursive: true });
+  let existing = null;
+  try { existing = readFileSync(OUT, 'utf8'); } catch { /* first run */ }
+  if (existing !== body) writeFileSync(OUT, body);
+  console.log(`build id: ${id}${existing === body ? ' (unchanged)' : ''}`);
+  return id;
+}
+
+const bodyFor = (id) => `/**
  * GENERATED by scripts/build-id.mjs — DO NOT EDIT, and do not hand-bump it.
  *
  * This is the renderer's cache-key salt and the string Settings -> About prints. It is the git short
@@ -93,8 +148,4 @@ const body = `/**
 export const SITE_BUILD = ${JSON.stringify(id)};
 `;
 
-mkdirSync(dirname(OUT), { recursive: true });
-let existing = null;
-try { existing = readFileSync(OUT, 'utf8'); } catch { /* first run */ }
-if (existing !== body) writeFileSync(OUT, body);
-console.log(`build id: ${id}${existing === body ? ' (unchanged)' : ''}`);
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) main();
