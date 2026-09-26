@@ -35,9 +35,9 @@ workers_dev = false
 # Deploy once with this COMMENTED OUT to prove the Worker exists, then uncomment and deploy again:
 # that second deploy is the moment `anatomy.adrian.my` stops being served by Pages. ROLLBACK is the
 # inverse — comment it out, deploy, and Pages answers again.
-# [[routes]]
-# pattern = "anatomy.adrian.my/*"
-# zone_name = "adrian.my"
+[[routes]]
+pattern = "anatomy.adrian.my/*"
+zone_name = "adrian.my"
 
 # ── CLOUDFLARE BROWSER RENDERING ────────────────────────────────────────────────────────────────
 # THE binding that forced the two-project split in the first place: Pages Functions do not take it.
