@@ -44,12 +44,29 @@ const lift = () => {
 
 const { EXPECTED_CSP_VIOLATION, BEACON_ORIGIN, isBeaconEvent } = lift();
 
+/**
+ * ⚠️ THE FIRST TWO ARE THE REAL LIVE STRINGS, captured from the cut-over host on 2026-09-26, not
+ * invented. `LIVE_TRUNCATED` is the one that broke the first live run: Chromium says "Loading the
+ * script … violates" (not "Refused to load … because it violates"), and the directive clause sits past
+ * character 197, so the sweep's own console truncation removed it. An exemption that cannot match its
+ * own target is an exemption that does not exist.
+ */
+const LIVE = "Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/v31edd6df95cf4e85bb4c19e7a9bdbcba1788362987495' violates the following Content Security Policy directive: \"script-src 'self'\".";
+const LIVE_TRUNCATED = LIVE.slice(0, 160);
 const REAL = "Refused to load the script 'https://static.cloudflareinsights.com/beacon.min.js/vcd15cbe7772f49c399c6a5babf22c1241717689176015' because it violates the following Content Security Policy directive: \"script-src 'self'\".";
 const LOOKALIKE = "Refused to load the script 'https://static.cloudflareinsights.com.evil.invalid/x.js' because it violates the following Content Security Policy directive: \"script-src 'self'\".";
 const SUBDOMAIN = "Refused to load the script 'https://evil.static.cloudflareinsights.com.attacker.test/x.js' because it violates the following Content Security Policy directive: \"script-src 'self'\".";
 
 test('the console-message exemption matches the REAL edge-injected beacon', () => {
   assert.ok(EXPECTED_CSP_VIOLATION.test(REAL));
+});
+
+test('...and the LIVE wording, in full AND truncated by our own collector', () => {
+  assert.ok(EXPECTED_CSP_VIOLATION.test(LIVE),
+    'Chromium says "Loading the script … violates", not "Refused to load … because it violates"');
+  assert.ok(EXPECTED_CSP_VIOLATION.test(LIVE_TRUNCATED),
+    'the directive clause sits past char 197, so a 160-char capture clips it — a clause clipped by our '
+    + 'own instrument is not evidence of a different directive (this cost 12 reds on the first live run)');
 });
 
 test('and it does NOT match a look-alike hostname (codex round 1, MEDIUM 4)', () => {

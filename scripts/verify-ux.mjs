@@ -198,15 +198,32 @@ const beaconUri = (raw) => {
   return u.pathname === '/' || u.pathname === '' || u.pathname.startsWith('/beacon');
 };
 /**
- * Chromium's refusal names the resource in single quotes:
- *   Refused to load the script 'https://…/beacon.min.js/…' because it violates the following …
- * The FIRST quoted token is the blocked URL; the policy text that follows is not a URL and cannot be
- * confused with one.
+ * ⚠️ WRITTEN AGAINST THE REAL LIVE STRING, which is not the one this file first assumed. The first
+ * live run of the cut-over host printed, verbatim:
+ *
+ *   Loading the script 'https://static.cloudflareinsights.com/beacon.min.js/v31edd…87495' violates
+ *   the following Content Security Policy directive: "script-src 'self'".
+ *
+ * — "Loading the script … violates", NOT "Refused to load the script … because it violates". And the
+ * directive clause sits past character 197, so THIS FILE'S OWN 160-character console truncation cut it
+ * off and the exemption could not match its own target: 12 reds, all beacon, exactly the failure the
+ * exemption exists to prevent. (codex round 2 predicted this shape precisely — "the supplied local logs
+ * contain no real edge-beacon event establishing its live serialization".)
+ *
+ * So: the capture is widened to 400 characters at every site, and the classifier is TOLERANT OF
+ * TRUNCATION while staying strict about identity —
+ *   · the quoted resource must BE the beacon (parsed origin + `/beacon` path — this is the strong pin,
+ *     and it is what makes a look-alike host or a nested URL fail);
+ *   · the message must be a CSP violation;
+ *   · IF the directive clause survived the capture, it must be `script-src`/`script-src-elem`. A clause
+ *     that was clipped by our own instrument is not evidence of a different directive.
  */
 const EXPECTED_CSP_VIOLATION = {
   test: (e) => {
     const s = String(e);
-    if (!/violates the following Content Security Policy directive: "script-src(-elem)? 'self'"/.test(s)) return false;
+    if (!/violates the following Content Security/.test(s)) return false;
+    const directive = /directive: "([a-z-]+)/.exec(s);
+    if (directive && !/^script-src(-elem)?$/.test(directive[1])) return false;
     const quoted = /'(https?:\/\/[^']+)'/.exec(s);
     return !!quoted && beaconUri(quoted[1]);
   },
@@ -510,8 +527,8 @@ for (const vp of SWEEP) {
     });
   }
   const consoleErrors = [];
-  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 160)); });
-  page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e).slice(0, 160)));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 400)); });
+  page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + String(e).slice(0, 400)));
 
   const url = `${base}${path}?lang=zh-Hans&scene=${BLOB}`;
   try {
@@ -1210,8 +1227,8 @@ for (const vp of SWEEP) {
   const bareCtx = await newContext(vp);
   const {page: barePage, ledger: bareLedger} = await newLedgerPage(bareCtx);
   const bareErrors = [];
-  barePage.on('console', (m) => { if (m.type() === 'error') bareErrors.push(m.text().slice(0, 160)); });
-  barePage.on('pageerror', (e) => bareErrors.push('pageerror: ' + String(e).slice(0, 160)));
+  barePage.on('console', (m) => { if (m.type() === 'error') bareErrors.push(m.text().slice(0, 400)); });
+  barePage.on('pageerror', (e) => bareErrors.push('pageerror: ' + String(e).slice(0, 400)));
   try {
     await barePage.goto(`${base}${path}?select=${BARE_ID}`, {waitUntil: 'domcontentloaded', timeout: 180000});
     let bareReady = false;
