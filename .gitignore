@@ -59,7 +59,7 @@ workers/*/node_modules/
 # ══ L34 ═════════════════════════════════════════════════════════════════════════════════════════
 # The merged Worker's `wrangler dev` state, and this session's detached dev-server log/pid.
 /worker/.wrangler/
-.l34-dev.*
+.l34-*
 
 # ⚠️ `worker/build-id.mjs` IS GENERATED AND MUST NOT BE TRACKED, and the reason is a paradox rather
 # than a preference: the id is the git short hash of the tree, so the file's correct contents for
