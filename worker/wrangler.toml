@@ -31,25 +31,30 @@ account_id = "a135de78aaa95d36ee634b81267625c6"   # Adrey — pinned so a multi-
 # the hole is this line — there is no second hostname. `test/worker-config.test.mjs` asserts it.
 workers_dev = false
 
-# ── THE ROUTE IS THE CUTOVER ────────────────────────────────────────────────────────────────────
-# Deploy once with this COMMENTED OUT to prove the Worker exists, then uncomment and deploy again:
-# that second deploy is the moment `anatomy.adrian.my` stops being served by Pages. ROLLBACK is the
-# inverse — comment it out, deploy, and Pages answers again.
-[[routes]]
-pattern = "anatomy.adrian.my/*"
-zone_name = "adrian.my"
-
 # ── CLOUDFLARE BROWSER RENDERING ────────────────────────────────────────────────────────────────
 # THE binding that forced the two-project split in the first place: Pages Functions do not take it.
 # Held directly now, so `/api/snap` and the `/mcp` render tools call the renderer in-process.
 #
-# ⚠️ IT MUST SIT ABOVE `[assets]`, and this is not cosmetic. TOML assigns every key after a `[table]`
-# header TO THAT TABLE, so with this line below `[assets]` wrangler read it as `assets.browser`,
-# printed `Unexpected fields found in assets field: "browser"` as a WARNING (not an error), started
-# anyway — and the binding was simply ABSENT from the Worker. `/api/snap` would then have answered
-# `503 no browser binding` on a deployment that looked green. Caught by reading wrangler's own
-# binding table in `wrangler dev`, which is the authority here rather than the file.
+# ⚠️ IT MUST SIT ABOVE EVERY `[table]` HEADER, and this bit twice, differently, in one session. TOML
+# assigns every key after a table header TO THAT TABLE:
+#   · below `[assets]` it read as `assets.browser` — wrangler printed `Unexpected fields found in
+#     assets field: "browser"` as a WARNING, started anyway, and the binding was simply ABSENT from the
+#     Worker. `/api/snap` would have answered `503 no browser binding` on a deployment that looked green.
+#   · moved above `[assets]` but below `[[routes]]` it read as `routes[0].browser`, and THAT one is a
+#     hard validation error ("Expected routes to be an array of ... objects with the shape { pattern,
+#     custom_domain, zone_id | zone_name, enabled, previews_enabled }"), which is the kinder failure.
+# Both were caught by reading wrangler's own output — the authority here is the binding table it prints,
+# never this file.
 browser = { binding = "BROWSER" }
+
+# ── THE ROUTE IS THE CUTOVER ────────────────────────────────────────────────────────────────────
+# Deploy once with this COMMENTED OUT to prove the Worker exists, then uncomment and deploy again:
+# that second deploy is the moment `anatomy.adrian.my` stops being served by Pages. ROLLBACK is the
+# inverse — comment it out, commit, deploy, and Pages answers again (measured, not assumed: the L34
+# worklog carries the transcript of a rollback and a re-cutover executed against the live host).
+[[routes]]
+pattern = "anatomy.adrian.my/*"
+zone_name = "adrian.my"
 
 # ── THE SITE ITSELF ─────────────────────────────────────────────────────────────────────────────
 # `directory` is resolved relative to THIS file, so `../dist` is the vite output.
