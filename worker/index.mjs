@@ -74,6 +74,30 @@ const EXEMPT = (pathname) => pathname === '/mcp' || pathname.startsWith('/api/')
  */
 const isLocal = (h) => h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h.endsWith('.localhost');
 
+/**
+ * ONE env for every handler, with the renderer presented as the `SNAP` binding the two porting-free
+ * files already speak to, and the build identity the timing lane reports.
+ *
+ * Spread, not mutated: the real `env` is shared across every request in the isolate, and writing the
+ * binding onto it would be a cross-request side effect for no gain.
+ *
+ * ⚠️ BUT THE SPREAD IS MEMOISED, and that is a correctness fix rather than a micro-optimisation —
+ * codex round 1, LOW 6. `functions/mcp.js`'s `getIndex` caches the parsed 900 KB index in a WeakMap
+ * keyed by `ctx.env` IDENTITY, on the reasoning that a new deploy is a new isolate with a new `env`.
+ * A fresh object per request made that key unique every time, so codex measured TWO index fetches and
+ * two map rebuilds where a stable env does one. Keyed on the real `env`, the derived object has
+ * exactly the lifetime the cache was designed around.
+ */
+const derivedEnvs = new WeakMap();
+function derivedEnv(env) {
+  let e = derivedEnvs.get(env);
+  if (!e) {
+    e = { ...env, SNAP: snapBinding(env), WORKER_NAME, BUILD_ID: SITE_BUILD };
+    derivedEnvs.set(env, e);
+  }
+  return e;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -99,14 +123,7 @@ export default {
       });
     }
 
-    /**
-     * ONE env for every handler, with the renderer presented as the `SNAP` binding the two
-     * porting-free files already speak to, and the build identity the timing lane reports.
-     *
-     * Spread, not mutated: `env` is shared across every request in the isolate, and writing the
-     * binding onto it would be a cross-request side effect for no gain.
-     */
-    const e = { ...env, SNAP: snapBinding(env), WORKER_NAME, BUILD_ID: SITE_BUILD };
+    const e = derivedEnv(env);
 
     const ctxLike = { request, env: e, waitUntil: (p) => ctx.waitUntil(p) };
 

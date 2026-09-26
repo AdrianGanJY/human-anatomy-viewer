@@ -75,6 +75,14 @@ try {
   if (-not $AllowDirty -and $buildId -notmatch '^[0-9a-f]{7,40}$') {
     throw "the build id is '$buildId' - a clean deploy must be named by a commit"
   }
+  if ($AllowDirty -and $dirty) {
+    # codex round 1, HIGH 2: a dirty id now carries a DIGEST of the uncommitted change, so two
+    # different dirty states are two different ids. It is still not fully identified (an untracked
+    # file's CONTENTS are invisible to a diff), so say so at the moment it is being used.
+    Write-Host "-AllowDirty: shipping build id $buildId, derived from $($dirty.Count) uncommitted path(s)." -ForegroundColor Yellow
+    Write-Host 'No commit names this artefact. Two dirty trees differing only INSIDE the same' -ForegroundColor Yellow
+    Write-Host 'untracked file would share this id.' -ForegroundColor Yellow
+  }
 
   node scripts/build-zh.mjs
   if ($LASTEXITCODE -ne 0) { throw 'build-zh failed' }
@@ -107,8 +115,13 @@ try {
   Write-Host '  who answered:  https://anatomy.adrian.my/api/timing   (worker + build fields)' -ForegroundColor Green
   Write-Host '  the app:       https://anatomy.adrian.my/?select=FMA22315,FMA22314,FMA18060&isolate=1&view=back' -ForegroundColor Green
   Write-Host ''
-  Write-Host 'ROLLBACK: comment out the [[routes]] block in worker/wrangler.toml and run this script' -ForegroundColor Yellow
-  Write-Host 'again. The Pages project human-anatomy-viewer is still deployed underneath, untouched.' -ForegroundColor Yellow
+  # ⚠️ THE ROLLBACK INSTRUCTION NAMES THE COMMIT STEP — codex round 1, MEDIUM 5. The first version
+  # said "comment out the route and run this script again", which THROWS: editing the tracked TOML
+  # dirties the tree and the guard above refuses it. Both honest routes are printed.
+  Write-Host 'ROLLBACK (the route is the only thing that moves; Pages is still deployed underneath):' -ForegroundColor Yellow
+  Write-Host '  1. comment out the [[routes]] block in worker/wrangler.toml' -ForegroundColor Yellow
+  Write-Host '  2. git commit -F <msg> -- worker/wrangler.toml     (the clean-tree guard requires it)' -ForegroundColor Yellow
+  Write-Host '  3. pwsh -File ./deploy.ps1                        (or, to skip step 2: -AllowDirty)' -ForegroundColor Yellow
 } finally {
   $env:CLOUDFLARE_API_TOKEN = $null
   $env:CLOUDFLARE_ACCOUNT_ID = $null

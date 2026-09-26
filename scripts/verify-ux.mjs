@@ -160,9 +160,32 @@ const SHOT_MS = 120000;
  * OFF for the project keeps `'self'` and removes the noise). Until he rules, the beacon stays blocked
  * and these rows NAME it.
  */
-const EXPECTED_CSP_VIOLATION = /static\.cloudflareinsights\.com.*violates the following Content Security Policy directive: "script-src 'self'"/;
+/**
+ * ⚠️ THE ORIGIN IS PINNED, NOT SUBSTRING-MATCHED — codex round 1, MEDIUM 4. The first version was
+ * `/static\.cloudflareinsights\.com.*violates …/`, copied from verify-live, and codex executed the
+ * consequence: a script blocked from `https://static.cloudflareinsights.com.evil.invalid/x.js`
+ * matches it, so a genuinely foreign refusal would vanish from the gate reported as "the expected
+ * beacon". The exemption now requires the full scheme+host+`/` — a hostname cannot contain a slash, so
+ * `…cloudflareinsights.com.evil.invalid/` can no longer satisfy it — and the beacon's own path.
+ *
+ * (`verify-live.mjs` carries the same widened pattern and inherits the same weakness. It is listed in
+ * the L34 worklog as CARRIED rather than silently fixed here: that file's rows are the LIVE gate and
+ * changing them in the same breath as the cutover would mean the before and after were measured by
+ * two different instruments.)
+ */
+const BEACON_ORIGIN = 'https://static.cloudflareinsights.com/';
+const EXPECTED_CSP_VIOLATION = /https:\/\/static\.cloudflareinsights\.com\/beacon(\.min)?\.js.*violates the following Content Security Policy directive: "script-src 'self'"/;
 /** The console errors that are NOT the named, expected, edge-injected beacon refusal. */
 const unexpectedErrors = (list) => list.filter((e) => !EXPECTED_CSP_VIOLATION.test(e));
+/**
+ * The in-page `securitypolicyviolation` record — `"<directive> <- <blockedURI>"` — for the beacon and
+ * nothing else. `startsWith` on the full origin INCLUDING the trailing slash is the pin here, for the
+ * same reason as above: a look-alike host cannot produce it.
+ */
+const isBeaconEvent = (v) => {
+  const m = /^script-src(-elem)? <- (\S+)/.exec(String(v));
+  return !!m && m[2].startsWith(BEACON_ORIGIN);
+};
 /** How a row SAYS it saw the beacon, so a green row still reports what it tolerated. */
 const beaconNote = (list) => {
   const n = list.length - unexpectedErrors(list).length;
@@ -7103,13 +7126,13 @@ if (variant === 'v2') {
           };
         });
         /**
-         * ⚠️ THE BEACON, EXEMPTED BY NAME HERE TOO — and it needs its own pattern. `EXPECTED_CSP_VIOLATION`
-         * matches Chromium's CONSOLE MESSAGE; the in-page `securitypolicyviolation` record is
-         * `"<directive> <- <blockedURI>"`, a different string for the same event. Narrow on the host AND
-         * the directive, like its sibling: any other violation is still a red.
+         * ⚠️ THE BEACON, EXEMPTED BY NAME HERE TOO — through the SAME classifier as the console rows
+         * (`isBeaconEvent`), because codex round 1's MEDIUM 4 was that three separate hand-written
+         * patterns had three different strictnesses. The in-page `securitypolicyviolation` record is
+         * `"<directive> <- <blockedURI>"`, a different string for the same event, so it needs its own
+         * parse — but only one, used everywhere, pinning the full origin.
          */
-        const beaconEvent = /^script-src(-elem)? <- https:\/\/static\.cloudflareinsights\.com/;
-        const cspReal = live.csp.filter((v) => !beaconEvent.test(v));
+        const cspReal = live.csp.filter((v) => !isBeaconEvent(v));
         const cspBeacon = live.csp.length - cspReal.length;
         violations.push(...cspReal);
         const styled = live.inlineCount > 0 && live.inlineApplied !== ''
@@ -7136,9 +7159,10 @@ if (variant === 'v2') {
         }));
         const after = await page.evaluate(() => window.__csp || []);
         // The beacon's own refusal is a script-src violation too, and in LIVE mode it is already in
-        // this list before the probe fires. Exempted by name so the row still counts EXACTLY ONE.
-        const scriptViolation = after.filter((v) => v.startsWith('script-src')
-          && !/static\.cloudflareinsights\.com/.test(v));
+        // this list before the probe fires. Exempted through the SAME pinned classifier (round 1
+        // MEDIUM 4 — the previous unbounded substring here would also have swallowed a look-alike
+        // host, which is precisely the violation this row exists to count).
+        const scriptViolation = after.filter((v) => v.startsWith('script-src') && !isBeaconEvent(v));
         check(vp.name, `[${S5B}] and it BITES — a script from another origin is refused by script-src`,
           blocked !== 'LOADED' && scriptViolation.length === 1,
           `the foreign script ${blocked === 'LOADED' ? 'LOADED' : `did not load (${blocked})`}`

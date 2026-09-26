@@ -93,6 +93,23 @@ const fail = (status, message, extra = {}) => new Response(JSON.stringify({ erro
  * survive too, and it is re-driven through `location.hash`, which the app applies
  * WITHOUT a reload. That hash contract was built in P1 for exactly this.
  */
+/**
+ * ══ THE TAB'S BUILD MUST BE THIS BUILD — L34, codex round 1 HIGH 1 ═════════════════════════════
+ *
+ * A reused tab is re-driven through `location.hash`, which applies WITHOUT a reload — so a tab loaded
+ * before a deploy is still running the PREVIOUS bundle while this renderer writes its pixels under
+ * the NEW build's cache key. codex executed it with mocked bindings: `200, tab=reused, zero
+ * navigations`, build A's pixels stored with `build=B` metadata. The hazard predates L34, but L34's
+ * derived id is a guarantee — "a different commit can never be served a different commit's picture" —
+ * and this was a hole straight through it.
+ *
+ * `app/url-state.ts` now writes `data-atlas-build` from the bundle's own build-time constant, and this
+ * is the comparison. `null` means an older bundle that does not state it; that is treated as NOT this
+ * build, because "it did not say" and "it said the right thing" must not be the same answer on the
+ * path whose failure mode is a plausible wrong picture at HTTP 200.
+ */
+const pageBuild = (p) => p.evaluate(() => document.documentElement.dataset.atlasBuild || null).catch(() => null);
+
 async function acquire(env) {
   let sessionId = null;
   try {
@@ -104,6 +121,7 @@ async function acquire(env) {
     try {
       const browser = await puppeteer.connect(env.BROWSER, sessionId);
       let ready = null;
+      let sawBuild = null;
       try {
         for (const p of await browser.pages()) {
           if (!p.url().startsWith(SITE)) continue;
@@ -114,14 +132,19 @@ async function acquire(env) {
           // blank or frozen screenshot that passes every downstream check.
           const isReady = await p.evaluate(() => document.documentElement.dataset.atlasReady === '1'
             && !document.documentElement.dataset.atlasError).catch(() => false);
-          if (isReady) { ready = p; break; }
+          if (!isReady) continue;
+          // L34: ...and a tab from ANOTHER BUILD is not reusable either. Reported in the response
+          // headers rather than silently skipped, so "the warm path stopped working" is diagnosable.
+          const build = await pageBuild(p);
+          if (build !== SITE_BUILD) { sawBuild = build || 'absent'; continue; }
+          ready = p; break;
         }
       } catch { /* fall through to a new tab */ }
-      return { browser, warm: true, page: ready };
+      return { browser, warm: true, page: ready, rejectedBuild: ready ? null : sawBuild };
     } catch { /* it was taken or died between the list and the connect */ }
   }
   const browser = await puppeteer.launch(env.BROWSER, { keep_alive: KEEP_ALIVE_MS });
-  return { browser, warm: false, page: null };
+  return { browser, warm: false, page: null, rejectedBuild: null };
 }
 
 /**
@@ -176,10 +199,10 @@ export async function renderSnap(request, env) {
     }
 
     const target = `${SITE}/?${canon}${canon ? '&' : ''}snap=1`;
-    let browser = null; let warm = false; let sessionId = null; let reused = false;
+    let browser = null; let warm = false; let sessionId = null; let reused = false; let rejectedBuild = null;
     try {
       let page;
-      ({ browser, warm, page } = await acquire(env));
+      ({ browser, warm, page, rejectedBuild } = await acquire(env));
       sessionId = browser.sessionId?.() ?? null;
       reused = !!page;
 
@@ -296,6 +319,26 @@ export async function renderSnap(request, env) {
         return fail(424, `the page reported an error while rendering: ${String(pageError).slice(0, 120)}`, { target });
       }
 
+      /**
+       * ⚠️ L34, codex round 1 HIGH 1 — THE SECOND HALF OF THE SAME GUARD, and it is the half that
+       * covers a case `acquire()` cannot see: a FRESH navigation. `acquire()` refuses a tab from
+       * another build, but the browser then loads `https://anatomy.adrian.my/` over the public
+       * internet — and during a rollout, a rollback, or against a host still served by the OLD Pages
+       * project, what comes back is not necessarily the bundle this renderer shipped with.
+       *
+       * So the page is ASKED, once, right before the screenshot, and a mismatch is a 424 — which is
+       * also what SKIPS the R2 put, so a foreign build's pixels can never be written under this
+       * build's key. `absent` (an older bundle that does not state its build) is a mismatch too: "it
+       * did not say" must not read the same as "it said the right thing" on the one path whose
+       * failure mode is a plausible wrong picture at HTTP 200.
+       */
+      const drawnBuild = await pageBuild(page);
+      if (drawnBuild !== SITE_BUILD) {
+        return fail(424, `the page is build ${drawnBuild || 'absent'}, this renderer is build ${SITE_BUILD} — refusing to cache another build's picture under this build's key`, {
+          target, tab: reused ? 'reused' : 'new',
+        });
+      }
+
       // L30 P4a.1: THE SUPERSAMPLED CAPTURE. The page renders one frame with the backing
       // store at CAPTURE_SCALE x and area-averages it back down through a 2D canvas, then
       // paints the result over the live canvas — so the screenshot below carries the smooth
@@ -338,6 +381,10 @@ export async function renderSnap(request, env) {
         'X-Snap-Settle': settle,
         'X-Snap-Scene': sceneAck,
         'X-Snap-Capture': capture,
+        'X-Snap-Build': SITE_BUILD,
+        // Non-empty when a warm tab was REFUSED for being another build: the warm path going quiet
+        // is then diagnosable instead of merely slow.
+        'X-Snap-Tab-Rejected': rejectedBuild || '',
         'X-Snap-Session': sessionId || '',
       });
     } catch (err) {

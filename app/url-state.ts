@@ -268,8 +268,34 @@ function commitUrl(query:string,flags:DisplayFlags){
  const next=`${location.pathname}${query?`?${query}`:''}${hash}`;
  if(next!==`${location.pathname}${location.search}${location.hash}`)history.replaceState(history.state,'',next);
 }
+/**
+ * ══ WHICH BUILD DREW THIS PAGE — L34, codex round 1 HIGH 1 ═════════════════════════════════════
+ *
+ * The snapshot renderer REUSES a warm browser tab and re-drives it through `location.hash`, which
+ * applies WITHOUT a reload — that is what makes a warm render ~20 s instead of ~60 s. So a tab loaded
+ * before a deploy keeps running the PREVIOUS bundle, while the renderer stores its pixels under the
+ * NEW build's cache key. codex executed exactly that against the renderer with mocked bindings:
+ * `200, tab=reused, zero navigations`, build A's pixels written under build B's key.
+ *
+ * That hazard predates L34, but L34 is what makes it load-bearing: the whole point of deriving
+ * `SITE_BUILD` from the commit is the guarantee "a different commit can never be served a different
+ * commit's picture", and a reused tab was a hole straight through it.
+ *
+ * So the page STATES which bundle it is, on the document element, from the same build-time constant
+ * Settings -> About prints. The renderer reads it and refuses to reuse — or to cache — a tab whose
+ * build is not its own. It is set as early as readiness, on BOTH entries, because the renderer
+ * screenshots `/` and a future one may not.
+ *
+ * ⚠️ It is NOT a `canonical()` cache key and must never become one: it is the same value for every
+ * request of one deployment, so keying on it would change nothing and cost a cache generation.
+ */
+declare const __ATLAS_BUILD__: string | undefined;
+export function markBuild(){
+ const b=typeof __ATLAS_BUILD__==='string'?__ATLAS_BUILD__:'dev';
+ document.documentElement.dataset.atlasBuild=b;
+}
 /** Machine-readable load/selection markers for headless verification and batch rendering. */
-export function markReady(){document.documentElement.dataset.atlasReady='1';}
+export function markReady(){markBuild();document.documentElement.dataset.atlasReady='1';}
 /**
  * L31 v2 — SCENE READY. Every chunk the incoming scene named is merged and drawn; the rest of
  * the atlas is still arriving in the background. This is a SECOND, NEW marker and it
@@ -279,7 +305,7 @@ export function markReady(){document.documentElement.dataset.atlasReady='1';}
  * Only `/v2/` ever sets this; on `/` the attribute never appears.
  */
 export function markSceneReady(on:boolean){
- if(on)document.documentElement.dataset.atlasSceneReady='1';
+ if(on){markBuild();document.documentElement.dataset.atlasSceneReady='1';}
  else document.documentElement.removeAttribute('data-atlas-scene-ready');
 }
 export function markSelected(ids:readonly string[]){
